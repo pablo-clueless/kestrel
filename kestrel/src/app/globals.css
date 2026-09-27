@@ -1,0 +1,266 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+:root {
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  -webkit-text-size-adjust: 100%;
+
+  /* typefaces */
+  --font-space: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-fira: "Fira Code", monospace;
+  --font-bricolage: "Bricolage Grotesque", sans-serif;
+
+  /* colors */
+  --primary: #f56e0f;
+  --secondary-1: #151419;
+  --secondary-2: #1b1b1e;
+  --secondary-3: #262626;
+  --secondary-4: #878787;
+  --secondary-5: #fffbf3;
+  --snow: #fbfbfb;
+  --soft-white: #fff6e7;
+  --soft-black: #0b0a0d;
+  --text-black: #0f1f2e;
+  --text-gray: #57636d;
+  --text-gray-light: #868e96;
+  --text-white: #ffffff;
+
+  --void-100: #7285b9;
+  --void-200: #02020b;
+  --void-300: #01010b;
+}
+
+.dark {
+  --primary: #f56e0f;
+  --secondary-1: #eaebe6;
+  --secondary-2: #e4e4e1;
+  --secondary-3: #d9d9d9;
+  --secondary-4: #787878;
+  --secondary-5: #00040c;
+  --snow: #040404;
+  --soft-white: #000918;
+  --soft-black: #f4f5f2;
+  --text-black: #f0e0d1;
+  --text-gray: #a89c92;
+  --text-gray-light: #797169;
+  --text-white: #000000;
+
+  --void-100: #8d7a46;
+  --void-200: #fdfdf4;
+  --void-300: #fefef4;
+}
+
+@theme {
+  /* Breakpoints & Container */
+  --breakpoint-2xl: 1200px;
+  --container-center: true;
+
+  /* Typefaces - Overriding Tailwind defaults */
+  --font-sans: var(--font-space-grotesk);
+  --font-mono: var(--font-space-mono);
+
+  /* Custom Font Aliases for backward compatibility */
+  --font-heading: var(--font-space-grotesk);
+  --font-body: var(--font-space-grotesk);
+  --font-monospace: var(--font-space-mono);
+
+  /* Colors */
+  --color-primary: var(--primary);
+  --color-secondary-1: var(--secondary-1);
+  --color-secondary-2: var(--secondary-2);
+  --color-secondary-3: var(--secondary-3);
+  --color-secondary-4: var(--secondary-4);
+  --color-secondary-5: var(--secondary-5);
+  --color-snow: var(--snow);
+  --color-soft-black: var(--soft-black);
+  --color-soft-white: var(--soft-white);
+  --color-text-black: var(--text-black);
+  --color-text-gray: var(--text-gray);
+  --color-text-gray-light: var(--text-gray-light);
+  --color-text-white: var(--text-white);
+  --color-void-100: var(--void-100);
+  --color-void-200: var(--void-200);
+  --color-void-300: var(--void-300);
+
+  /* Background Images */
+  --background-image-pattern-1: url("/assets/images/pattern-1.png");
+  --background-image-image: url("/assets/images/image.jpg");
+
+  /* Animations */
+  --animate-accordion-down: accordion-down 0.2s ease-out;
+  --animate-accordion-up: accordion-up 0.2s ease-out;
+  --animate-warp: warp 2s ease-in-out;
+  --animate-wobble: wobble 0.5s ease-in-out infinite;
+  --animate-wobble-once: wobble 0.5s ease-in-out;
+
+  /* Keyframes */
+  @keyframes accordion-down {
+    from {
+      height: 0;
+    }
+    to {
+      height: var(--radix-accordion-content-height);
+    }
+  }
+  @keyframes accordion-up {
+    from {
+      height: var(--radix-accordion-content-height);
+    }
+    to {
+      height: 0;
+    }
+  }
+  @keyframes warp {
+    0% {
+      transform: scale(1) rotate(0deg);
+    }
+    25% {
+      transform: scale(1.2) rotate(5deg);
+    }
+    50% {
+      transform: scale(0.8) rotate(-5deg);
+    }
+    75% {
+      transform: scale(1.1) rotate(3deg);
+    }
+    100% {
+      transform: scale(1) rotate(0deg);
+    }
+  }
+  @keyframes wobble {
+    0% {
+      transform: translateX(0);
+    }
+    15% {
+      transform: translateX(-15%) rotate(-5deg);
+    }
+    30% {
+      transform: translateX(10%) rotate(3deg);
+    }
+    45% {
+      transform: translateX(-10%) rotate(-3deg);
+    }
+    60% {
+      transform: translateX(15%) rotate(2deg);
+    }
+    75% {
+      transform: translateX(-5%) rotate(-1deg);
+    }
+    100% {
+      transform: translateX(0);
+    }
+  }
+}
+
+/* Ensure container is centered by default since 'center: true' is being migrated */
+@utility container {
+  margin-inline: auto;
+}
+
+@layer base {
+  ::-webkit-scrollbar {
+    width: 0;
+  }
+
+  ::-ms-scrollbar {
+    display: none;
+  }
+
+  * {
+    box-sizing: border-box;
+    font-family: var(--font-sans);
+    margin: 0;
+    padding: 0;
+    scrollbar-width: none;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    background: var(--snow);
+    color: var(--text-black);
+    overflow-x: hidden;
+    user-select: none;
+    width: 100%;
+  }
+
+  .theme-transition-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    pointer-events: none;
+    animation: theme-expand 0.75s cubic-bezier(0.215, 0.61, 0.355, 1) forwards;
+  }
+
+  .theme-transition-overlay.to-dark {
+    background: #040404;
+  }
+
+  .theme-transition-overlay.to-light {
+    background: #fbfbfb;
+  }
+
+  @keyframes theme-expand {
+    0% {
+      clip-path: circle(0% at 0% 100%);
+    }
+    100% {
+      clip-path: circle(150% at 0% 100%);
+    }
+  }
+
+  img {
+    image-rendering: crisp-edges -moz-crisp-edges;
+  }
+
+  button {
+    cursor: pointer;
+  }
+
+  button:disabled {
+    cursor: not-allowed;
+  }
+
+  input:-webkit-autofill,
+  input:-webkit-autofill:hover,
+  input:-webkit-autofill:focus {
+    -webkit-text-fill-color: hsl(var(--foreground));
+    -webkit-box-shadow: 0 0 0px 1000px hsl(var(--background)) inset;
+    transition: background-color 5000s ease-in-out 0s;
+  }
+
+  input:autofill {
+    background-color: hsl(var(--background)) !important;
+    color: hsl(var(--foreground)) !important;
+  }
+
+  input[type="number"]::-webkit-inner-spin-button,
+  input[type="number"]::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    appearance: none;
+    margin: 0;
+  }
+
+  input[type="search"]::-webkit-search-decoration,
+  input[type="search"]::-webkit-search-cancel-button,
+  input[type="search"]::-webkit-search-results-button,
+  input[type="search"]::-webkit-search-results-decoration {
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    appearance: none;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    font-family: var(--font-sans);
+  }
+}

@@ -1,0 +1,35 @@
+[package]
+name = "engine"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+async-stream = "0.3.6"
+axum = "0.8.9"
+base64 = "0.23.1"
+bytes = "1.12.1"
+dotenvy = "0.15.7"
+futures = "0.3.34"
+hdrhistogram = { version = "7.6.0", default-features = false }
+rand = "0.10.3"
+reqwest = "0.13.5"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+subtle = "2.6.1"
+thiserror = "2.0.21"
+tokio = { version = "1.53.1", features = ["full"] }
+tokio-util = "0.7.19"
+tower-http = { version = "0.7.1", features = ["cors"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+ts-rs = { version = "12.0.1", features = ["uuid-impl"] }
+url = "2.5.8"
+uuid = { version = "1.26.1", features = ["v4", "serde"] }
+
+[dev-dependencies]
+http-body-util = "0.1.5"
+tower = { version = "0.5.3", features = ["util"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Media"] }
