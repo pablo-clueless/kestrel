@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 
-import { cn } from "@/lib/utils";
+import { StatusBadge } from "@/components/shared/method-badge";
 import { useSendStore } from "@/stores/send-store";
 
 import { Tabs } from "./fields";
@@ -24,22 +24,23 @@ export const ResponseView = () => {
   const { result, error, pending } = useSendStore();
   const [tab, setTab] = useState<Tab>("body");
 
-  if (pending) return <p className="text-text-gray text-sm">Sending…</p>;
-  if (error) return <p className="text-sm text-red-600">{error}</p>;
-  if (!result) return <p className="text-text-gray text-sm">Press Send to try the request once.</p>;
+  if (pending) return <p className="text-muted-foreground text-sm">Sending…</p>;
+  if (error) return <p className="text-sm text-destructive">{error}</p>;
+  if (!result) return <p className="text-muted-foreground text-sm">Press Send to try the request once.</p>;
 
-  const ok = result.status !== null && result.status < 400;
   return (
     <div className="flex flex-col gap-3 text-sm">
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 font-mono">
-        <span className={cn("font-bold", ok ? "text-green-600" : "text-red-600")}>
-          {result.status ?? "—"}
-        </span>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 tabular-nums">
+        {result.status !== null ? (
+          <StatusBadge status={result.status} />
+        ) : (
+          <span className="text-destructive font-medium">No response</span>
+        )}
         <span>{result.totalMs.toFixed(1)} ms</span>
-        <span className="text-text-gray">TTFB {result.ttfbMs.toFixed(1)} ms</span>
-        <span className="text-text-gray">{formatBytes(result.bodyBytes)}</span>
+        <span className="text-muted-foreground">TTFB {result.ttfbMs.toFixed(1)} ms</span>
+        <span className="text-muted-foreground">{formatBytes(result.bodyBytes)}</span>
       </div>
-      {result.error && <p className="text-red-600">{result.error}</p>}
+      {result.error && <p className="text-destructive">{result.error}</p>}
 
       <Tabs<Tab>
         value={tab}
@@ -51,9 +52,9 @@ export const ResponseView = () => {
         ]}
       />
       {tab === "body" && (
-        <pre className="max-h-80 overflow-auto font-mono text-xs whitespace-pre-wrap">
+        <pre className="bg-muted max-h-80 overflow-auto rounded-lg p-3 font-mono text-xs whitespace-pre-wrap">
           {formatBody(result.body)}
-          {result.bodyTruncated && <span className="text-text-gray">{"\n"}… truncated</span>}
+          {result.bodyTruncated && <span className="text-muted-foreground">{"\n"}… truncated</span>}
         </pre>
       )}
       {tab === "headers" && <HeaderTable headers={result.responseHeaders} />}
@@ -77,7 +78,7 @@ const HeaderTable = ({ headers }: { headers: [string, string][] }) => (
     <tbody>
       {headers.map(([k, v], i) => (
         <tr key={i} className="align-top">
-          <td className="text-text-gray pr-3 whitespace-nowrap">{k}</td>
+          <td className="text-muted-foreground pr-3 whitespace-nowrap">{k}</td>
           <td className="break-all">{v}</td>
         </tr>
       ))}

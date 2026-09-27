@@ -13,8 +13,8 @@ pub enum CompileError {
     #[error("unknown environment `{0}`")]
     UnknownEnvironment(String),
     #[error("undefined variable{}: {}{}", if .names.len() == 1 { "" } else { "s" }, .names.join(", "), match .environment {
-        Some(env) => format!(" (add to environment `{env}`)"),
-        None => " (no environment selected)".to_owned(),
+        Some(env) => format!(" (define it in environment `{env}` or the collection)"),
+        None => " (define it in the collection, or select an environment)".to_owned(),
     })]
     MissingVars { names: Vec<String>, environment: Option<String> },
     #[error("{0}")]
@@ -224,12 +224,37 @@ mod tests {
     }
 
     #[test]
+    fn environment_overrides_collection_defaults() {
+        use crate::model::Collection;
+        let (mut ws, secrets) = workspace();
+        let ep = endpoint("{{base}}/{{path}}", Auth::None);
+        ws.collections.push(Collection {
+            id: uuid::Uuid::new_v4(),
+            name: "api".into(),
+            vars: BTreeMap::from([
+                ("base".into(), "http://collection-default".into()),
+                ("path".into(), "from-collection".into()),
+            ]),
+            endpoints: vec![ep.clone()],
+        });
+        let req = CompiledRequest::compile(&ep, &ws, &secrets, None, false).unwrap().render().unwrap();
+        // `base` comes from the active environment, `path` only exists on the collection.
+        assert_eq!(req.url.as_str(), "http://127.0.0.1:8080/from-collection?page=1");
+
+        let req = CompiledRequest::compile(&ep, &Workspace { active_environment: None, ..ws }, &secrets, None, false)
+            .unwrap()
+            .render()
+            .unwrap();
+        assert_eq!(req.url.as_str(), "http://collection-default/from-collection?page=1");
+    }
+
+    #[test]
     fn explains_missing_vars_and_bad_urls() {
         let (ws, secrets) = workspace();
         let err = CompiledRequest::compile(&endpoint("{{host}}/x", Auth::None), &ws, &secrets, None, false)
             .err()
             .unwrap();
-        assert_eq!(err.to_string(), "undefined variable: host (add to environment `local`)");
+        assert_eq!(err.to_string(), "undefined variable: host (define it in environment `local` or the collection)");
 
         let err = CompiledRequest::compile(&endpoint("localhost:8080/x", Auth::None), &ws, &secrets, None, false)
             .err()

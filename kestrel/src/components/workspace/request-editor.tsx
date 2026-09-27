@@ -29,7 +29,7 @@ export const RequestEditor = () => {
   const [tab, setTab] = useState<Tab>("query");
 
   if (!endpoint) {
-    return <p className="text-text-gray text-sm">Select or add an endpoint in the sidebar.</p>;
+    return <p className="text-muted-foreground text-sm">Select or add an endpoint in the sidebar.</p>;
   }
   const patch = (p: Partial<Endpoint>) => update(endpoint.id, p);
 
@@ -96,9 +96,9 @@ const RenderedPreview = ({ endpoint, environment }: { endpoint: Endpoint; enviro
   return (
     <p className="truncate font-mono text-xs">
       {preview.isError ? (
-        <span className="text-red-600">{errorMessage(preview.error)}</span>
+        <span className="text-destructive">{errorMessage(preview.error)}</span>
       ) : (
-        <span className="text-text-gray">→ {preview.data?.url ?? "…"}</span>
+        <span className="text-muted-foreground">→ {preview.data?.url ?? "…"}</span>
       )}
     </p>
   );
@@ -222,7 +222,7 @@ const AuthEditor = ({ auth, onChange }: { auth: Auth; onChange: (a: Auth) => voi
       </>
     )}
     {auth.type !== "none" && (
-      <p className="text-text-gray text-xs">
+      <p className="text-muted-foreground text-xs">
         Put credentials in a secret (Environment card) and reference it as {"{{name}}"}. Secrets are stored in
         kestrel.secrets.json and redacted from results.
       </p>

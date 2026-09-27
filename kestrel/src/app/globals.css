@@ -31,6 +31,28 @@
   --void-100: #7285b9;
   --void-200: #02020b;
   --void-300: #01010b;
+
+  /* Semantic tokens (the shadcn contract used by components/ui). Light canvas, white cards,
+     hairline borders, orange primary. */
+  --background: #f6f6f7;
+  --foreground: var(--text-black);
+  --card: #ffffff;
+  --card-foreground: var(--text-black);
+  --popover: #ffffff;
+  --popover-foreground: var(--text-black);
+  --primary-foreground: #ffffff;
+  --secondary: #f1f1f3;
+  --secondary-foreground: var(--text-black);
+  --muted: #f3f3f5;
+  --muted-foreground: var(--text-gray);
+  --accent: #fff1e6;
+  --accent-foreground: #c2540a;
+  --destructive: #dc2626;
+  --border: #e6e6ea;
+  --input: #e2e2e7;
+  --ring: #f56e0f;
+  --success: #16a34a;
+  --warning: #d97706;
 }
 
 .dark {
@@ -51,6 +73,26 @@
   --void-100: #8d7a46;
   --void-200: #fdfdf4;
   --void-300: #fefef4;
+
+  --background: #0c0c0e;
+  --foreground: #ededef;
+  --card: #141417;
+  --card-foreground: #ededef;
+  --popover: #18181b;
+  --popover-foreground: #ededef;
+  --primary-foreground: #ffffff;
+  --secondary: #1f1f23;
+  --secondary-foreground: #ededef;
+  --muted: #1c1c20;
+  --muted-foreground: #9a9aa3;
+  --accent: #2a1a0e;
+  --accent-foreground: #f8a468;
+  --destructive: #ef4444;
+  --border: #26262b;
+  --input: #2e2e34;
+  --ring: #f56e0f;
+  --success: #22c55e;
+  --warning: #f59e0b;
 }
 
 @theme {
@@ -68,6 +110,25 @@
   --font-monospace: var(--font-space-mono);
 
   /* Colors */
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
   --color-primary: var(--primary);
   --color-secondary-1: var(--secondary-1);
   --color-secondary-2: var(--secondary-2);
@@ -175,6 +236,8 @@
     margin: 0;
     padding: 0;
     scrollbar-width: none;
+    /* Tailwind v4 defaults borders to currentColor; use the hairline token instead. */
+    border-color: var(--border);
   }
 
   html {
@@ -182,8 +245,8 @@
   }
 
   body {
-    background: var(--snow);
-    color: var(--text-black);
+    background: var(--background);
+    color: var(--foreground);
     overflow-x: hidden;
     user-select: none;
     width: 100%;

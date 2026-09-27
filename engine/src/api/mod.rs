@@ -221,10 +221,14 @@ mod tests {
     }
 
     fn echo_workspace(base: &str) -> (Workspace, Secrets, uuid::Uuid) {
-        use crate::model::{Auth, Body, Endpoint, Environment, HttpMethod};
+        use crate::model::{Auth, Body, Collection, Endpoint, Environment, HttpMethod};
         let id = uuid::Uuid::new_v4();
         let workspace = Workspace {
-            endpoints: vec![Endpoint {
+            collections: vec![Collection {
+                id: uuid::Uuid::new_v4(),
+                name: "echo".into(),
+                vars: Default::default(),
+                endpoints: vec![Endpoint {
                 id,
                 name: "echo headers".into(),
                 group: None,
@@ -235,11 +239,13 @@ mod tests {
                 body: Body::None,
                 auth: Auth::Bearer { token: "{{token}}".into() },
             }],
+            }],
             environments: vec![Environment {
                 name: "local".into(),
                 vars: [("base".to_string(), base.to_string())].into(),
             }],
             active_environment: Some("local".into()),
+            active_collection: None,
         };
         let secrets: Secrets = [("local".to_string(), [("token".to_string(), "hunter2-secret".to_string())].into())].into();
         (workspace, secrets, id)
@@ -306,7 +312,7 @@ mod tests {
     async fn send_redacts_and_render_masks() {
         let base = echo_headers_server().await;
         let (workspace, secrets, _) = echo_workspace(&base);
-        let endpoint = serde_json::to_value(&workspace.endpoints[0]).unwrap();
+        let endpoint = serde_json::to_value(&workspace.collections[0].endpoints[0]).unwrap();
         let app = app_with(workspace, secrets);
         let body = serde_json::json!({ "endpoint": endpoint }).to_string();
 
@@ -325,7 +331,7 @@ mod tests {
     #[tokio::test]
     async fn latency_run_with_undefined_variable_is_a_400() {
         let (mut workspace, secrets, id) = echo_workspace("http://127.0.0.1:1");
-        workspace.endpoints[0].url = "{{nope}}/x".into();
+        workspace.collections[0].endpoints[0].url = "{{nope}}/x".into();
         let app = app_with(workspace, secrets);
         let config = format!(
             r#"{{"kind":"latency","endpointId":"{id}","warmup":0,"samples":1,"keepAlive":true,"timeoutMs":1000}}"#
@@ -333,7 +339,7 @@ mod tests {
         let res = app.oneshot(post_json("/api/runs", config)).await.unwrap();
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
         let body: serde_json::Value = json_body(res).await;
-        assert_eq!(body["error"], "undefined variable: nope (add to environment `local`)");
+        assert_eq!(body["error"], "undefined variable: nope (define it in environment `local` or the collection)");
     }
 
     #[tokio::test]

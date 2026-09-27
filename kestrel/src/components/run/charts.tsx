@@ -2,14 +2,12 @@
 
 import { useMemo } from "react";
 import {
-  Area,
-  AreaChart,
   Bar,
   BarChart,
   CartesianGrid,
+  ComposedChart,
   Legend,
   Line,
-  LineChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -18,60 +16,93 @@ import {
 
 import { useRunStore } from "@/stores/run-store";
 
-const useChartData = () => {
+// Theme tokens, so charts follow light/dark mode with the rest of the page.
+const MUTED = "var(--muted-foreground)";
+const tick = { fill: MUTED, fontSize: 11 };
+const tooltipStyle = {
+  contentStyle: {
+    background: "var(--popover)",
+    border: "1px solid var(--border)",
+    borderRadius: 8,
+    color: "var(--popover-foreground)",
+    fontSize: 12,
+  },
+  labelStyle: { color: MUTED },
+};
+const legendProps = {
+  verticalAlign: "top" as const,
+  align: "left" as const,
+  iconType: "circle" as const,
+  iconSize: 8,
+  wrapperStyle: { fontSize: 12, paddingBottom: 12, color: MUTED },
+};
+
+const SERIES = {
+  p50: "#3b82f6",
+  p99: "var(--primary)",
+  rps: "#16a34a",
+  dropped: "#dc2626",
+};
+
+/** Latency (left axis, ms) and throughput (right axis, req/s) over the run, one bucket per 250 ms.
+ * The engine sends ≤ 4 buckets/s, so animation stays off. */
+export const LiveChart = () => {
   const buckets = useRunStore((s) => s.buckets);
-  return useMemo(
+  const isLoad = useRunStore((s) => s.config?.kind === "load");
+  const data = useMemo(
     () =>
       buckets.map((b) => ({
         t: b.tMs / 1000,
-        p50: Number(b.p50Ms.toFixed(1)),
-        p99: Number(b.p99Ms.toFixed(1)),
+        p50: Number(b.p50Ms.toFixed(2)),
+        p99: Number(b.p99Ms.toFixed(2)),
         rps: Math.round(b.rps),
-        // Per-second, like rps: a bucket is 250 ms.
+        // Per second, like rps: a bucket is 250 ms.
         dropped: b.dropped * 4,
       })),
     [buckets],
   );
-};
 
-// Theme tokens, so charts follow light/dark mode with the rest of the page.
-const MUTED = "var(--text-gray)";
-export const tick = { fill: MUTED };
-export const tooltipStyle = {
-  contentStyle: {
-    background: "var(--snow)",
-    border: "1px solid var(--secondary-4)",
-    color: "var(--text-black)",
-  },
-  labelStyle: { color: MUTED },
-};
+  if (!data.length) {
+    return (
+      <div className="text-muted-foreground flex h-72 items-center justify-center rounded-lg border border-dashed text-sm">
+        Start a run to see latency and throughput live.
+      </div>
+    );
+  }
 
-const xAxis = (
-  <XAxis
-    dataKey="t"
-    type="number"
-    domain={["dataMin", "dataMax"]}
-    tickFormatter={(t: number) => `${t.toFixed(0)}s`}
-    tick={tick}
-    fontSize={12}
-  />
-);
-
-/** p50 / p99 over time. Charts are fed ≤ 4 buckets/s by the engine, so animation stays off. */
-export const LatencyChart = () => {
-  const data = useChartData();
   return (
-    <div className="h-64 min-h-0">
+    <div className="h-72 min-h-0">
       <ResponsiveContainer width="100%" height="100%">
-        <LineChart data={data} margin={{ top: 8, right: 8, bottom: 0, left: -12 }}>
-          <CartesianGrid strokeDasharray="3 3" strokeOpacity={0.3} />
-          {xAxis}
-          <YAxis unit="ms" fontSize={12} tick={tick} />
+        <ComposedChart data={data} margin={{ top: 0, right: 0, bottom: 0, left: -8 }}>
+          <CartesianGrid vertical={false} stroke="var(--border)" />
+          <XAxis
+            dataKey="t"
+            type="number"
+            domain={["dataMin", "dataMax"]}
+            tickFormatter={(t: number) => `${t.toFixed(0)}s`}
+            tick={tick}
+            axisLine={false}
+            tickLine={false}
+          />
+          <YAxis yAxisId="ms" unit=" ms" tick={tick} axisLine={false} tickLine={false} width={64} />
+          <YAxis yAxisId="rps" orientation="right" tick={tick} axisLine={false} tickLine={false} width={48} />
           <Tooltip labelFormatter={(t) => `${t}s`} {...tooltipStyle} />
-          <Legend wrapperStyle={{ color: MUTED }} />
-          <Line dataKey="p50" name="p50" stroke="var(--void-100)" dot={false} isAnimationActive={false} />
-          <Line dataKey="p99" name="p99" stroke="var(--primary)" dot={false} isAnimationActive={false} />
-        </LineChart>
+          <Legend {...legendProps} />
+          <Line yAxisId="ms" dataKey="p50" name="p50 (ms)" stroke={SERIES.p50} dot={false} strokeWidth={2} isAnimationActive={false} />
+          <Line yAxisId="ms" dataKey="p99" name="p99 (ms)" stroke={SERIES.p99} dot={false} strokeWidth={2} isAnimationActive={false} />
+          <Line yAxisId="rps" dataKey="rps" name="req/s" stroke={SERIES.rps} dot={false} strokeWidth={2} isAnimationActive={false} />
+          {isLoad && (
+            <Line
+              yAxisId="rps"
+              dataKey="dropped"
+              name="dropped/s"
+              stroke={SERIES.dropped}
+              dot={false}
+              strokeWidth={2}
+              isAnimationActive={false}
+            />
+          )}
+        </ComposedChart>
       </ResponsiveContainer>
     </div>
   );
@@ -84,48 +115,17 @@ export const DistributionChart = () => {
     () => (histogram ?? []).map((b) => ({ ms: Number(b.loMs.toFixed(1)), count: b.count })),
     [histogram],
   );
-  if (!data.length) return <p className="text-text-gray text-sm">Appears when a latency run finishes.</p>;
+  if (!data.length) return null;
   return (
-    <div className="h-48 min-h-0">
+    <div className="h-52 min-h-0">
       <ResponsiveContainer width="100%" height="100%">
-        <BarChart data={data} margin={{ top: 8, right: 8, bottom: 0, left: -20 }} barCategoryGap={1}>
-          <XAxis dataKey="ms" fontSize={10} tick={tick} unit="ms" minTickGap={16} />
-          <YAxis fontSize={10} tick={tick} allowDecimals={false} />
-          <Tooltip labelFormatter={(v) => `≥ ${v} ms`} {...tooltipStyle} />
-          <Bar dataKey="count" name="requests" fill="var(--primary)" isAnimationActive={false} />
+        <BarChart data={data} margin={{ top: 4, right: 0, bottom: 0, left: -20 }} barCategoryGap={1}>
+          <CartesianGrid vertical={false} stroke="var(--border)" />
+          <XAxis dataKey="ms" tick={tick} unit="ms" minTickGap={16} axisLine={false} tickLine={false} />
+          <YAxis tick={tick} allowDecimals={false} axisLine={false} tickLine={false} />
+          <Tooltip labelFormatter={(v) => `≥ ${v} ms`} cursor={{ fill: "var(--muted)" }} {...tooltipStyle} />
+          <Bar dataKey="count" name="requests" fill="var(--primary)" radius={[3, 3, 0, 0]} isAnimationActive={false} />
         </BarChart>
-      </ResponsiveContainer>
-    </div>
-  );
-};
-
-export const ThroughputChart = () => {
-  const data = useChartData();
-  return (
-    <div className="h-64 min-h-0">
-      <ResponsiveContainer width="100%" height="100%">
-        <AreaChart data={data} margin={{ top: 8, right: 8, bottom: 0, left: -12 }}>
-          <CartesianGrid strokeDasharray="3 3" strokeOpacity={0.3} />
-          {xAxis}
-          <YAxis fontSize={12} tick={tick} />
-          <Tooltip labelFormatter={(t) => `${t}s`} {...tooltipStyle} />
-          <Area
-            dataKey="rps"
-            name="req/s"
-            stroke="var(--primary)"
-            fill="var(--primary)"
-            fillOpacity={0.15}
-            isAnimationActive={false}
-          />
-          <Area
-            dataKey="dropped"
-            name="dropped/s"
-            stroke="#dc2626"
-            fill="#dc2626"
-            fillOpacity={0.15}
-            isAnimationActive={false}
-          />
-        </AreaChart>
       </ResponsiveContainer>
     </div>
   );

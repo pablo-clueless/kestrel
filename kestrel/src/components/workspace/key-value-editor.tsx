@@ -40,7 +40,7 @@ export const KeyValueEditor = ({ rows, onChange, keyPlaceholder = "name" }: Prop
           />
           <button
             type="button"
-            className="text-text-gray hover:text-primary"
+            className="text-muted-foreground hover:text-primary"
             onClick={() => onChange(rows.filter((_, j) => j !== i))}
             aria-label="Remove"
           >
@@ -50,7 +50,7 @@ export const KeyValueEditor = ({ rows, onChange, keyPlaceholder = "name" }: Prop
       ))}
       <button
         type="button"
-        className="text-text-gray hover:text-primary flex items-center gap-1 self-start text-xs"
+        className="text-muted-foreground hover:text-primary flex items-center gap-1 self-start text-xs"
         onClick={() => onChange([...rows, { key: "", value: "", enabled: true }])}
       >
         <Plus className="size-3.5" /> Add

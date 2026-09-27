@@ -35,18 +35,18 @@ export const EnvironmentEditor = () => {
           value={newEnv}
           onChange={(e) => setNewEnv(e.target.value)}
         />
-        <button type="submit" className="text-text-gray hover:text-primary" aria-label="Add environment">
+        <button type="submit" className="text-muted-foreground hover:text-primary" aria-label="Add environment">
           <Plus className="size-4" />
         </button>
       </form>
       {!active ? (
-        <p className="text-text-gray">Pick an environment in the header, or create one.</p>
+        <p className="text-muted-foreground">Pick an environment in the header, or create one.</p>
       ) : (
         <>
           <div className="flex items-center justify-between">
             <span className="font-medium">{active.name}</span>
             <button
-              className="text-text-gray hover:text-red-600"
+              className="text-muted-foreground hover:text-destructive"
               onClick={() => removeEnvironment(active.name)}
               aria-label={`Delete ${active.name}`}
             >
@@ -67,7 +67,7 @@ export const EnvironmentEditor = () => {
                   onChange={(e) => setVar(active.name, key, e.target.value)}
                 />
                 <button
-                  className="text-text-gray hover:text-red-600"
+                  className="text-muted-foreground hover:text-destructive"
                   onClick={() => setVar(active.name, key, null)}
                   aria-label={`Remove ${key}`}
                 >
@@ -85,9 +85,9 @@ export const EnvironmentEditor = () => {
                 <span className="w-16 shrink-0 truncate font-mono text-xs" title={key}>
                   {key}
                 </span>
-                <span className="text-text-gray flex-1">••••••</span>
+                <span className="text-muted-foreground flex-1">••••••</span>
                 <button
-                  className="text-text-gray hover:text-red-600"
+                  className="text-muted-foreground hover:text-destructive"
                   onClick={() => void setSecret(active.name, key, null)}
                   aria-label={`Remove ${key}`}
                 >
@@ -134,7 +134,7 @@ const NewPair = ({
         value={value}
         onChange={(e) => setValue(e.target.value)}
       />
-      <button type="submit" className="text-text-gray hover:text-primary" aria-label="Add">
+      <button type="submit" className="text-muted-foreground hover:text-primary" aria-label="Add">
         <Plus className="size-4" />
       </button>
     </form>

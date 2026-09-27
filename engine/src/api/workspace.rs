@@ -27,8 +27,13 @@ pub async fn put(State(state): State<AppState>, Json(workspace): Json<Workspace>
     if let Some(dup) = workspace.environments.iter().find(|e| !names.insert(e.name.as_str())) {
         return Err(ApiError::BadRequest(format!("duplicate environment name `{}`", dup.name)));
     }
+    let mut collection_ids = HashSet::new();
+    if let Some(dup) = workspace.collections.iter().find(|c| !collection_ids.insert(c.id)) {
+        return Err(ApiError::BadRequest(format!("duplicate collection id {}", dup.id)));
+    }
+    // Endpoint ids are unique across collections: runs and /send find endpoints by id alone.
     let mut ids = HashSet::new();
-    if let Some(dup) = workspace.endpoints.iter().find(|e| !ids.insert(e.id)) {
+    if let Some(dup) = workspace.collections.iter().flat_map(|c| &c.endpoints).find(|e| !ids.insert(e.id)) {
         return Err(ApiError::BadRequest(format!("duplicate endpoint id {}", dup.id)));
     }
     state.store.save_workspace(workspace).map_err(|e| ApiError::Internal(format!("{e:#}")))?;

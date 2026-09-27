@@ -8,9 +8,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { errorMessage, getHealth, listRuns, startRun, stopRun, unconfirmedHost } from "@/lib/client";
 import { useSelectedEndpoint, useWorkspaceStore } from "@/stores/workspace-store";
 import type { RunConfig } from "@/types/engine/RunConfig";
+import { MethodBadge } from "@/components/shared/method-badge";
 import { Label } from "@/components/workspace/fields";
 import { useRunEvents } from "@/hooks/use-run-events";
-import { Checkbox } from "@/components/ui/checkbox";
+import { Switch } from "@/components/ui/switch";
 import { useRunStore } from "@/stores/run-store";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -37,9 +38,10 @@ const parseStatuses = (s: string) =>
     .map(Number)
     .filter((n) => Number.isInteger(n) && n >= 100 && n <= 599);
 
-/** Picks a test, starts and stops runs, and re-attaches to a run in progress after a reload. */
+/** The right-hand panel: picks a test, starts and stops runs, shows the current run's details, and
+ * re-attaches to a run in progress after a reload. */
 export const RunControls = () => {
-  const { runId, status, error, attach, setError } = useRunStore();
+  const { runId, status, error, config: lastConfig, report, attach, setError } = useRunStore();
   const endpoint = useSelectedEndpoint();
   const environment = useWorkspaceStore((s) => s.workspace?.activeEnvironment ?? null);
   const flush = useWorkspaceStore((s) => s.flush);
@@ -118,135 +120,176 @@ export const RunControls = () => {
   const needsEndpoint = kind !== "fake";
 
   return (
-    <div className="flex flex-col gap-3 text-sm">
-      <div className="flex items-center gap-2">
+    <div className="flex h-full flex-col">
+      <div className="flex items-center justify-between border-b px-5 py-4">
+        <h2 className="text-[15px] font-semibold">Run test</h2>
         <span
           className={cn(
-            "size-2 rounded-full",
-            health.isSuccess ? "bg-green-500" : health.isError ? "bg-red-500" : "bg-secondary-4",
+            "flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs",
+            health.isSuccess
+              ? "bg-green-50 text-green-700 dark:bg-green-950 dark:text-green-400"
+              : "bg-muted text-muted-foreground",
           )}
-        />
-        <span>
-          {health.isSuccess
-            ? `Engine v${health.data.version}`
-            : health.isError
-              ? errorMessage(health.error)
-              : "Connecting…"}
+        >
+          <span className={cn("size-1.5 rounded-full", health.isSuccess ? "bg-green-500" : "bg-red-500")} />
+          {health.isSuccess ? "Engine ready" : health.isError ? "Engine offline" : "Connecting…"}
         </span>
       </div>
-      <div className="grid grid-cols-[7rem_1fr] items-center gap-x-3 gap-y-2">
-        <Label>Test</Label>
-        <Select value={kind} disabled={running} onValueChange={(v) => setKind(v as TestKind)}>
-          <SelectTrigger className="w-full self-start font-mono">
-            <SelectValue placeholder="Select a test" />
-          </SelectTrigger>
-          <SelectContent>
-            {TESTS.map((t) => (
-              <SelectItem key={t.kind} value={t.kind}>
-                {t.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+
+      <div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto p-5 text-sm">
+        <Field label="Test type">
+          <Select value={kind} disabled={running} onValueChange={(v) => setKind(v as TestKind)}>
+            <SelectTrigger className="w-full">
+              <SelectValue placeholder="Select a test" />
+            </SelectTrigger>
+            <SelectContent>
+              {TESTS.map((t) => (
+                <SelectItem key={t.kind} value={t.kind}>
+                  {t.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </Field>
 
         {needsEndpoint && (
-          <>
-            <Label>Endpoint</Label>
-            <span className="truncate font-mono text-xs">
-              {endpoint ? `${endpoint.method} ${endpoint.name || endpoint.url}` : "none selected"}
-            </span>
-          </>
+          <Field label="Target">
+            {endpoint ? (
+              <div className="bg-muted flex min-w-0 items-center gap-2 rounded-lg px-3 py-2">
+                <MethodBadge method={endpoint.method} />
+                <span className="truncate font-medium">{endpoint.name || endpoint.url}</span>
+              </div>
+            ) : (
+              <p className="text-muted-foreground rounded-lg border border-dashed px-3 py-2">
+                Select an endpoint in the sidebar.
+              </p>
+            )}
+          </Field>
         )}
 
         {kind === "load" && (
           <>
-            <Label>Model</Label>
-            <Select value={mode} disabled={running} onValueChange={(v) => setMode(v as LoadModeType)}>
-              <SelectTrigger className="w-1/2 self-start font-mono">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="open">Open (fixed rate)</SelectItem>
-                <SelectItem value="closed">Closed (fixed users)</SelectItem>
-              </SelectContent>
-            </Select>
-            {mode === "open" ? (
-              <>
-                <Label>Rate (req/s)</Label>
-                <Input type="number" min={1} value={rate} disabled={running} onChange={num(setRate)} />
-                <Label>Max in flight</Label>
-                <Input type="number" min={1} value={maxInFlight} disabled={running} onChange={num(setMaxInFlight)} />
-              </>
-            ) : (
-              <>
-                <Label>Users</Label>
-                <Input type="number" min={1} value={concurrency} disabled={running} onChange={num(setConcurrency)} />
-              </>
-            )}
-            <Label>Ramp-up (s)</Label>
-            <Input type="number" min={0} value={rampS} disabled={running} onChange={num(setRampS)} />
+            <Field label="Model">
+              <Select value={mode} disabled={running} onValueChange={(v) => setMode(v as LoadModeType)}>
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="open">Open: fixed arrival rate</SelectItem>
+                  <SelectItem value="closed">Closed: fixed number of users</SelectItem>
+                </SelectContent>
+              </Select>
+            </Field>
+            <div className="grid grid-cols-2 gap-3">
+              {mode === "open" ? (
+                <>
+                  <Field label="Rate (req/s)">
+                    <Input type="number" min={1} value={rate} disabled={running} onChange={num(setRate)} />
+                  </Field>
+                  <Field label="Max in flight">
+                    <Input type="number" min={1} value={maxInFlight} disabled={running} onChange={num(setMaxInFlight)} />
+                  </Field>
+                </>
+              ) : (
+                <Field label="Users">
+                  <Input type="number" min={1} value={concurrency} disabled={running} onChange={num(setConcurrency)} />
+                </Field>
+              )}
+              <Field label="Duration (s)">
+                <Input type="number" min={1} max={60} value={durationS} disabled={running} onChange={num(setDurationS)} />
+              </Field>
+              <Field label="Ramp-up (s)">
+                <Input type="number" min={0} value={rampS} disabled={running} onChange={num(setRampS)} />
+              </Field>
+            </div>
           </>
         )}
 
-        {(kind === "fake" || kind === "load") && (
-          <>
-            <Label>Duration (s)</Label>
+        {kind === "fake" && (
+          <Field label="Duration (s)">
             <Input type="number" min={1} max={60} value={durationS} disabled={running} onChange={num(setDurationS)} />
-          </>
+          </Field>
         )}
 
         {kind === "latency" && (
-          <>
-            <Label>Warm-up</Label>
-            <Input type="number" min={0} value={warmup} disabled={running} onChange={num(setWarmup)} />
-            <Label>Samples</Label>
-            <Input type="number" min={1} value={samples} disabled={running} onChange={num(setSamples)} />
-          </>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Warm-up">
+              <Input type="number" min={0} value={warmup} disabled={running} onChange={num(setWarmup)} />
+            </Field>
+            <Field label="Samples">
+              <Input type="number" min={1} value={samples} disabled={running} onChange={num(setSamples)} />
+            </Field>
+          </div>
         )}
 
         {needsEndpoint && (
           <>
-            <Label>Timeout (ms)</Label>
-            <Input type="number" min={1} value={timeoutMs} disabled={running} onChange={num(setTimeoutMs)} />
-            <Label>Keep-alive</Label>
-            <Checkbox checked={keepAlive} disabled={running} onCheckedChange={(checked) => setKeepAlive(!!checked)} />
-            <Label>OK statuses</Label>
-            <Input
-              placeholder="e.g. 404, 409"
-              value={okStatuses}
-              disabled={running}
-              onChange={(e) => setOkStatuses(e.target.value)}
-            />
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Timeout (ms)">
+                <Input type="number" min={1} value={timeoutMs} disabled={running} onChange={num(setTimeoutMs)} />
+              </Field>
+              <Field label="OK statuses">
+                <Input
+                  placeholder="404, 409"
+                  value={okStatuses}
+                  disabled={running}
+                  onChange={(e) => setOkStatuses(e.target.value)}
+                />
+              </Field>
+            </div>
+            <label className="flex items-center justify-between">
+              <span>Keep-alive</span>
+              <Switch checked={keepAlive} disabled={running} onCheckedChange={(checked) => setKeepAlive(!!checked)} />
+            </label>
           </>
         )}
+
+        {kind === "load" && mode === "closed" && (
+          <p className="bg-muted text-muted-foreground rounded-lg p-3 text-xs">
+            Closed model: throughput falls when the server slows, so it understates how bad a stall is for real
+            traffic. Use the open model to test a target rate.
+          </p>
+        )}
+        {kind === "load" && mode === "open" && !keepAlive && rate > PORT_EXHAUSTION_RPS && (
+          <p className="rounded-lg bg-amber-50 p-3 text-xs text-amber-700 dark:bg-amber-950 dark:text-amber-400">
+            Keep-alive off at {rate} req/s opens a new connection per request and can exhaust ephemeral ports. Those
+            failures are reported as client errors, not target errors.
+          </p>
+        )}
+
+        {runId && (
+          <dl className="flex flex-col gap-3 border-t pt-5">
+            <Detail label="Status">
+              <span className={cn("font-medium capitalize", running && "text-primary")}>{status}</span>
+            </Detail>
+            <Detail label="Test">{TESTS.find((t) => t.kind === lastConfig?.kind)?.label ?? "…"}</Detail>
+            {report?.target && (
+              <Detail label="Target host">
+                {report.target.host} <span className="text-muted-foreground">({report.target.pinnedIp})</span>
+              </Detail>
+            )}
+            {report && <Detail label="Finished">{new Date(report.finishedAtMs).toLocaleTimeString()}</Detail>}
+            <Detail label="Run ID">
+              <span className="font-mono text-xs">{runId.slice(0, 8)}</span>
+            </Detail>
+          </dl>
+        )}
+        {error && <p className="text-destructive">{error}</p>}
       </div>
 
-      {kind === "load" && mode === "closed" && (
-        <p className="text-text-gray text-xs">
-          Closed model: throughput falls when the server slows, so it understates how bad a stall is for real traffic.
-          Use the open model to test a target rate.
-        </p>
-      )}
-      {kind === "load" && mode === "open" && !keepAlive && rate > PORT_EXHAUSTION_RPS && (
-        <p className="text-xs text-amber-600">
-          Keep-alive off at {rate} req/s opens a new connection per request and can exhaust ephemeral ports. Those
-          failures are reported as client errors, not target errors.
-        </p>
-      )}
-
-      <div className="flex gap-2">
+      <div className="flex gap-2 border-t p-4">
         <Button
+          className="flex-1"
+          size="lg"
           onClick={() => start.mutate()}
           disabled={running || start.isPending || !health.isSuccess || (needsEndpoint && !endpoint)}
         >
           <Play /> Run
         </Button>
-        <Button variant="outline" onClick={() => stop.mutate()} disabled={!running || stop.isPending}>
+        <Button variant="outline" size="lg" onClick={() => stop.mutate()} disabled={!running || stop.isPending}>
           <Square /> Stop
         </Button>
       </div>
-      <p className="text-text-gray">{runId ? `Run ${runId.slice(0, 8)} · ${status}` : "No run yet."}</p>
-      {error && <p className="text-red-600">{error}</p>}
 
       <ConfirmHostDialog
         host={pendingHost}
@@ -259,3 +302,18 @@ export const RunControls = () => {
     </div>
   );
 };
+
+const Field = ({ label, children }: { label: string; children: React.ReactNode }) => (
+  <div className="flex min-w-0 flex-col gap-1.5">
+    <Label>{label}</Label>
+    {children}
+  </div>
+);
+
+/** Label over value, like a details list. */
+const Detail = ({ label, children }: { label: string; children: React.ReactNode }) => (
+  <div className="flex flex-col gap-0.5">
+    <dt className="text-muted-foreground text-xs">{label}</dt>
+    <dd>{children}</dd>
+  </div>
+);

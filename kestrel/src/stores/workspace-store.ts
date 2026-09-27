@@ -1,6 +1,7 @@
 import { create } from "zustand";
 
 import { errorMessage, getWorkspace, putWorkspace, setSecret } from "@/lib/client";
+import type { Collection } from "@/types/engine/Collection";
 import type { Endpoint } from "@/types/engine/Endpoint";
 import type { Workspace } from "@/types/engine/Workspace";
 
@@ -19,6 +20,13 @@ interface WorkspaceState {
 
   load: () => Promise<void>;
   select: (id: string | null) => void;
+  /** Switches the sidebar to another collection and selects its first endpoint. */
+  setActiveCollection: (id: string) => void;
+  addCollection: (name: string) => void;
+  renameCollection: (id: string, name: string) => void;
+  removeCollection: (id: string) => void;
+  setCollectionVar: (id: string, key: string, value: string | null) => void;
+  /** Adds to the active collection (creating a "Default" one if there are none). */
   addEndpoint: () => void;
   updateEndpoint: (id: string, patch: Partial<Endpoint>) => void;
   removeEndpoint: (id: string) => void;
@@ -32,6 +40,23 @@ interface WorkspaceState {
 }
 
 let saveTimer: ReturnType<typeof setTimeout> | undefined;
+
+/** The collection shown in the sidebar: the saved one, else the first. */
+export const activeCollectionOf = (ws: Workspace | null): Collection | null =>
+  ws?.collections.find((c) => c.id === ws.activeCollection) ?? ws?.collections[0] ?? null;
+
+const newCollection = (name: string): Collection => ({
+  id: crypto.randomUUID(),
+  name,
+  vars: {},
+  endpoints: [],
+});
+
+/** Applies `fn` to every collection's endpoint list. */
+const mapEndpoints = (ws: Workspace, fn: (endpoints: Endpoint[]) => Endpoint[]): Workspace => ({
+  ...ws,
+  collections: ws.collections.map((c) => ({ ...c, endpoints: fn(c.endpoints) })),
+});
 
 export const useWorkspaceStore = create<WorkspaceState>()((set, get) => {
   /** Applies an edit and schedules a save. */
@@ -58,7 +83,7 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => {
         set({
           workspace,
           secretKeys,
-          selectedId: workspace.endpoints[0]?.id ?? null,
+          selectedId: activeCollectionOf(workspace)?.endpoints[0]?.id ?? null,
           loadError: null,
         });
       } catch (err) {
@@ -67,6 +92,47 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => {
     },
 
     select: (selectedId) => set({ selectedId }),
+
+    setActiveCollection: (id) => {
+      edit((ws) => ({ ...ws, activeCollection: id }));
+      const collection = get().workspace?.collections.find((c) => c.id === id);
+      if (!collection?.endpoints.some((e) => e.id === get().selectedId)) {
+        set({ selectedId: collection?.endpoints[0]?.id ?? null });
+      }
+    },
+
+    addCollection: (name) => {
+      const collection = newCollection(name);
+      edit((ws) => ({ ...ws, collections: [...ws.collections, collection], activeCollection: collection.id }));
+      set({ selectedId: null });
+    },
+
+    renameCollection: (id, name) =>
+      edit((ws) => ({ ...ws, collections: ws.collections.map((c) => (c.id === id ? { ...c, name } : c)) })),
+
+    removeCollection: (id) => {
+      edit((ws) => {
+        const collections = ws.collections.filter((c) => c.id !== id);
+        const activeCollection = ws.activeCollection === id ? (collections[0]?.id ?? null) : ws.activeCollection;
+        return { ...ws, collections, activeCollection };
+      });
+      const active = activeCollectionOf(get().workspace);
+      if (!active?.endpoints.some((e) => e.id === get().selectedId)) {
+        set({ selectedId: active?.endpoints[0]?.id ?? null });
+      }
+    },
+
+    setCollectionVar: (id, key, value) =>
+      edit((ws) => ({
+        ...ws,
+        collections: ws.collections.map((c) => {
+          if (c.id !== id) return c;
+          const vars = { ...c.vars };
+          if (value === null) delete vars[key];
+          else vars[key] = value;
+          return { ...c, vars };
+        }),
+      })),
 
     addEndpoint: () => {
       const endpoint: Endpoint = {
@@ -80,19 +146,29 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => {
         body: { type: "none" },
         auth: { type: "none" },
       };
-      edit((ws) => ({ ...ws, endpoints: [...ws.endpoints, endpoint] }));
+      edit((ws) => {
+        const target = activeCollectionOf(ws) ?? newCollection("Default");
+        const exists = ws.collections.some((c) => c.id === target.id);
+        const withEndpoint = { ...target, endpoints: [...target.endpoints, endpoint] };
+        return {
+          ...ws,
+          collections: exists
+            ? ws.collections.map((c) => (c.id === target.id ? withEndpoint : c))
+            : [...ws.collections, withEndpoint],
+          activeCollection: target.id,
+        };
+      });
       set({ selectedId: endpoint.id });
     },
 
     updateEndpoint: (id, patch) =>
-      edit((ws) => ({
-        ...ws,
-        endpoints: ws.endpoints.map((e) => (e.id === id ? { ...e, ...patch } : e)),
-      })),
+      edit((ws) => mapEndpoints(ws, (eps) => eps.map((e) => (e.id === id ? { ...e, ...patch } : e)))),
 
     removeEndpoint: (id) => {
-      edit((ws) => ({ ...ws, endpoints: ws.endpoints.filter((e) => e.id !== id) }));
-      if (get().selectedId === id) set({ selectedId: get().workspace?.endpoints[0]?.id ?? null });
+      edit((ws) => mapEndpoints(ws, (eps) => eps.filter((e) => e.id !== id)));
+      if (get().selectedId === id) {
+        set({ selectedId: activeCollectionOf(get().workspace)?.endpoints[0]?.id ?? null });
+      }
     },
 
     setActiveEnvironment: (name) => edit((ws) => ({ ...ws, activeEnvironment: name })),
@@ -158,4 +234,9 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => {
 });
 
 export const useSelectedEndpoint = () =>
-  useWorkspaceStore((s) => s.workspace?.endpoints.find((e) => e.id === s.selectedId) ?? null);
+  useWorkspaceStore(
+    (s) =>
+      s.workspace?.collections.flatMap((c) => c.endpoints).find((e) => e.id === s.selectedId) ?? null,
+  );
+
+export const useActiveCollection = () => useWorkspaceStore((s) => activeCollectionOf(s.workspace));
