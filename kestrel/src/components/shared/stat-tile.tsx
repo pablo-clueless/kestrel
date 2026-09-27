@@ -29,13 +29,21 @@ export const StatTile = ({ label, value, unit, info, tone = "default" }: Props) 
       )}
     >
       {value}
-      {unit && value !== "–" && <span className="text-muted-foreground ml-1 text-sm font-normal">{unit}</span>}
+      {unit && value !== "–" && (
+        <span className="text-muted-foreground ml-1 text-sm font-normal">{unit}</span>
+      )}
     </p>
   </div>
 );
 
 /** Tiles in a grid with hairline dividers, like a summary panel. */
-export const StatGrid = ({ children, cols = 3 }: { children: React.ReactNode; cols?: 2 | 3 | 4 }) => (
+export const StatGrid = ({
+  children,
+  cols = 3,
+}: {
+  children: React.ReactNode;
+  cols?: 2 | 3 | 4;
+}) => (
   <div
     className={cn(
       "grid gap-x-6 gap-y-5",

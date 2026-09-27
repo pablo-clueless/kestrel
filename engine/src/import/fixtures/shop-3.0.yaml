@@ -1,0 +1,113 @@
+openapi: 3.0.3
+info:
+  title: Pet Shop
+  version: 1.2.0
+servers:
+  - url: https://{region}.shop.example.com/v1
+    variables:
+      region:
+        default: eu
+security:
+  - bearerAuth: []
+paths:
+  /pets:
+    get:
+      tags: [pets]
+      summary: List pets
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, default: 20 }
+        - name: species
+          in: query
+          required: true
+          schema: { type: string, enum: [cat, dog] }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Pet" }
+        default:
+          $ref: "#/components/responses/Error"
+    post:
+      tags: [pets]
+      operationId: createPet
+      requestBody:
+        $ref: "#/components/requestBodies/NewPet"
+      responses:
+        "201":
+          description: created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Pet" }
+        "409":
+          $ref: "#/components/responses/Error"
+  /pets/{petId}:
+    parameters:
+      - name: petId
+        in: path
+        required: true
+        schema: { type: integer, example: 42 }
+    get:
+      tags: [pets]
+      summary: Get a pet
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Pet" }
+        "404":
+          description: not found
+    delete:
+      tags: [pets]
+      summary: Delete a pet
+      security:
+        - apiKey: []
+      responses:
+        "204": { description: gone }
+  /health:
+    get:
+      summary: Health
+      security: []
+      responses:
+        "200": { description: ok }
+components:
+  securitySchemes:
+    bearerAuth: { type: http, scheme: bearer }
+    apiKey: { type: apiKey, in: header, name: X-Shop-Key }
+  requestBodies:
+    NewPet:
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/NewPet" }
+  responses:
+    Error:
+      description: error
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+  schemas:
+    NewPet:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, example: Rex }
+        tag: { type: string, nullable: true }
+        ref: { type: string, format: uuid }
+    Pet:
+      allOf:
+        - $ref: "#/components/schemas/NewPet"
+        - type: object
+          required: [id]
+          properties:
+            id: { type: integer, minimum: 0, exclusiveMinimum: true }
+            parent: { $ref: "#/components/schemas/Pet" }
+    Error:
+      type: object
+      required: [message]
+      properties:
+        message: { type: string }

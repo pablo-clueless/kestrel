@@ -4,11 +4,11 @@ import { Plus, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { MethodBadge } from "@/components/shared/method-badge";
-import { Input } from "@/components/ui/input";
-import { cn } from "@/lib/utils";
 import { useWorkspaceStore } from "@/stores/workspace-store";
 import type { Collection } from "@/types/engine/Collection";
 import type { Endpoint } from "@/types/engine/Endpoint";
+import { Input } from "@/components/ui/input";
+import { cn } from "@/lib/utils";
 
 /** The endpoints of one collection, grouped by tag/folder, with filter and add. */
 export const EndpointList = ({ collection }: { collection: Collection }) => {
@@ -17,7 +17,8 @@ export const EndpointList = ({ collection }: { collection: Collection }) => {
 
   const groups = useMemo(() => {
     const q = filter.trim().toLowerCase();
-    const matches = (e: Endpoint) => !q || `${e.method} ${e.name} ${e.url}`.toLowerCase().includes(q);
+    const matches = (e: Endpoint) =>
+      !q || `${e.method} ${e.name} ${e.url}`.toLowerCase().includes(q);
     const map = new Map<string, Endpoint[]>();
     for (const e of collection.endpoints) {
       if (!matches(e)) continue;
@@ -39,16 +40,19 @@ export const EndpointList = ({ collection }: { collection: Collection }) => {
             <div
               key={e.id}
               className={cn(
-                "group flex items-center gap-2 rounded-md px-2 py-1 text-sm",
+                "group flex items-center gap-2 rounded-xs px-2 py-1 text-sm",
                 e.id === selectedId ? "bg-muted font-medium" : "hover:bg-muted/60",
               )}
             >
-              <button className="flex min-w-0 flex-1 items-center gap-2 text-left" onClick={() => select(e.id)}>
+              <button
+                className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                onClick={() => select(e.id)}
+              >
                 <MethodBadge method={e.method} short className="w-11" />
                 <span className="truncate">{e.name || e.url}</span>
               </button>
               <button
-                className="text-muted-foreground hidden hover:text-red-600 group-hover:block"
+                className="text-muted-foreground hidden group-hover:block hover:text-red-600"
                 onClick={() => removeEndpoint(e.id)}
                 aria-label={`Delete ${e.name}`}
               >

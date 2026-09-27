@@ -71,7 +71,14 @@ pub async fn send(State(state): State<AppState>, Json(req): Json<TryRequest>) ->
     let outcome = client::execute(&target.client, &rendered, timeout.min(state.config.caps.max_timeout)).await;
 
     let redactor = Redactor::new(compiled.api_key_header.as_deref(), &compiled.secret_values, Some(&rendered));
-    Ok(Json(sample::build(&rendered, &outcome, &redactor, SEND_BODY_BYTES)))
+    let mut sample = sample::build(&rendered, &outcome, &redactor, SEND_BODY_BYTES);
+    // The draft endpoint carries its own `expect`; schema definitions come from its saved collection.
+    let contract = crate::contract::for_endpoint(&state.store.workspace(), &req.endpoint).map_err(ApiError::BadRequest)?;
+    if let (Some(contract), Some(status)) = (contract, outcome.status) {
+        let check = contract.check(status, &outcome.body);
+        sample.contract = Some(crate::contract::ContractCheck { message: redactor.text(&check.message), ..check });
+    }
+    Ok(Json(sample))
 }
 
 fn compile(state: &AppState, req: &TryRequest, mask: bool) -> Result<CompiledRequest, ApiError> {

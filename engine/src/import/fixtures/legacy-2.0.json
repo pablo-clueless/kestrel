@@ -1,0 +1,35 @@
+{
+  "swagger": "2.0",
+  "info": { "title": "Legacy Orders", "version": "0.9" },
+  "host": "orders.example.com",
+  "basePath": "/api/",
+  "schemes": ["http", "https"],
+  "securityDefinitions": { "basic": { "type": "basic" } },
+  "security": [{ "basic": [] }],
+  "paths": {
+    "/orders/{orderId}": {
+      "put": {
+        "tags": ["orders"],
+        "summary": "Update order",
+        "parameters": [
+          { "name": "orderId", "in": "path", "required": true, "type": "string", "format": "uuid" },
+          { "name": "X-Request-Id", "in": "header", "type": "string" },
+          { "name": "body", "in": "body", "schema": { "$ref": "#/definitions/Order" } }
+        ],
+        "responses": {
+          "200": { "description": "ok", "schema": { "$ref": "#/definitions/Order" } }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "Order": {
+      "type": "object",
+      "required": ["qty"],
+      "properties": {
+        "qty": { "type": "integer", "minimum": 1 },
+        "note": { "type": "string", "x-nullable": true }
+      }
+    }
+  }
+}

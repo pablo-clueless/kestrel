@@ -52,6 +52,14 @@ pub struct Collection {
     pub vars: BTreeMap<String, String>,
     #[serde(default)]
     pub endpoints: Vec<Endpoint>,
+    /// Where the collection came from, e.g. "OpenAPI 3.0.3 · Petstore 1.0.0". None if made by hand.
+    #[serde(default)]
+    pub source: Option<String>,
+    /// Shared schema definitions from the spec (`{"components": {"schemas": …}}` or `{"definitions": …}`),
+    /// stored once so response schemas can keep their `$ref`s (recursive schemas included).
+    #[serde(default)]
+    #[ts(type = "unknown")]
+    pub schema_defs: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -75,6 +83,28 @@ pub struct Endpoint {
     pub body: Body,
     #[serde(default)]
     pub auth: Auth,
+    /// Responses the spec declares, for contract checks. None for hand-made endpoints.
+    #[serde(default)]
+    pub expect: Option<Expectation>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct Expectation {
+    pub responses: Vec<ExpectedResponse>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ExpectedResponse {
+    /// `"200"`, a range like `"2XX"`, or `"default"`.
+    pub status: String,
+    /// JSON Schema (2020-12) for a JSON body. `$ref`s point into the collection's `schema_defs`.
+    #[serde(default)]
+    #[ts(type = "unknown")]
+    pub schema: Option<serde_json::Value>,
 }
 
 /// Own enum rather than `http::Method`, which doesn't derive `TS`.

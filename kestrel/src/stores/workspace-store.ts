@@ -2,8 +2,8 @@ import { create } from "zustand";
 
 import { errorMessage, getWorkspace, putWorkspace, setSecret } from "@/lib/client";
 import type { Collection } from "@/types/engine/Collection";
-import type { Endpoint } from "@/types/engine/Endpoint";
 import type { Workspace } from "@/types/engine/Workspace";
+import type { Endpoint } from "@/types/engine/Endpoint";
 
 const SAVE_DEBOUNCE_MS = 400;
 
@@ -23,6 +23,8 @@ interface WorkspaceState {
   /** Switches the sidebar to another collection and selects its first endpoint. */
   setActiveCollection: (id: string) => void;
   addCollection: (name: string) => void;
+  /** Adds a collection made by the engine (spec import), makes it active and selects its first endpoint. */
+  addImportedCollection: (collection: Collection) => void;
   renameCollection: (id: string, name: string) => void;
   removeCollection: (id: string) => void;
   setCollectionVar: (id: string, key: string, value: string | null) => void;
@@ -50,6 +52,8 @@ const newCollection = (name: string): Collection => ({
   name,
   vars: {},
   endpoints: [],
+  source: null,
+  schemaDefs: null,
 });
 
 /** Applies `fn` to every collection's endpoint list. */
@@ -66,7 +70,13 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => {
     set({ workspace: fn(ws), saveState: "saving" });
     clearTimeout(saveTimer);
     // Failures land in `saveError`; nothing to do with the rejection here.
-    saveTimer = setTimeout(() => get().flush().catch(() => {}), SAVE_DEBOUNCE_MS);
+    saveTimer = setTimeout(
+      () =>
+        get()
+          .flush()
+          .catch(() => {}),
+      SAVE_DEBOUNCE_MS,
+    );
   };
 
   return {
@@ -103,17 +113,34 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => {
 
     addCollection: (name) => {
       const collection = newCollection(name);
-      edit((ws) => ({ ...ws, collections: [...ws.collections, collection], activeCollection: collection.id }));
+      edit((ws) => ({
+        ...ws,
+        collections: [...ws.collections, collection],
+        activeCollection: collection.id,
+      }));
       set({ selectedId: null });
     },
 
+    addImportedCollection: (collection) => {
+      edit((ws) => ({
+        ...ws,
+        collections: [...ws.collections, collection],
+        activeCollection: collection.id,
+      }));
+      set({ selectedId: collection.endpoints[0]?.id ?? null });
+    },
+
     renameCollection: (id, name) =>
-      edit((ws) => ({ ...ws, collections: ws.collections.map((c) => (c.id === id ? { ...c, name } : c)) })),
+      edit((ws) => ({
+        ...ws,
+        collections: ws.collections.map((c) => (c.id === id ? { ...c, name } : c)),
+      })),
 
     removeCollection: (id) => {
       edit((ws) => {
         const collections = ws.collections.filter((c) => c.id !== id);
-        const activeCollection = ws.activeCollection === id ? (collections[0]?.id ?? null) : ws.activeCollection;
+        const activeCollection =
+          ws.activeCollection === id ? (collections[0]?.id ?? null) : ws.activeCollection;
         return { ...ws, collections, activeCollection };
       });
       const active = activeCollectionOf(get().workspace);
@@ -145,6 +172,7 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => {
         query: [],
         body: { type: "none" },
         auth: { type: "none" },
+        expect: null,
       };
       edit((ws) => {
         const target = activeCollectionOf(ws) ?? newCollection("Default");
@@ -162,7 +190,9 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => {
     },
 
     updateEndpoint: (id, patch) =>
-      edit((ws) => mapEndpoints(ws, (eps) => eps.map((e) => (e.id === id ? { ...e, ...patch } : e)))),
+      edit((ws) =>
+        mapEndpoints(ws, (eps) => eps.map((e) => (e.id === id ? { ...e, ...patch } : e))),
+      ),
 
     removeEndpoint: (id) => {
       edit((ws) => mapEndpoints(ws, (eps) => eps.filter((e) => e.id !== id)));
@@ -236,7 +266,8 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => {
 export const useSelectedEndpoint = () =>
   useWorkspaceStore(
     (s) =>
-      s.workspace?.collections.flatMap((c) => c.endpoints).find((e) => e.id === s.selectedId) ?? null,
+      s.workspace?.collections.flatMap((c) => c.endpoints).find((e) => e.id === s.selectedId) ??
+      null,
   );
 
 export const useActiveCollection = () => useWorkspaceStore((s) => activeCollectionOf(s.workspace));

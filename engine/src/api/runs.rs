@@ -1,4 +1,4 @@
-use std::convert::Infallible;
+use std::{convert::Infallible, sync::Arc};
 
 use axum::{
     Json,
@@ -18,6 +18,7 @@ use crate::{
         registry::Envelope,
         types::{LoadMode, RunConfig, RunEvent, RunReport, RunStatus, RunSummary, StartRunResponse},
     },
+    contract::{self, Contract},
     error::ApiError,
     template::request::CompiledRequest,
 };
@@ -58,10 +59,13 @@ async fn prepare(state: &AppState, config: &RunConfig) -> Result<Prepared, ApiEr
             in_range("samples", cfg.samples, 1, caps.max_samples)?;
             in_range("warmup", cfg.warmup, 0, caps.max_warmup)?;
             in_range("timeoutMs", cfg.timeout_ms, 1, max_timeout_ms)?;
-            let request = compile_endpoint(state, cfg.endpoint_id, cfg.environment.as_deref())?;
-            let prepared = latency::prepare(cfg.clone(), request, caps.max_duration, state.hosts.list())
+            let (request, contract) = compile_endpoint(state, cfg.endpoint_id, cfg.environment.as_deref())?;
+            let mut cfg = cfg.clone();
+            cfg.ok_statuses.extend(contract::ok_statuses_from(contract.as_ref()));
+            let mut prepared = latency::prepare(cfg, request, caps.max_duration, state.hosts.list())
                 .await
                 .map_err(ApiError::BadRequest)?;
+            prepared.contract = contract.map(Arc::new);
             Ok(Prepared::Latency(Box::new(prepared)))
         }
         RunConfig::Load(cfg) => {
@@ -75,25 +79,35 @@ async fn prepare(state: &AppState, config: &RunConfig) -> Result<Prepared, ApiEr
             if let Some(n) = cfg.max_in_flight {
                 in_range("maxInFlight", n, 1, caps.max_in_flight)?;
             }
-            let request = compile_endpoint(state, cfg.endpoint_id, cfg.environment.as_deref())?;
-            let prepared = load::prepare(cfg.clone(), request, &state.hosts.list(), caps.max_in_flight, caps.max_rps)
+            let (request, contract) = compile_endpoint(state, cfg.endpoint_id, cfg.environment.as_deref())?;
+            let mut cfg = cfg.clone();
+            cfg.ok_statuses.extend(contract::ok_statuses_from(contract.as_ref()));
+            let mut prepared = load::prepare(cfg, request, &state.hosts.list(), caps.max_in_flight, caps.max_rps)
                 .await
                 .map_err(|e| match e {
                     load::PrepareError::Invalid(msg) => ApiError::BadRequest(msg),
                     load::PrepareError::HostNotConfirmed(host) => ApiError::HostNotConfirmed(host),
                 })?;
+            prepared.contract = contract.map(Arc::new);
             Ok(Prepared::Load(Box::new(prepared)))
         }
     }
 }
 
-fn compile_endpoint(state: &AppState, id: Uuid, environment: Option<&str>) -> Result<CompiledRequest, ApiError> {
+/// The request to send, and the contract to check responses against (for imported endpoints).
+fn compile_endpoint(
+    state: &AppState,
+    id: Uuid,
+    environment: Option<&str>,
+) -> Result<(CompiledRequest, Option<Contract>), ApiError> {
     let workspace = state.store.workspace();
     let endpoint = workspace
         .endpoint(id)
         .ok_or_else(|| ApiError::BadRequest("endpoint not found; save the workspace first".into()))?;
-    CompiledRequest::compile(endpoint, &workspace, &state.store.secrets(), environment, false)
-        .map_err(|e| ApiError::BadRequest(e.to_string()))
+    let request = CompiledRequest::compile(endpoint, &workspace, &state.store.secrets(), environment, false)
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    let contract = contract::for_endpoint(&workspace, endpoint).map_err(ApiError::BadRequest)?;
+    Ok((request, contract))
 }
 
 pub async fn list(State(state): State<AppState>) -> Json<Vec<RunSummary>> {

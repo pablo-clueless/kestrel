@@ -1,0 +1,95 @@
+# OpenAPI description of the reference target (`cargo run -p engine --example target`).
+# Import it in Kestrel to try spec import and contract checks end to end. `/flaky` deliberately
+# declares only 200, so its 500s show up as undeclared-status contract violations.
+openapi: 3.0.3
+info:
+  title: Kestrel reference target
+  version: "1.0"
+servers:
+  - url: http://127.0.0.1:{port}
+    variables:
+      port:
+        default: "8089"
+paths:
+  /fast:
+    get:
+      tags: [latency]
+      summary: Fast
+      responses:
+        "200": { description: ok }
+  /sleep:
+    get:
+      tags: [latency]
+      summary: Sleep
+      parameters:
+        - name: ms
+          in: query
+          required: true
+          schema: { type: integer, example: 20 }
+      responses:
+        "200": { description: ok }
+  /stall:
+    get:
+      tags: [load]
+      summary: Stall (server-wide pause)
+      responses:
+        "200": { description: ok }
+  /flaky:
+    get:
+      tags: [errors]
+      summary: Flaky (10% 500s)
+      responses:
+        "200": { description: ok }
+  /limited:
+    get:
+      tags: [errors]
+      summary: Limited (429 above 50 rps)
+      responses:
+        "200": { description: ok }
+        "429": { description: slow down }
+  /echo-headers:
+    get:
+      tags: [misc]
+      summary: Echo headers
+      responses:
+        "200":
+          description: request headers
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: { type: string }
+  /linear:
+    post:
+      tags: [complexity]
+      summary: Linear
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Numbers" }
+      responses:
+        "200":
+          description: sum
+          content:
+            application/json:
+              schema: { type: integer }
+  /sort:
+    post:
+      tags: [complexity]
+      summary: Sort
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Numbers" }
+      responses:
+        "200":
+          description: sorted
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Numbers" }
+components:
+  schemas:
+    Numbers:
+      type: array
+      items: { type: integer }
+      example: [3, 1, 2]

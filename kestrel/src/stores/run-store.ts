@@ -1,10 +1,10 @@
 import { create } from "zustand";
 
-import type { Bucket } from "@/types/engine/Bucket";
 import type { RunConfig } from "@/types/engine/RunConfig";
-import type { RunEvent } from "@/types/engine/RunEvent";
 import type { RunReport } from "@/types/engine/RunReport";
 import type { RunStatus } from "@/types/engine/RunStatus";
+import type { RunEvent } from "@/types/engine/RunEvent";
+import type { Bucket } from "@/types/engine/Bucket";
 
 /** 600 buckets × 250 ms = the last 2.5 minutes on screen. */
 const MAX_BUCKETS = 600;

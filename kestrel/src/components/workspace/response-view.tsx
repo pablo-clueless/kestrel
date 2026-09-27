@@ -1,10 +1,11 @@
 "use client";
 
+import { ShieldAlert, ShieldCheck } from "lucide-react";
 import { useState } from "react";
 
 import { StatusBadge } from "@/components/shared/method-badge";
+import { cn } from "@/lib/utils";
 import { useSendStore } from "@/stores/send-store";
-
 import { Tabs } from "./fields";
 
 type Tab = "body" | "headers" | "request";
@@ -25,8 +26,9 @@ export const ResponseView = () => {
   const [tab, setTab] = useState<Tab>("body");
 
   if (pending) return <p className="text-muted-foreground text-sm">Sending…</p>;
-  if (error) return <p className="text-sm text-destructive">{error}</p>;
-  if (!result) return <p className="text-muted-foreground text-sm">Press Send to try the request once.</p>;
+  if (error) return <p className="text-destructive text-sm">{error}</p>;
+  if (!result)
+    return <p className="text-muted-foreground text-sm">Press Send to try the request once.</p>;
 
   return (
     <div className="flex flex-col gap-3 text-sm">
@@ -41,6 +43,23 @@ export const ResponseView = () => {
         <span className="text-muted-foreground">{formatBytes(result.bodyBytes)}</span>
       </div>
       {result.error && <p className="text-destructive">{result.error}</p>}
+      {result.contract && (
+        <p
+          className={cn(
+            "flex items-start gap-2 rounded-xs px-3 py-2 text-xs",
+            result.contract.passed
+              ? "bg-green-50 text-green-800 dark:bg-green-950 dark:text-green-300"
+              : "bg-red-50 text-red-800 dark:bg-red-950 dark:text-red-300",
+          )}
+        >
+          {result.contract.passed ? (
+            <ShieldCheck className="size-3.5 shrink-0" />
+          ) : (
+            <ShieldAlert className="size-3.5 shrink-0" />
+          )}
+          <span className="break-all">Spec: {result.contract.message}</span>
+        </p>
+      )}
 
       <Tabs<Tab>
         value={tab}
@@ -52,7 +71,7 @@ export const ResponseView = () => {
         ]}
       />
       {tab === "body" && (
-        <pre className="bg-muted max-h-80 overflow-auto rounded-lg p-3 font-mono text-xs whitespace-pre-wrap">
+        <pre className="bg-muted max-h-80 overflow-auto rounded-xs p-3 font-mono text-xs whitespace-pre-wrap">
           {formatBody(result.body)}
           {result.bodyTruncated && <span className="text-muted-foreground">{"\n"}… truncated</span>}
         </pre>

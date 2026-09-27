@@ -3,4 +3,4 @@
 /**
  * `PUT /api/secrets`. `value: null` deletes the secret.
  */
-export type SetSecretRequest = { environment: string, key: string, value: string | null, };
+export type SetSecretRequest = { environment: string; key: string; value: string | null };

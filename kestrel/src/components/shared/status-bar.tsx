@@ -1,14 +1,19 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
 import { Activity, Cloud, CloudOff, Save } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
 
+import { useWorkspaceStore } from "@/stores/workspace-store";
+import { useRunStore } from "@/stores/run-store";
 import { getHealth } from "@/lib/client";
 import { cn } from "@/lib/utils";
-import { useRunStore } from "@/stores/run-store";
-import { useWorkspaceStore } from "@/stores/workspace-store";
 
-const SAVE_LABELS = { idle: "All changes saved", saving: "Saving…", saved: "All changes saved", error: "Save failed" };
+const SAVE_LABELS = {
+  idle: "All changes saved",
+  saving: "Saving…",
+  saved: "All changes saved",
+  error: "Save failed",
+};
 
 /** Bottom strip: engine connection, autosave, current run. */
 export const StatusBar = () => {
@@ -25,16 +30,22 @@ export const StatusBar = () => {
           </>
         ) : (
           <>
-            <CloudOff className="text-destructive size-3.5" /> {health.isError ? "Engine offline" : "Connecting…"}
+            <CloudOff className="text-destructive size-3.5" />{" "}
+            {health.isError ? "Engine offline" : "Connecting…"}
           </>
         )}
       </span>
-      <span className={cn("flex items-center gap-1.5", saveState === "error" && "text-destructive")} title={saveError ?? undefined}>
+      <span
+        className={cn("flex items-center gap-1.5", saveState === "error" && "text-destructive")}
+        title={saveError ?? undefined}
+      >
         <Save className="size-3.5" /> {SAVE_LABELS[saveState]}
       </span>
       {runId && (
         <span className="flex items-center gap-1.5">
-          <Activity className={cn("size-3.5", status === "running" && "text-primary animate-pulse")} />
+          <Activity
+            className={cn("size-3.5", status === "running" && "text-primary animate-pulse")}
+          />
           {config?.kind ?? "run"} {runId.slice(0, 8)} · {status}
         </span>
       )}

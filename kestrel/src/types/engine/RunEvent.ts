@@ -6,4 +6,8 @@ import type { StartedEvent } from "./StartedEvent";
 /**
  * One SSE `data:` payload. The SSE `id:` line carries the event id, not this struct.
  */
-export type RunEvent = { "type": "started" } & StartedEvent | { "type": "bucket" } & Bucket | { "type": "resync" } | { "type": "finished" } & FinishedEvent;
+export type RunEvent =
+  | ({ type: "started" } & StartedEvent)
+  | ({ type: "bucket" } & Bucket)
+  | { type: "resync" }
+  | ({ type: "finished" } & FinishedEvent);

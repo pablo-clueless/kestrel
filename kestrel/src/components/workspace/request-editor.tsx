@@ -4,7 +4,13 @@ import { useDeferredValue, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Send } from "lucide-react";
 
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { useSelectedEndpoint, useWorkspaceStore } from "@/stores/workspace-store";
 import type { HttpMethod } from "@/types/engine/HttpMethod";
 import { errorMessage, renderRequest } from "@/lib/client";
@@ -29,7 +35,9 @@ export const RequestEditor = () => {
   const [tab, setTab] = useState<Tab>("query");
 
   if (!endpoint) {
-    return <p className="text-muted-foreground text-sm">Select or add an endpoint in the sidebar.</p>;
+    return (
+      <p className="text-muted-foreground text-sm">Select or add an endpoint in the sidebar.</p>
+    );
   }
   const patch = (p: Partial<Endpoint>) => update(endpoint.id, p);
 
@@ -66,6 +74,17 @@ export const RequestEditor = () => {
         </Button>
       </div>
       <RenderedPreview endpoint={endpoint} environment={environment} />
+      {endpoint.expect && (
+        <p className="text-muted-foreground flex flex-wrap items-center gap-1.5 text-xs">
+          Spec responses
+          {endpoint.expect.responses.map((r) => (
+            <span key={r.status} className="bg-muted rounded px-1.5 py-0.5 font-mono">
+              {r.status}
+            </span>
+          ))}
+          <span>· checked on Send and during runs</span>
+        </p>
+      )}
 
       <Tabs<Tab>
         value={tab}
@@ -77,8 +96,12 @@ export const RequestEditor = () => {
           { id: "auth", label: "Auth" },
         ]}
       />
-      {tab === "query" && <KeyValueEditor rows={endpoint.query} onChange={(query) => patch({ query })} />}
-      {tab === "headers" && <KeyValueEditor rows={endpoint.headers} onChange={(headers) => patch({ headers })} />}
+      {tab === "query" && (
+        <KeyValueEditor rows={endpoint.query} onChange={(query) => patch({ query })} />
+      )}
+      {tab === "headers" && (
+        <KeyValueEditor rows={endpoint.headers} onChange={(headers) => patch({ headers })} />
+      )}
       {tab === "body" && <BodyEditor body={endpoint.body} onChange={(body) => patch({ body })} />}
       {tab === "auth" && <AuthEditor auth={endpoint.auth} onChange={(auth) => patch({ auth })} />}
     </div>
@@ -86,7 +109,13 @@ export const RequestEditor = () => {
 };
 
 /** The fully resolved URL (secrets masked), or why it can't be resolved. */
-const RenderedPreview = ({ endpoint, environment }: { endpoint: Endpoint; environment: string | null }) => {
+const RenderedPreview = ({
+  endpoint,
+  environment,
+}: {
+  endpoint: Endpoint;
+  environment: string | null;
+}) => {
   const deferred = useDeferredValue(endpoint);
   const preview = useQuery({
     queryKey: ["render", environment, deferred],
@@ -185,7 +214,10 @@ const AuthEditor = ({ auth, onChange }: { auth: Auth; onChange: (a: Auth) => voi
     {auth.type === "basic" && (
       <>
         <Field label="Username">
-          <Input value={auth.username} onChange={(e) => onChange({ ...auth, username: e.target.value })} />
+          <Input
+            value={auth.username}
+            onChange={(e) => onChange({ ...auth, username: e.target.value })}
+          />
         </Field>
         <Field label="Password">
           <Input
@@ -199,7 +231,10 @@ const AuthEditor = ({ auth, onChange }: { auth: Auth; onChange: (a: Auth) => voi
     {auth.type === "apiKey" && (
       <>
         <Field label="In">
-          <Select value={auth.location} onValueChange={(v) => onChange({ ...auth, location: v as "header" | "query" })}>
+          <Select
+            value={auth.location}
+            onValueChange={(v) => onChange({ ...auth, location: v as "header" | "query" })}
+          >
             <SelectTrigger>
               <SelectValue />
             </SelectTrigger>
@@ -223,8 +258,8 @@ const AuthEditor = ({ auth, onChange }: { auth: Auth; onChange: (a: Auth) => voi
     )}
     {auth.type !== "none" && (
       <p className="text-muted-foreground text-xs">
-        Put credentials in a secret (Environment card) and reference it as {"{{name}}"}. Secrets are stored in
-        kestrel.secrets.json and redacted from results.
+        Put credentials in a secret (Environment card) and reference it as {"{{name}}"}. Secrets are
+        stored in kestrel.secrets.json and redacted from results.
       </p>
     )}
   </div>

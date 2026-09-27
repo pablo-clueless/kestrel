@@ -33,7 +33,17 @@ use super::{
         StatusCount, TargetInfo,
     },
 };
-use crate::{platform, redact::Redactor, stats::Recorder, template::request::CompiledRequest};
+use crate::{
+    contract::{Contract, ContractCheck, ContractSummary},
+    platform,
+    redact::Redactor,
+    stats::Recorder,
+    template::request::CompiledRequest,
+};
+
+/// Under load, validate at most this many responses per second against the spec, so schema
+/// validation never becomes the bottleneck.
+const CONTRACT_CHECKS_PER_SEC: u32 = 50;
 
 const MAX_ERROR_SAMPLES: usize = 5;
 const SAMPLE_BODY_BYTES: usize = 8 * 1024;
@@ -49,6 +59,8 @@ pub struct Prepared {
     /// The rate cap. The open model is validated against it up front; closed-model users are paced
     /// to it, since their rate otherwise depends only on how fast the target answers.
     pub max_rps: u32,
+    /// Set by the caller for endpoints imported from a spec.
+    pub contract: Option<Arc<Contract>>,
 }
 
 pub enum PrepareError {
@@ -64,7 +76,7 @@ pub async fn prepare(
     max_in_flight: u32,
     max_rps: u32,
 ) -> Result<Prepared, PrepareError> {
-    let first = request.render().map_err(PrepareError::Invalid)?;
+    let first = request.preview().map_err(PrepareError::Invalid)?;
     let host = first.url.host_str().unwrap_or_default().to_ascii_lowercase();
     // Redirects are never followed under load; 3xx responses are recorded as-is.
     let opts = ClientOptions { keep_alive: cfg.keep_alive, follow_redirects: false, confirmed_hosts: vec![] };
@@ -75,7 +87,7 @@ pub async fn prepare(
     }
     let target_info =
         TargetInfo { host, pinned_ip: target.pinned.to_string(), loopback: target.pinned.is_loopback() };
-    Ok(Prepared { cfg, request, target, target_info, max_in_flight, max_rps })
+    Ok(Prepared { cfg, request, target, target_info, max_in_flight, max_rps, contract: None })
 }
 
 /// What request tasks report to the aggregator.
@@ -93,6 +105,7 @@ struct Record {
     status: Option<u16>,
     error: Option<ErrorClass>,
     sample: Option<Box<Sample>>,
+    contract: Option<ContractCheck>,
 }
 
 /// Shared by every request task. The channel closes when the last clone is dropped.
@@ -105,9 +118,22 @@ struct Shared {
     in_flight: Arc<AtomicU32>,
     success_sampled: AtomicBool,
     error_samples: AtomicUsize,
+    contract: Option<Arc<Contract>>,
+    /// (window start, checks in window) for the contract sampling rate.
+    contract_gate: Mutex<(Instant, u32)>,
 }
 
 impl Shared {
+    /// True if this response may be contract-checked (at most `CONTRACT_CHECKS_PER_SEC`).
+    fn contract_slot(&self) -> bool {
+        let mut gate = self.contract_gate.lock().unwrap();
+        if gate.0.elapsed() >= Duration::from_secs(1) {
+            *gate = (Instant::now(), 0);
+        }
+        gate.1 += 1;
+        gate.1 <= CONTRACT_CHECKS_PER_SEC
+    }
+
     /// Sends one request. `scheduled` is when it should have gone out; latency is measured from there.
     async fn fire(&self, scheduled: Instant) {
         let _guard = InFlight::enter(&self.in_flight);
@@ -121,6 +147,7 @@ impl Shared {
                     status: None,
                     error: Some(ErrorClass::InvalidRequest),
                     sample: None,
+                    contract: None,
                 }));
                 return;
             }
@@ -128,14 +155,23 @@ impl Shared {
         let outcome = client::execute(&self.client, &req, self.timeout).await.classify_with(&self.ok_statuses);
         let latency = scheduled.elapsed();
 
-        let want_sample = if outcome.is_success() {
+        let check = match (&self.contract, outcome.status) {
+            (Some(contract), Some(status)) if self.contract_slot() => Some(contract.check(status, &outcome.body)),
+            _ => None,
+        };
+
+        let clean = outcome.is_success() && check.as_ref().is_none_or(|c| c.passed);
+        let want_sample = if clean {
             !self.success_sampled.swap(true, Ordering::Relaxed)
         } else {
             self.error_samples.fetch_add(1, Ordering::Relaxed) < MAX_ERROR_SAMPLES
         };
+        let redactor = Redactor::new(self.request.api_key_header.as_deref(), &self.request.secret_values, Some(&req));
+        let check = check.map(|c| ContractCheck { message: redactor.text(&c.message), ..c });
         let sample = want_sample.then(|| {
-            let redactor = Redactor::new(self.request.api_key_header.as_deref(), &self.request.secret_values, Some(&req));
-            Box::new(sample::build(&req, &outcome, &redactor, SAMPLE_BODY_BYTES))
+            let mut s = sample::build(&req, &outcome, &redactor, SAMPLE_BODY_BYTES);
+            s.contract = check.clone();
+            Box::new(s)
         });
 
         let _ = self.tx.send(Msg::Done(Record {
@@ -144,6 +180,7 @@ impl Shared {
             status: outcome.status,
             error: outcome.error.map(|(class, _)| class),
             sample,
+            contract: check,
         }));
     }
 }
@@ -224,6 +261,8 @@ pub async fn run(run: Arc<Run>, p: Prepared) {
         in_flight,
         success_sampled: AtomicBool::new(false),
         error_samples: AtomicUsize::new(0),
+        contract: p.contract.clone(),
+        contract_gate: Mutex::new((Instant::now(), 0)),
     });
     let pacer = Arc::new(Pacer::new(p.max_rps));
     let status = match p.cfg.mode {
@@ -291,6 +330,7 @@ pub async fn run(run: Arc<Run>, p: Prepared) {
         notes,
         dropped: totals.dropped,
         generator_lag: totals.lag.summary(),
+        contract: totals.contract,
         ..RunReport::base(run.id, run.config.clone(), status, run.started_at_ms, now_ms())
     });
 }
@@ -441,6 +481,7 @@ struct Totals {
     dropped: u64,
     max_p99_ms: f64,
     samples: Vec<Sample>,
+    contract: Option<ContractSummary>,
 }
 
 async fn aggregate(
@@ -461,6 +502,7 @@ async fn aggregate(
         dropped: 0,
         max_p99_ms: 0.0,
         samples: Vec::new(),
+        contract: None,
     };
     let mut window = Recorder::new(timeout);
     let (mut w_errors, mut w_dropped, mut w_lag) = (0u32, 0u32, Duration::ZERO);
@@ -518,6 +560,10 @@ async fn aggregate(
                             t.total_errors += 1;
                             w_errors += 1;
                         }
+                    }
+                    if let Some(check) = &rec.contract {
+                        let summary = t.contract.get_or_insert_with(|| ContractSummary { sampled: true, ..Default::default() });
+                        summary.add(check, str::to_owned);
                     }
                     if let Some(s) = rec.sample {
                         t.samples.push(*s);
@@ -601,6 +647,7 @@ mod tests {
             query: vec![],
             body: Default::default(),
             auth: Default::default(),
+            expect: None,
         };
         let request =
             CompiledRequest::compile(&endpoint, &Workspace::default(), &Default::default(), None, false).unwrap();

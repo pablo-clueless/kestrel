@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 
+import { confirmHost, errorMessage } from "@/lib/client";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -11,7 +12,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { confirmHost, errorMessage } from "@/lib/client";
 
 interface Props {
   /** The host awaiting confirmation; the dialog is open while this is set. */
@@ -46,8 +46,9 @@ export const ConfirmHostDialog = ({ host, onClose, onConfirmed }: Props) => {
         <DialogHeader>
           <DialogTitle>Load test {host}?</DialogTitle>
           <DialogDescription>
-            This sends sustained traffic to <span className="font-mono">{host}</span>. Only continue if
-            you own it or are authorised to test it. Confirmation lasts until the engine restarts.
+            This sends sustained traffic to <span className="font-mono">{host}</span>. Only continue
+            if you own it or are authorised to test it. Confirmation lasts until the engine
+            restarts.
           </DialogDescription>
         </DialogHeader>
         {error && <p className="text-sm text-red-600">{error}</p>}

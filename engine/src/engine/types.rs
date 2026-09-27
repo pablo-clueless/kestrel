@@ -223,6 +223,8 @@ pub struct RunReport {
     pub generator_lag: Option<LatencySummary>,
     /// Per-window results, as streamed during the run.
     pub timeline: Vec<Bucket>,
+    /// Contract checks against the spec, when the endpoint was imported from one.
+    pub contract: Option<crate::contract::ContractSummary>,
 }
 
 impl RunReport {
@@ -251,6 +253,7 @@ impl RunReport {
             dropped: 0,
             generator_lag: None,
             timeline: vec![],
+            contract: None,
         }
     }
 }
@@ -364,6 +367,8 @@ pub struct Sample {
     #[ts(type = "number")]
     pub body_bytes: u64,
     pub body_truncated: bool,
+    /// Whether this response matches the spec, when the endpoint was imported from one.
+    pub contract: Option<crate::contract::ContractCheck>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

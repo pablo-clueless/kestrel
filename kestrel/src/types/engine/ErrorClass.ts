@@ -3,4 +3,5 @@
 /**
  * Why a request counted as an error (HANDOFF → Test catalogue → Error classification).
  */
-export type ErrorClass = "transport" | "timeout" | "http" | "rateLimited" | "clientResource" | "invalidRequest";
+export type ErrorClass =
+  "transport" | "timeout" | "http" | "rateLimited" | "clientResource" | "invalidRequest";

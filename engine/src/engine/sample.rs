@@ -24,5 +24,6 @@ pub fn build(req: &RenderedRequest, outcome: &Outcome, redactor: &Redactor, max_
         body: redactor.text(&String::from_utf8_lossy(kept)),
         body_bytes: body_bytes as u64,
         body_truncated: body_bytes > max_body,
+        contract: None,
     }
 }

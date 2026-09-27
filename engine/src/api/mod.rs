@@ -1,5 +1,6 @@
 mod guard;
 mod hosts;
+mod import;
 mod runs;
 mod workspace;
 
@@ -39,6 +40,7 @@ pub fn router(state: AppState) -> Router {
         .route("/secrets", put(workspace::set_secret))
         .route("/render", post(workspace::render))
         .route("/send", post(workspace::send))
+        .route("/import", post(import::import))
         .route("/hosts", get(hosts::list))
         .route("/hosts/confirm", post(hosts::confirm))
         .route("/runs", get(runs::list).post(runs::start))
@@ -227,6 +229,8 @@ mod tests {
             collections: vec![Collection {
                 id: uuid::Uuid::new_v4(),
                 name: "echo".into(),
+                source: None,
+                schema_defs: None,
                 vars: Default::default(),
                 endpoints: vec![Endpoint {
                 id,
@@ -238,6 +242,7 @@ mod tests {
                 query: vec![],
                 body: Body::None,
                 auth: Auth::Bearer { token: "{{token}}".into() },
+                expect: None,
             }],
             }],
             environments: vec![Environment {
@@ -363,6 +368,72 @@ mod tests {
         let StartRunResponse { run_id } = json_body(res).await;
         let stop = Request::delete(format!("/api/runs/{run_id}")).header(header::HOST, HOST).header(TOKEN_HEADER, TOKEN).body(Body::empty()).unwrap();
         assert_eq!(status(&app, stop).await, StatusCode::ACCEPTED);
+    }
+
+    /// M3 "done when": bad responses are flagged, declared 4xx aren't errors, undeclared codes are.
+    #[tokio::test]
+    async fn latency_run_checks_responses_against_the_contract() {
+        use crate::model::{Collection, Endpoint, Expectation, ExpectedResponse, HttpMethod};
+        let app = Router::new().route(
+            "/pets/{id}",
+            axum::routing::get(|axum::extract::Path(id): axum::extract::Path<u32>| async move {
+                match id {
+                    1 => (StatusCode::OK, r#"{"id":1,"name":"Rex"}"#),
+                    2 => (StatusCode::OK, r#"{"id":"two","name":"Tom"}"#),
+                    3 => (StatusCode::NOT_FOUND, ""),
+                    _ => (StatusCode::INTERNAL_SERVER_ERROR, "boom"),
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let id = uuid::Uuid::new_v4();
+        let workspace = Workspace {
+            collections: vec![Collection {
+                id: uuid::Uuid::new_v4(),
+                name: "pets".into(),
+                vars: [("base".to_string(), base)].into(),
+                source: None,
+                schema_defs: Some(serde_json::json!({ "components": { "schemas": { "Pet": {
+                    "type": "object", "required": ["id", "name"], "properties": { "id": { "type": "integer" } }
+                }}}})),
+                endpoints: vec![Endpoint {
+                    id,
+                    name: "get pet".into(),
+                    group: None,
+                    method: HttpMethod::Get,
+                    // 1, 2, 3, 4 across the four samples.
+                    url: "{{base}}/pets/{{seq}}".into(),
+                    headers: vec![],
+                    query: vec![],
+                    body: Default::default(),
+                    auth: Default::default(),
+                    expect: Some(Expectation { responses: vec![
+                        ExpectedResponse { status: "200".into(), schema: Some(serde_json::json!({ "$ref": "#/components/schemas/Pet" })) },
+                        ExpectedResponse { status: "404".into(), schema: None },
+                    ]}),
+                }],
+            }],
+            ..Default::default()
+        };
+        let app = app_with(workspace, Secrets::default());
+        let config = format!(
+            r#"{{"kind":"latency","endpointId":"{id}","warmup":0,"samples":4,"keepAlive":true,"timeoutMs":5000}}"#
+        );
+        let StartRunResponse { run_id } = json_body(app.clone().oneshot(post_json("/api/runs", config)).await.unwrap()).await;
+        let events = get(&format!("/api/runs/{run_id}/events")).body(Body::empty()).unwrap();
+        app.clone().oneshot(events).await.unwrap().into_body().collect().await.unwrap();
+        let report: RunReport =
+            json_body(app.oneshot(get(&format!("/api/runs/{run_id}/report")).body(Body::empty()).unwrap()).await.unwrap()).await;
+
+        let contract = report.contract.expect("contract summary");
+        assert_eq!((contract.checked, contract.schema_mismatch, contract.undeclared_status), (4, 1, 1));
+        assert!(contract.examples.iter().any(|m| m.contains("/id")), "{:?}", contract.examples);
+        assert!(!contract.sampled);
+        assert_eq!(report.total_errors, 1, "declared 404 is fine; undeclared 500 is an error");
+        assert!(report.samples.iter().any(|s| s.contract.as_ref().is_some_and(|c| !c.passed)));
     }
 
     /// Start a short fake run, read the whole SSE stream, then fetch the report.

@@ -2,4 +2,4 @@
 import type { RunKind } from "./RunKind";
 import type { RunStatus } from "./RunStatus";
 
-export type RunSummary = { runId: string, kind: RunKind, status: RunStatus, startedAtMs: number, };
+export type RunSummary = { runId: string; kind: RunKind; status: RunStatus; startedAtMs: number };

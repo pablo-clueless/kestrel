@@ -1,5 +1,5 @@
 //! Reference target with known behaviour, so Kestrel can be checked rather than trusted.
-//! HANDOFF → Test target. Run with `cargo run -p engine --example target` (port 8080, or
+//! HANDOFF → Test target. Run with `cargo run -p engine --example target` (port 8089, or
 //! `TARGET_PORT`).
 
 use std::{
@@ -36,7 +36,7 @@ type Shared = State<Arc<AppState>>;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let port: u16 = std::env::var("TARGET_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(8080);
+    let port: u16 = std::env::var("TARGET_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(8089);
     let app = Router::new()
         .route("/fast", get(|| async { "ok" }))
         .route("/sleep", get(sleep))

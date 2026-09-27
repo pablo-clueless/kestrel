@@ -24,9 +24,13 @@ export const TextArea = ({ className, ...props }: React.ComponentProps<"textarea
   />
 );
 
-export const Label = ({ children, className }: { children: React.ReactNode; className?: string }) => (
-  <span className={cn("text-muted-foreground text-xs", className)}>{children}</span>
-);
+export const Label = ({
+  children,
+  className,
+}: {
+  children: React.ReactNode;
+  className?: string;
+}) => <span className={cn("text-muted-foreground text-xs", className)}>{children}</span>;
 
 export function Tabs<T extends string>({
   tabs,
@@ -39,15 +43,17 @@ export function Tabs<T extends string>({
 }) {
   // Segmented control: muted track, the active segment raised as a card.
   return (
-    <div className="bg-muted inline-flex self-start rounded-lg p-0.5 text-xs">
+    <div className="bg-muted inline-flex self-start rounded-xs p-0.5 text-xs">
       {tabs.map((t) => (
         <button
           key={t.id}
           type="button"
           onClick={() => onChange(t.id)}
           className={cn(
-            "rounded-md px-2.5 py-1 font-medium transition-colors",
-            value === t.id ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
+            "rounded-xs px-2.5 py-1 font-medium transition-colors",
+            value === t.id
+              ? "bg-card text-foreground shadow-sm"
+              : "text-muted-foreground hover:text-foreground",
           )}
         >
           {t.label}

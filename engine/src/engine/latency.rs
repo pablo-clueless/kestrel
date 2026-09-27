@@ -15,7 +15,12 @@ use super::{
         TargetInfo,
     },
 };
-use crate::{redact::Redactor, stats::Recorder, template::request::CompiledRequest};
+use crate::{
+    contract::{Contract, ContractSummary},
+    redact::Redactor,
+    stats::Recorder,
+    template::request::CompiledRequest,
+};
 
 const MAX_ERROR_SAMPLES: usize = 5;
 const SAMPLE_BODY_BYTES: usize = 8 * 1024;
@@ -27,6 +32,8 @@ pub struct Prepared {
     pub target: Target,
     pub target_info: TargetInfo,
     pub max_duration: Duration,
+    /// Set by the caller for endpoints imported from a spec.
+    pub contract: Option<Arc<Contract>>,
 }
 
 pub async fn prepare(
@@ -35,7 +42,7 @@ pub async fn prepare(
     max_duration: Duration,
     confirmed_hosts: Vec<String>,
 ) -> Result<Prepared, String> {
-    let first = request.render()?;
+    let first = request.preview()?;
     let opts = ClientOptions { keep_alive: cfg.keep_alive, follow_redirects: true, confirmed_hosts };
     let target = client::connect(&first.url, &opts).await?;
     let target_info = TargetInfo {
@@ -43,7 +50,7 @@ pub async fn prepare(
         pinned_ip: target.pinned.to_string(),
         loopback: target.pinned.is_loopback(),
     };
-    Ok(Prepared { cfg, request, target, target_info, max_duration })
+    Ok(Prepared { cfg, request, target, target_info, max_duration, contract: None })
 }
 
 pub async fn run(run: Arc<Run>, p: Prepared) {
@@ -66,6 +73,8 @@ pub async fn run(run: Arc<Run>, p: Prepared) {
     let mut samples: Vec<Sample> = Vec::new();
     let (mut have_success_sample, mut error_samples) = (false, 0);
     let mut notes = Vec::new();
+    let mut contract_summary = p.contract.as_ref().map(|_| ContractSummary::default());
+    let run_redactor = Redactor::new(p.request.api_key_header.as_deref(), &p.request.secret_values, None);
 
     let started = Instant::now();
     let mut measured_since = started;
@@ -122,11 +131,23 @@ pub async fn run(run: Arc<Run>, p: Prepared) {
             }
         }
 
-        let want_sample = if outcome.is_success() { !have_success_sample } else { error_samples < MAX_ERROR_SAMPLES };
+        let check = match (&p.contract, outcome.status) {
+            (Some(contract), Some(status)) => Some(contract.check(status, &outcome.body)),
+            _ => None,
+        };
+        if let (Some(summary), Some(check)) = (contract_summary.as_mut(), &check) {
+            summary.add(check, |m| run_redactor.text(m));
+        }
+
+        // Keep the first clean response, and the first few errors or contract violations.
+        let clean = outcome.is_success() && check.as_ref().is_none_or(|c| c.passed);
+        let want_sample = if clean { !have_success_sample } else { error_samples < MAX_ERROR_SAMPLES };
         if want_sample {
             let redactor = Redactor::new(p.request.api_key_header.as_deref(), &p.request.secret_values, Some(&req));
-            samples.push(sample::build(&req, &outcome, &redactor, SAMPLE_BODY_BYTES));
-            if outcome.is_success() { have_success_sample = true } else { error_samples += 1 }
+            let mut s = sample::build(&req, &outcome, &redactor, SAMPLE_BODY_BYTES);
+            s.contract = check.map(|c| crate::contract::ContractCheck { message: redactor.text(&c.message), ..c });
+            samples.push(s);
+            if clean { have_success_sample = true } else { error_samples += 1 }
         }
 
         if Instant::now() >= next_flush {
@@ -164,6 +185,7 @@ pub async fn run(run: Arc<Run>, p: Prepared) {
         error_counts: errors,
         samples,
         notes,
+        contract: contract_summary,
         ..RunReport::base(run.id, run.config.clone(), status, run.started_at_ms, now_ms())
     });
 }

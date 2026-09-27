@@ -3,8 +3,8 @@
 import { useEffect } from "react";
 
 import { errorMessage, getReport, runEventsUrl } from "@/lib/client";
-import { useRunStore } from "@/stores/run-store";
 import type { RunEvent } from "@/types/engine/RunEvent";
+import { useRunStore } from "@/stores/run-store";
 
 /**
  * Streams the attached run's events into the run store. The engine replays history on connect,

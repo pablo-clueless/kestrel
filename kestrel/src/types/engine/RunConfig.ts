@@ -6,4 +6,7 @@ import type { LoadConfig } from "./LoadConfig";
 /**
  * Body of `POST /api/runs`. Tagged by `kind`; real tests are added as variants.
  */
-export type RunConfig = { "kind": "fake" } & FakeConfig | { "kind": "latency" } & LatencyConfig | { "kind": "load" } & LoadConfig;
+export type RunConfig =
+  | ({ kind: "fake" } & FakeConfig)
+  | ({ kind: "latency" } & LatencyConfig)
+  | ({ kind: "load" } & LoadConfig);

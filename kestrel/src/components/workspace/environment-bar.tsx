@@ -1,14 +1,13 @@
 "use client";
 
-import { SlidersHorizontal } from "lucide-react";
+import { Settings } from "lucide-react";
 import { useState } from "react";
 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "../ui/sheet";
 import { useWorkspaceStore } from "@/stores/workspace-store";
-import { Button } from "@/components/ui/button";
-
 import { EnvironmentEditor } from "./environment-editor";
+import { Button } from "@/components/ui/button";
 
 /** Header: active environment picker, plus a slide-over to edit environments and secrets. */
 export const EnvironmentBar = () => {
@@ -35,9 +34,8 @@ export const EnvironmentBar = () => {
         </SelectContent>
       </Select>
       <Button variant="outline" size="icon" onClick={() => setOpen(true)} aria-label="Manage environments">
-        <SlidersHorizontal />
+        <Settings />
       </Button>
-
       <Sheet open={open} onOpenChange={setOpen}>
         <SheetContent side="right" className="overflow-y-auto">
           <SheetHeader>

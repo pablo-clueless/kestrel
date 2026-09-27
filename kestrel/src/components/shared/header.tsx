@@ -2,9 +2,8 @@
 
 import { ChevronRight, PanelLeft } from "lucide-react";
 
-import { useLayoutStore } from "@/stores/layout-store";
 import { useActiveCollection, useSelectedEndpoint } from "@/stores/workspace-store";
-
+import { useLayoutStore } from "@/stores/layout-store";
 import { EnvironmentBar } from "../workspace";
 import { MethodBadge } from "./method-badge";
 
@@ -25,7 +24,9 @@ export const Header = () => {
           <PanelLeft className="size-4" />
         </button>
         <nav className="flex min-w-0 items-center gap-1.5" aria-label="Breadcrumb">
-          <span className="text-muted-foreground truncate">{collection?.name ?? "No collection"}</span>
+          <span className="text-muted-foreground truncate">
+            {collection?.name ?? "No collection"}
+          </span>
           {endpoint && (
             <>
               <ChevronRight className="text-muted-foreground size-3.5 shrink-0" />

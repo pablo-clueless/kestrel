@@ -4,12 +4,12 @@ import { Plus, Trash2, X } from "lucide-react";
 import { useState } from "react";
 
 import { useWorkspaceStore } from "@/stores/workspace-store";
-
 import { Input, Label } from "./fields";
 
 /** Variables and secrets for the active environment. Secret values are write-only. */
 export const EnvironmentEditor = () => {
-  const { workspace, secretKeys, addEnvironment, removeEnvironment, setVar, setSecret } = useWorkspaceStore();
+  const { workspace, secretKeys, addEnvironment, removeEnvironment, setVar, setSecret } =
+    useWorkspaceStore();
   const [newEnv, setNewEnv] = useState("");
   const active = workspace?.environments.find((e) => e.name === workspace.activeEnvironment);
 
@@ -35,7 +35,11 @@ export const EnvironmentEditor = () => {
           value={newEnv}
           onChange={(e) => setNewEnv(e.target.value)}
         />
-        <button type="submit" className="text-muted-foreground hover:text-primary" aria-label="Add environment">
+        <button
+          type="submit"
+          className="text-muted-foreground hover:text-primary"
+          aria-label="Add environment"
+        >
           <Plus className="size-4" />
         </button>
       </form>
@@ -95,7 +99,11 @@ export const EnvironmentEditor = () => {
                 </button>
               </div>
             ))}
-            <NewPair secret onAdd={(k, v) => void setSecret(active.name, k, v)} valuePlaceholder="value (write-only)" />
+            <NewPair
+              secret
+              onAdd={(k, v) => void setSecret(active.name, k, v)}
+              valuePlaceholder="value (write-only)"
+            />
           </section>
         </>
       )}
@@ -125,7 +133,12 @@ const NewPair = ({
         setValue("");
       }}
     >
-      <Input className="w-16 shrink-0" placeholder="name" value={key} onChange={(e) => setKey(e.target.value)} />
+      <Input
+        className="w-16 shrink-0"
+        placeholder="name"
+        value={key}
+        onChange={(e) => setKey(e.target.value)}
+      />
       <Input
         className="flex-1 font-mono"
         type={secret ? "password" : "text"}

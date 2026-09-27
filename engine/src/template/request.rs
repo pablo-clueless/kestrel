@@ -111,6 +111,12 @@ impl CompiledRequest {
         Ok(compiled)
     }
 
+    /// Renders without advancing the run's generators (`{{seq}}` etc.), for inspecting the target
+    /// before a run starts.
+    pub fn preview(&self) -> Result<RenderedRequest, String> {
+        self.render_with(&GenState::default())
+    }
+
     pub fn render(&self) -> Result<RenderedRequest, String> {
         self.render_with(&self.generators)
     }
@@ -179,6 +185,7 @@ mod tests {
             ],
             body: Body::Json { content: r#"{"id":{{seq}}}"#.into() },
             auth,
+            expect: None,
         }
     }
 
@@ -231,6 +238,8 @@ mod tests {
         ws.collections.push(Collection {
             id: uuid::Uuid::new_v4(),
             name: "api".into(),
+            source: None,
+            schema_defs: None,
             vars: BTreeMap::from([
                 ("base".into(), "http://collection-default".into()),
                 ("path".into(), "from-collection".into()),

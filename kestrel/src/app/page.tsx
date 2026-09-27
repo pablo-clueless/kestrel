@@ -12,8 +12,8 @@ const Page = () => {
       <Sidebar />
       <div className="flex min-w-0 flex-1 flex-col">
         <Header />
-        <div className="grid min-h-0 flex-1 grid-cols-3">
-          <main className="col-span-2 flex min-w-0 flex-col gap-5 overflow-y-auto p-5">
+        <div className="grid min-h-0 flex-1 grid-cols-4">
+          <main className="col-span-3 flex min-w-0 flex-col gap-5 overflow-y-auto p-5">
             <Card title="Request">
               <RequestEditor />
             </Card>

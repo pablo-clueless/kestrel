@@ -1,9 +1,16 @@
 "use client";
 
-import { ChevronDown, ChevronRight, Plus, Settings2, Trash2, X } from "lucide-react";
+import { ChevronDown, ChevronRight, FileUp, Plus, Settings2, Trash2, X } from "lucide-react";
 import { useEffect, useState } from "react";
 
+import { activeCollectionOf, useWorkspaceStore } from "@/stores/workspace-store";
+import type { Collection } from "@/types/engine/Collection";
 import { Button } from "@/components/ui/button";
+import { EndpointList } from "./endpoint-list";
+import { ImportDialog } from "./import-dialog";
+import { Input } from "@/components/ui/input";
+import { cn } from "@/lib/utils";
+import { Label } from "./fields";
 import {
   Dialog,
   DialogContent,
@@ -12,13 +19,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { cn } from "@/lib/utils";
-import { activeCollectionOf, useWorkspaceStore } from "@/stores/workspace-store";
-import type { Collection } from "@/types/engine/Collection";
-
-import { EndpointList } from "./endpoint-list";
-import { Label } from "./fields";
 
 /** Sidebar: collections of endpoints. The active one is expanded; clicking another switches to it.
  * Also loads the workspace. */
@@ -28,6 +28,7 @@ export const CollectionList = () => {
   const [newName, setNewName] = useState("");
   const [editing, setEditing] = useState<Collection | null>(null);
   const [deleting, setDeleting] = useState<Collection | null>(null);
+  const [importing, setImporting] = useState(false);
   const active = activeCollectionOf(workspace);
 
   useEffect(() => {
@@ -56,14 +57,26 @@ export const CollectionList = () => {
     <div className="flex h-full flex-col gap-3">
       <div className="flex items-center justify-between">
         <span className="text-muted-foreground text-xs uppercase">Collections</span>
-        <button
-          className="text-muted-foreground hover:text-primary"
-          onClick={() => setAdding(true)}
-          disabled={!workspace}
-          aria-label="New collection"
-        >
-          <Plus className="size-4" />
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            className="text-muted-foreground hover:text-primary"
+            onClick={() => setImporting(true)}
+            disabled={!workspace}
+            aria-label="Import API spec"
+            title="Import OpenAPI / Swagger"
+          >
+            <FileUp className="size-4" />
+          </button>
+          <button
+            className="text-muted-foreground hover:text-primary"
+            onClick={() => setAdding(true)}
+            disabled={!workspace}
+            aria-label="New collection"
+            title="New empty collection"
+          >
+            <Plus className="size-4" />
+          </button>
+        </div>
       </div>
 
       {adding && (
@@ -91,7 +104,7 @@ export const CollectionList = () => {
             <div key={c.id} className="mb-1">
               <div
                 className={cn(
-                  "group flex items-center gap-1.5 rounded-md px-2 py-1.5 text-sm",
+                  "group flex items-center gap-1.5 rounded-xs px-2 py-1.5 text-sm",
                   isActive ? "font-medium" : "hover:bg-muted/60",
                 )}
               >
@@ -106,7 +119,9 @@ export const CollectionList = () => {
                     <ChevronRight className="text-muted-foreground size-4 shrink-0" />
                   )}
                   <span className="truncate">{c.name}</span>
-                  <span className="text-muted-foreground text-xs font-normal">{c.endpoints.length}</span>
+                  <span className="text-muted-foreground text-xs font-normal">
+                    {c.endpoints.length}
+                  </span>
                 </button>
                 <button
                   className="text-muted-foreground hover:text-primary hidden group-hover:block"
@@ -116,7 +131,7 @@ export const CollectionList = () => {
                   <Settings2 className="size-3.5" />
                 </button>
                 <button
-                  className="text-muted-foreground hidden hover:text-red-600 group-hover:block"
+                  className="text-muted-foreground hidden group-hover:block hover:text-red-600"
                   onClick={() => setDeleting(c)}
                   aria-label={`Delete ${c.name}`}
                 >
@@ -129,22 +144,31 @@ export const CollectionList = () => {
         })}
         {workspace && workspace.collections.length === 0 && (
           <p className="text-muted-foreground px-2 text-sm">
-            No collections yet. Press + to create one, or add an endpoint to start a Default collection.
+            No collections yet. Import an OpenAPI or Swagger spec, or press + to start an empty one.
           </p>
         )}
       </nav>
 
       <CollectionSettingsDialog collection={editing} onClose={() => setEditing(null)} />
       <DeleteCollectionDialog collection={deleting} onClose={() => setDeleting(null)} />
+      <ImportDialog open={importing} onClose={() => setImporting(false)} />
     </div>
   );
 };
 
 /** Rename, and variables that act as defaults for this collection's endpoints. */
-const CollectionSettingsDialog = ({ collection, onClose }: { collection: Collection | null; onClose: () => void }) => {
+const CollectionSettingsDialog = ({
+  collection,
+  onClose,
+}: {
+  collection: Collection | null;
+  onClose: () => void;
+}) => {
   const { renameCollection, setCollectionVar } = useWorkspaceStore();
   // Read live values from the store so edits show immediately.
-  const live = useWorkspaceStore((s) => s.workspace?.collections.find((c) => c.id === collection?.id) ?? null);
+  const live = useWorkspaceStore(
+    (s) => s.workspace?.collections.find((c) => c.id === collection?.id) ?? null,
+  );
   const [key, setKey] = useState("");
   const [value, setValue] = useState("");
 
@@ -154,15 +178,18 @@ const CollectionSettingsDialog = ({ collection, onClose }: { collection: Collect
         <DialogHeader>
           <DialogTitle>Collection settings</DialogTitle>
           <DialogDescription>
-            Variables here are defaults for this collection&apos;s endpoints. The active environment&apos;s
-            variables and secrets override them.
+            Variables here are defaults for this collection&apos;s endpoints. The active
+            environment&apos;s variables and secrets override them.
           </DialogDescription>
         </DialogHeader>
         {live && (
           <div className="flex flex-col gap-4 text-sm">
             <label className="flex flex-col gap-1.5">
               <Label>Name</Label>
-              <Input value={live.name} onChange={(e) => renameCollection(live.id, e.target.value)} />
+              <Input
+                value={live.name}
+                onChange={(e) => renameCollection(live.id, e.target.value)}
+              />
             </label>
             <div className="flex flex-col gap-1.5">
               <Label>Variables</Label>
@@ -195,14 +222,23 @@ const CollectionSettingsDialog = ({ collection, onClose }: { collection: Collect
                   setValue("");
                 }}
               >
-                <Input className="w-24 shrink-0" placeholder="base" value={key} onChange={(e) => setKey(e.target.value)} />
+                <Input
+                  className="w-24 shrink-0"
+                  placeholder="base"
+                  value={key}
+                  onChange={(e) => setKey(e.target.value)}
+                />
                 <Input
                   className="flex-1 font-mono"
                   placeholder="https://api.example.com"
                   value={value}
                   onChange={(e) => setValue(e.target.value)}
                 />
-                <button type="submit" className="text-muted-foreground hover:text-primary" aria-label="Add variable">
+                <button
+                  type="submit"
+                  className="text-muted-foreground hover:text-primary"
+                  aria-label="Add variable"
+                >
                   <Plus className="size-4" />
                 </button>
               </form>
@@ -217,7 +253,13 @@ const CollectionSettingsDialog = ({ collection, onClose }: { collection: Collect
   );
 };
 
-const DeleteCollectionDialog = ({ collection, onClose }: { collection: Collection | null; onClose: () => void }) => {
+const DeleteCollectionDialog = ({
+  collection,
+  onClose,
+}: {
+  collection: Collection | null;
+  onClose: () => void;
+}) => {
   const removeCollection = useWorkspaceStore((s) => s.removeCollection);
   const count = collection?.endpoints.length ?? 0;
   return (
@@ -226,7 +268,8 @@ const DeleteCollectionDialog = ({ collection, onClose }: { collection: Collectio
         <DialogHeader>
           <DialogTitle>Delete {collection?.name}?</DialogTitle>
           <DialogDescription>
-            This removes the collection and its {count} endpoint{count === 1 ? "" : "s"} from kestrel.json.
+            This removes the collection and its {count} endpoint{count === 1 ? "" : "s"} from
+            kestrel.json.
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>

@@ -1,0 +1,38 @@
+{
+  "openapi": "3.1.0",
+  "info": { "title": "Notes", "version": "2" },
+  "servers": [{ "url": "/api" }],
+  "paths": {
+    "/notes": {
+      "post": {
+        "summary": "Create note",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": { "simple": { "value": { "text": "hello", "pinned": false } } },
+              "schema": { "$ref": "#/components/schemas/Note" }
+            }
+          }
+        },
+        "responses": {
+          "2XX": {
+            "description": "ok",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Note" } } }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Note": {
+        "type": "object",
+        "required": ["text"],
+        "properties": {
+          "text": { "type": "string" },
+          "pinned": { "type": ["boolean", "null"] }
+        }
+      }
+    }
+  }
+}

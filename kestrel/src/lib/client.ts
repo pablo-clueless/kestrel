@@ -1,15 +1,17 @@
 import axios from "axios";
 
-import type { RunConfig } from "@/types/engine/RunConfig";
-import type { RunReport } from "@/types/engine/RunReport";
-import type { RunSummary } from "@/types/engine/RunSummary";
-import type { Sample } from "@/types/engine/Sample";
-import type { SentRequest } from "@/types/engine/SentRequest";
+import type { WorkspaceResponse } from "@/types/engine/WorkspaceResponse";
 import type { SetSecretRequest } from "@/types/engine/SetSecretRequest";
 import type { StartRunResponse } from "@/types/engine/StartRunResponse";
+import type { SentRequest } from "@/types/engine/SentRequest";
 import type { TryRequest } from "@/types/engine/TryRequest";
+import type { RunSummary } from "@/types/engine/RunSummary";
+import type { RunConfig } from "@/types/engine/RunConfig";
+import type { RunReport } from "@/types/engine/RunReport";
 import type { Workspace } from "@/types/engine/Workspace";
-import type { WorkspaceResponse } from "@/types/engine/WorkspaceResponse";
+import type { Sample } from "@/types/engine/Sample";
+import type { ImportRequest } from "@/types/engine/ImportRequest";
+import type { ImportResult } from "@/types/engine/ImportResult";
 
 export const ENGINE_URL = process.env.NEXT_PUBLIC_ENGINE_URL ?? "http://127.0.0.1:7070";
 const TOKEN = process.env.NEXT_PUBLIC_KESTREL_TOKEN ?? "";
@@ -51,7 +53,12 @@ export const renderRequest = async (req: TryRequest) =>
   (await engine.post<SentRequest>("/render", req)).data;
 
 /** The "try it" button: one request, redacted response. */
-export const sendRequest = async (req: TryRequest) => (await engine.post<Sample>("/send", req)).data;
+export const sendRequest = async (req: TryRequest) =>
+  (await engine.post<Sample>("/send", req)).data;
+
+/** Parses an OpenAPI/Swagger spec into a collection. Nothing is saved until the UI adds it. */
+export const importSpec = async (req: ImportRequest) =>
+  (await engine.post<ImportResult>("/import", req)).data;
 
 /** Hosts confirmed for load testing this engine session. */
 export const listHosts = async () => (await engine.get<string[]>("/hosts")).data;

@@ -64,7 +64,7 @@ export const LiveChart = () => {
 
   if (!data.length) {
     return (
-      <div className="text-muted-foreground flex h-72 items-center justify-center rounded-lg border border-dashed text-sm">
+      <div className="text-muted-foreground flex h-72 min-h-0 items-center justify-center rounded-xs border border-dashed text-sm">
         Start a run to see latency and throughput live.
       </div>
     );
@@ -85,12 +85,43 @@ export const LiveChart = () => {
             tickLine={false}
           />
           <YAxis yAxisId="ms" unit=" ms" tick={tick} axisLine={false} tickLine={false} width={64} />
-          <YAxis yAxisId="rps" orientation="right" tick={tick} axisLine={false} tickLine={false} width={48} />
+          <YAxis
+            yAxisId="rps"
+            orientation="right"
+            tick={tick}
+            axisLine={false}
+            tickLine={false}
+            width={48}
+          />
           <Tooltip labelFormatter={(t) => `${t}s`} {...tooltipStyle} />
           <Legend {...legendProps} />
-          <Line yAxisId="ms" dataKey="p50" name="p50 (ms)" stroke={SERIES.p50} dot={false} strokeWidth={2} isAnimationActive={false} />
-          <Line yAxisId="ms" dataKey="p99" name="p99 (ms)" stroke={SERIES.p99} dot={false} strokeWidth={2} isAnimationActive={false} />
-          <Line yAxisId="rps" dataKey="rps" name="req/s" stroke={SERIES.rps} dot={false} strokeWidth={2} isAnimationActive={false} />
+          <Line
+            yAxisId="ms"
+            dataKey="p50"
+            name="p50 (ms)"
+            stroke={SERIES.p50}
+            dot={false}
+            strokeWidth={2}
+            isAnimationActive={false}
+          />
+          <Line
+            yAxisId="ms"
+            dataKey="p99"
+            name="p99 (ms)"
+            stroke={SERIES.p99}
+            dot={false}
+            strokeWidth={2}
+            isAnimationActive={false}
+          />
+          <Line
+            yAxisId="rps"
+            dataKey="rps"
+            name="req/s"
+            stroke={SERIES.rps}
+            dot={false}
+            strokeWidth={2}
+            isAnimationActive={false}
+          />
           {isLoad && (
             <Line
               yAxisId="rps"
@@ -119,12 +150,33 @@ export const DistributionChart = () => {
   return (
     <div className="h-52 min-h-0">
       <ResponsiveContainer width="100%" height="100%">
-        <BarChart data={data} margin={{ top: 4, right: 0, bottom: 0, left: -20 }} barCategoryGap={1}>
+        <BarChart
+          data={data}
+          margin={{ top: 4, right: 0, bottom: 0, left: -20 }}
+          barCategoryGap={1}
+        >
           <CartesianGrid vertical={false} stroke="var(--border)" />
-          <XAxis dataKey="ms" tick={tick} unit="ms" minTickGap={16} axisLine={false} tickLine={false} />
+          <XAxis
+            dataKey="ms"
+            tick={tick}
+            unit="ms"
+            minTickGap={16}
+            axisLine={false}
+            tickLine={false}
+          />
           <YAxis tick={tick} allowDecimals={false} axisLine={false} tickLine={false} />
-          <Tooltip labelFormatter={(v) => `≥ ${v} ms`} cursor={{ fill: "var(--muted)" }} {...tooltipStyle} />
-          <Bar dataKey="count" name="requests" fill="var(--primary)" radius={[3, 3, 0, 0]} isAnimationActive={false} />
+          <Tooltip
+            labelFormatter={(v) => `≥ ${v} ms`}
+            cursor={{ fill: "var(--muted)" }}
+            {...tooltipStyle}
+          />
+          <Bar
+            dataKey="count"
+            name="requests"
+            fill="var(--primary)"
+            radius={[3, 3, 0, 0]}
+            isAnimationActive={false}
+          />
         </BarChart>
       </ResponsiveContainer>
     </div>

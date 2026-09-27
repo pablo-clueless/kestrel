@@ -4,8 +4,10 @@ import type { Workspace } from "./Workspace";
 /**
  * `GET /api/workspace`. Secrets are write-only, so only their names are returned.
  */
-export type WorkspaceResponse = { workspace: Workspace, 
-/**
- * Environment name → names of the secrets set for it.
- */
-secretKeys: { [key in string]: Array<string> }, };
+export type WorkspaceResponse = {
+  workspace: Workspace;
+  /**
+   * Environment name → names of the secrets set for it.
+   */
+  secretKeys: { [key in string]: Array<string> };
+};

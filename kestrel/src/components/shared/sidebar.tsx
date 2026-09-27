@@ -1,11 +1,9 @@
 "use client";
 
+import { useLayoutStore } from "@/stores/layout-store";
+import { CollectionList } from "../workspace";
 import { Feather } from "lucide-react";
 import { cn } from "cn";
-
-import { useLayoutStore } from "@/stores/layout-store";
-
-import { CollectionList } from "../workspace";
 
 /**
  * user can paste or import endpoints from the API spec here.  (M3: OpenAPI import)
