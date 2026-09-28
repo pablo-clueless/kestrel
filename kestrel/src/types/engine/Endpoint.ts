@@ -5,24 +5,16 @@ import type { Expectation } from "./Expectation";
 import type { HttpMethod } from "./HttpMethod";
 import type { KeyValue } from "./KeyValue";
 
-export type Endpoint = {
-  id: string;
-  name: string;
-  /**
-   * Tag or folder; used to group the endpoint list.
-   */
-  group: string | null;
-  method: HttpMethod;
-  /**
-   * Template, e.g. `{{base}}/users/{{id}}`.
-   */
-  url: string;
-  headers: Array<KeyValue>;
-  query: Array<KeyValue>;
-  body: Body;
-  auth: Auth;
-  /**
-   * Responses the spec declares, for contract checks. None for hand-made endpoints.
-   */
-  expect: Expectation | null;
-};
+export type Endpoint = { id: string, name: string, 
+/**
+ * Tag or folder; used to group the endpoint list.
+ */
+group: string | null, method: HttpMethod, 
+/**
+ * Template, e.g. `{{base}}/users/{{id}}`.
+ */
+url: string, headers: Array<KeyValue>, query: Array<KeyValue>, body: Body, auth: Auth, 
+/**
+ * Responses the spec declares, for contract checks. None for hand-made endpoints.
+ */
+expect: Expectation | null, };

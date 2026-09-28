@@ -2,6 +2,9 @@
 //!
 //! - `{{name}}` — environment variable, then secret. Bound once when a run starts.
 //! - `{{uuid}}`, `{{seq}}`, `{{int:1..1000}}` — generators, fresh on every request.
+//! - `{{n}}`, `{{n:int_array}}`, `{{n:string}}`, `{{n:object_array}}` — size generators for Big-O runs:
+//!   the number n, or n random items / characters, fresh every request so caching can't flatten the
+//!   curve. Outside Big-O runs n is 1.
 //!
 //! Templates are parsed and bound once per run; per request only generators are evaluated.
 
@@ -31,7 +34,24 @@ pub enum Generator {
     /// Per-run counter starting at 1; unique under concurrency.
     Seq,
     /// Uniform in `lo..=hi`.
-    Int { lo: i64, hi: i64 },
+    Int {
+        lo: i64,
+        hi: i64,
+    },
+    /// Driven by the request's size n (Big-O).
+    Size(SizeKind),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SizeKind {
+    /// `{{n}}`: the number itself, e.g. a `limit` query param.
+    Value,
+    /// `{{n:int_array}}`: a JSON array of n random integers.
+    IntArray,
+    /// `{{n:string}}`: n random alphanumeric characters (no quotes).
+    String,
+    /// `{{n:object_array}}`: a JSON array of n `{"id": int, "name": string}` objects.
+    ObjectArray,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -101,7 +121,17 @@ fn parse_placeholder(inner: &str) -> Result<Segment, TemplateError> {
     match inner {
         "uuid" => return Ok(Segment::Gen(Generator::Uuid)),
         "seq" => return Ok(Segment::Gen(Generator::Seq)),
+        "n" => return Ok(Segment::Gen(Generator::Size(SizeKind::Value))),
+        "n:int_array" => return Ok(Segment::Gen(Generator::Size(SizeKind::IntArray))),
+        "n:string" => return Ok(Segment::Gen(Generator::Size(SizeKind::String))),
+        "n:object_array" => return Ok(Segment::Gen(Generator::Size(SizeKind::ObjectArray))),
         _ => {}
+    }
+    if inner.starts_with("n:") {
+        return Err(TemplateError::BadGenerator(
+            inner.to_owned(),
+            "size generators are n, n:int_array, n:string and n:object_array",
+        ));
     }
     if let Some(range) = inner.strip_prefix("int:") {
         let bad = |why| TemplateError::BadGenerator(inner.to_owned(), why);
@@ -163,6 +193,15 @@ pub struct GenState {
 
 impl Bound {
     pub fn render(&self, state: &GenState) -> String {
+        self.render_sized(state, 1)
+    }
+
+    /// Whether any size generator (`{{n…}}`) appears.
+    pub fn uses_size(&self) -> bool {
+        self.segments.iter().any(|s| matches!(s, BoundSegment::Gen(Generator::Size(_))))
+    }
+
+    pub fn render_sized(&self, state: &GenState, n: u64) -> String {
         let mut out = String::new();
         for seg in &self.segments {
             match seg {
@@ -176,9 +215,50 @@ impl Bound {
                 BoundSegment::Gen(Generator::Int { lo, hi }) => {
                     let _ = write!(out, "{}", rand::rng().random_range(*lo..=*hi));
                 }
+                BoundSegment::Gen(Generator::Size(kind)) => write_sized(&mut out, *kind, n),
             }
         }
         out
+    }
+}
+
+const ALPHANUMERIC: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+
+/// Fresh random contents every call, so a server can't cache its way to O(1).
+fn write_sized(out: &mut String, kind: SizeKind, n: u64) {
+    let mut rng = rand::rng();
+    let mut word = |out: &mut String, len: usize| {
+        for _ in 0..len {
+            out.push(ALPHANUMERIC[rng.random_range(0..ALPHANUMERIC.len())] as char);
+        }
+    };
+    match kind {
+        SizeKind::Value => {
+            let _ = write!(out, "{n}");
+        }
+        SizeKind::String => word(out, n as usize),
+        SizeKind::IntArray => {
+            out.push('[');
+            for i in 0..n {
+                if i > 0 {
+                    out.push(',');
+                }
+                let _ = write!(out, "{}", rand::rng().random_range(0..1_000_000));
+            }
+            out.push(']');
+        }
+        SizeKind::ObjectArray => {
+            out.push('[');
+            for i in 0..n {
+                if i > 0 {
+                    out.push(',');
+                }
+                let _ = write!(out, "{{\"id\":{},\"name\":\"", rand::rng().random_range(0..1_000_000));
+                word(out, 8);
+                out.push_str("\"}");
+            }
+            out.push(']');
+        }
     }
 }
 
@@ -235,11 +315,40 @@ mod tests {
     }
 
     #[test]
+    fn size_generators_scale_with_n_and_are_fresh() {
+        let empty = BTreeMap::new();
+        let s = scope(&empty, &empty);
+        let bind = |src: &str| Template::parse(src).unwrap().bind(&s, &mut vec![]);
+        let state = GenState::default();
+
+        assert_eq!(bind("limit={{n}}").render_sized(&state, 250), "limit=250");
+        assert_eq!(bind("{{n}}").render(&state), "1", "n is 1 outside Big-O runs");
+        assert_eq!(bind("{{n:string}}").render_sized(&state, 17).len(), 17);
+
+        let ints = bind("{{n:int_array}}");
+        let a: Vec<i64> = serde_json::from_str(&ints.render_sized(&state, 100)).unwrap();
+        let b: Vec<i64> = serde_json::from_str(&ints.render_sized(&state, 100)).unwrap();
+        assert_eq!(a.len(), 100);
+        assert_ne!(a, b, "contents must be fresh each request");
+        assert!(ints.uses_size() && !bind("{{seq}}").uses_size());
+
+        let objects: Vec<serde_json::Value> =
+            serde_json::from_str(&bind("{{n:object_array}}").render_sized(&state, 3)).unwrap();
+        assert_eq!(objects.len(), 3);
+        assert!(objects[0]["id"].is_i64() && objects[0]["name"].is_string());
+        assert_eq!(bind("{{n:int_array}}").render_sized(&state, 0), "[]");
+        assert!(Template::parse("{{n:floats}}").is_err());
+    }
+
+    #[test]
     fn rejects_malformed_templates() {
         assert!(matches!(Template::parse("{{open"), Err(TemplateError::Unclosed(_))));
         assert!(matches!(Template::parse("{{ }}"), Err(TemplateError::Empty(_))));
         assert!(matches!(Template::parse("{{int:9..1}}"), Err(TemplateError::BadGenerator(..))));
         let plain = Template::parse("no {placeholders}").unwrap();
-        assert_eq!(plain.bind(&scope(&BTreeMap::new(), &BTreeMap::new()), &mut vec![]).render(&GenState::default()), "no {placeholders}");
+        assert_eq!(
+            plain.bind(&scope(&BTreeMap::new(), &BTreeMap::new()), &mut vec![]).render(&GenState::default()),
+            "no {placeholders}"
+        );
     }
 }

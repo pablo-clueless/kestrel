@@ -27,13 +27,13 @@ export const KeyValueEditor = ({ rows, onChange, keyPlaceholder = "name" }: Prop
             aria-label="Enabled"
           />
           <Input
-            className="flex-1"
+            className="flex-1 text-xs md:text-xs"
             placeholder={keyPlaceholder}
             value={row.key}
             onChange={(e) => update(i, { key: e.target.value })}
           />
           <Input
-            className="flex-2 font-mono"
+            className="flex-2 font-mono text-xs md:text-xs"
             placeholder="value or {{var}}"
             value={row.value}
             onChange={(e) => update(i, { value: e.target.value })}

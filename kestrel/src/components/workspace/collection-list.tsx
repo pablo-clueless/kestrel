@@ -1,7 +1,7 @@
 "use client";
 
 import { ChevronDown, ChevronRight, FileUp, Plus, Settings2, Trash2, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 
 import { activeCollectionOf, useWorkspaceStore } from "@/stores/workspace-store";
 import type { Collection } from "@/types/engine/Collection";
@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { EndpointList } from "./endpoint-list";
 import { ImportDialog } from "./import-dialog";
 import { Input } from "@/components/ui/input";
+import { useValues } from "@/hooks/use-values";
 import { cn } from "@/lib/utils";
 import { Label } from "./fields";
 import {
@@ -24,11 +25,18 @@ import {
  * Also loads the workspace. */
 export const CollectionList = () => {
   const { workspace, loadError, load, setActiveCollection, addCollection } = useWorkspaceStore();
-  const [adding, setAdding] = useState(false);
-  const [newName, setNewName] = useState("");
-  const [editing, setEditing] = useState<Collection | null>(null);
-  const [deleting, setDeleting] = useState<Collection | null>(null);
-  const [importing, setImporting] = useState(false);
+  const { values, set, patch } = useValues({
+    initialValue: {
+      // Inline "new collection" name field.
+      adding: false,
+      newName: "",
+      // Which dialog is open.
+      editing: null as Collection | null,
+      deleting: null as Collection | null,
+      importing: false,
+    },
+  });
+  const { adding, newName, editing, deleting, importing } = values;
   const active = activeCollectionOf(workspace);
 
   useEffect(() => {
@@ -49,8 +57,7 @@ export const CollectionList = () => {
   const create = () => {
     const name = newName.trim();
     if (name) addCollection(name);
-    setNewName("");
-    setAdding(false);
+    patch({ newName: "", adding: false });
   };
 
   return (
@@ -60,7 +67,7 @@ export const CollectionList = () => {
         <div className="flex items-center gap-2">
           <button
             className="text-muted-foreground hover:text-primary"
-            onClick={() => setImporting(true)}
+            onClick={() => set("importing", true)}
             disabled={!workspace}
             aria-label="Import API spec"
             title="Import OpenAPI / Swagger"
@@ -69,7 +76,7 @@ export const CollectionList = () => {
           </button>
           <button
             className="text-muted-foreground hover:text-primary"
-            onClick={() => setAdding(true)}
+            onClick={() => set("adding", true)}
             disabled={!workspace}
             aria-label="New collection"
             title="New empty collection"
@@ -78,7 +85,6 @@ export const CollectionList = () => {
           </button>
         </div>
       </div>
-
       {adding && (
         <form
           onSubmit={(e) => {
@@ -90,13 +96,12 @@ export const CollectionList = () => {
             autoFocus
             placeholder="Collection name"
             value={newName}
-            onChange={(e) => setNewName(e.target.value)}
+            onChange={(e) => set("newName", e.target.value)}
             onBlur={create}
-            onKeyDown={(e) => e.key === "Escape" && setAdding(false)}
+            onKeyDown={(e) => e.key === "Escape" && set("adding", false)}
           />
         </form>
       )}
-
       <nav className="-mx-2 flex-1 overflow-y-auto">
         {workspace?.collections.map((c) => {
           const isActive = c.id === active?.id;
@@ -125,14 +130,14 @@ export const CollectionList = () => {
                 </button>
                 <button
                   className="text-muted-foreground hover:text-primary hidden group-hover:block"
-                  onClick={() => setEditing(c)}
+                  onClick={() => set("editing", c)}
                   aria-label={`Settings for ${c.name}`}
                 >
                   <Settings2 className="size-3.5" />
                 </button>
                 <button
                   className="text-muted-foreground hidden group-hover:block hover:text-red-600"
-                  onClick={() => setDeleting(c)}
+                  onClick={() => set("deleting", c)}
                   aria-label={`Delete ${c.name}`}
                 >
                   <Trash2 className="size-3.5" />
@@ -148,10 +153,9 @@ export const CollectionList = () => {
           </p>
         )}
       </nav>
-
-      <CollectionSettingsDialog collection={editing} onClose={() => setEditing(null)} />
-      <DeleteCollectionDialog collection={deleting} onClose={() => setDeleting(null)} />
-      <ImportDialog open={importing} onClose={() => setImporting(false)} />
+      <CollectionSettingsDialog collection={editing} onClose={() => set("editing", null)} />
+      <DeleteCollectionDialog collection={deleting} onClose={() => set("deleting", null)} />
+      <ImportDialog open={importing} onClose={() => set("importing", false)} />
     </div>
   );
 };
@@ -169,8 +173,12 @@ const CollectionSettingsDialog = ({
   const live = useWorkspaceStore(
     (s) => s.workspace?.collections.find((c) => c.id === collection?.id) ?? null,
   );
-  const [key, setKey] = useState("");
-  const [value, setValue] = useState("");
+  // The "add variable" row.
+  const {
+    values: draft,
+    set: setDraft,
+    reset: clearDraft,
+  } = useValues({ initialValue: { key: "", value: "" } });
 
   return (
     <Dialog open={live !== null} onOpenChange={(open) => !open && onClose()}>
@@ -216,23 +224,22 @@ const CollectionSettingsDialog = ({
                 className="flex items-center gap-1.5"
                 onSubmit={(e) => {
                   e.preventDefault();
-                  if (!key.trim()) return;
-                  setCollectionVar(live.id, key.trim(), value);
-                  setKey("");
-                  setValue("");
+                  if (!draft.key.trim()) return;
+                  setCollectionVar(live.id, draft.key.trim(), draft.value);
+                  clearDraft();
                 }}
               >
                 <Input
                   className="w-24 shrink-0"
                   placeholder="base"
-                  value={key}
-                  onChange={(e) => setKey(e.target.value)}
+                  value={draft.key}
+                  onChange={(e) => setDraft("key", e.target.value)}
                 />
                 <Input
                   className="flex-1 font-mono"
                   placeholder="https://api.example.com"
-                  value={value}
-                  onChange={(e) => setValue(e.target.value)}
+                  value={draft.value}
+                  onChange={(e) => setDraft("value", e.target.value)}
                 />
                 <button
                   type="submit"

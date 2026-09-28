@@ -3,16 +3,12 @@
 /**
  * Tallies contract checks across a run.
  */
-export type ContractSummary = {
-  checked: number;
-  undeclaredStatus: number;
-  schemaMismatch: number;
-  /**
-   * Up to 5 distinct violation messages, redacted.
-   */
-  examples: Array<string>;
-  /**
-   * Under load only a sample of responses is validated.
-   */
-  sampled: boolean;
-};
+export type ContractSummary = { checked: number, undeclaredStatus: number, schemaMismatch: number, 
+/**
+ * Up to 5 distinct violation messages, redacted.
+ */
+examples: Array<string>, 
+/**
+ * Under load only a sample of responses is validated.
+ */
+sampled: boolean, };

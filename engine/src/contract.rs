@@ -193,7 +193,6 @@ impl ContractSummary {
             self.examples.push(message);
         }
     }
-
 }
 
 #[cfg(test)]
@@ -216,7 +215,10 @@ mod tests {
             responses: vec![
                 ExpectedResponse { status: "200".into(), schema: Some(json!({ "$ref": "#/components/schemas/Pet" })) },
                 ExpectedResponse { status: "204".into(), schema: None },
-                ExpectedResponse { status: "4XX".into(), schema: Some(json!({ "$ref": "#/components/schemas/Error" })) },
+                ExpectedResponse {
+                    status: "4XX".into(),
+                    schema: Some(json!({ "$ref": "#/components/schemas/Error" })),
+                },
             ],
         };
         Contract::compile(&expect, Some(&defs)).unwrap().unwrap()

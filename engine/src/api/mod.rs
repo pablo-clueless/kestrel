@@ -163,10 +163,8 @@ mod tests {
 
     #[tokio::test]
     async fn query_token_only_works_on_the_events_endpoint() {
-        let req = Request::get(format!("/api/health?token={TOKEN}"))
-            .header(header::HOST, HOST)
-            .body(Body::empty())
-            .unwrap();
+        let req =
+            Request::get(format!("/api/health?token={TOKEN}")).header(header::HOST, HOST).body(Body::empty()).unwrap();
         assert_eq!(status(&app(), req).await, StatusCode::FORBIDDEN);
 
         // Passes the guard, then 404s because the run doesn't exist.
@@ -209,10 +207,8 @@ mod tests {
         let app = Router::new().route(
             "/echo-headers",
             axum::routing::get(|headers: HeaderMap| async move {
-                let map: std::collections::BTreeMap<String, String> = headers
-                    .iter()
-                    .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or_default().to_owned()))
-                    .collect();
+                let map: std::collections::BTreeMap<String, String> =
+                    headers.iter().map(|(k, v)| (k.to_string(), v.to_str().unwrap_or_default().to_owned())).collect();
                 Json(map)
             }),
         );
@@ -233,17 +229,17 @@ mod tests {
                 schema_defs: None,
                 vars: Default::default(),
                 endpoints: vec![Endpoint {
-                id,
-                name: "echo headers".into(),
-                group: None,
-                method: HttpMethod::Get,
-                url: "{{base}}/echo-headers".into(),
-                headers: vec![],
-                query: vec![],
-                body: Body::None,
-                auth: Auth::Bearer { token: "{{token}}".into() },
-                expect: None,
-            }],
+                    id,
+                    name: "echo headers".into(),
+                    group: None,
+                    method: HttpMethod::Get,
+                    url: "{{base}}/echo-headers".into(),
+                    headers: vec![],
+                    query: vec![],
+                    body: Body::None,
+                    auth: Auth::Bearer { token: "{{token}}".into() },
+                    expect: None,
+                }],
             }],
             environments: vec![Environment {
                 name: "local".into(),
@@ -252,7 +248,8 @@ mod tests {
             active_environment: Some("local".into()),
             active_collection: None,
         };
-        let secrets: Secrets = [("local".to_string(), [("token".to_string(), "hunter2-secret".to_string())].into())].into();
+        let secrets: Secrets =
+            [("local".to_string(), [("token".to_string(), "hunter2-secret".to_string())].into())].into();
         (workspace, secrets, id)
     }
 
@@ -280,19 +277,13 @@ mod tests {
         let StartRunResponse { run_id } = json_body(res).await;
 
         // Drain the stream; it ends after `Finished`.
-        let events = app
-            .clone()
-            .oneshot(get(&format!("/api/runs/{run_id}/events")).body(Body::empty()).unwrap())
-            .await
-            .unwrap();
+        let events =
+            app.clone().oneshot(get(&format!("/api/runs/{run_id}/events")).body(Body::empty()).unwrap()).await.unwrap();
         let body = String::from_utf8(events.into_body().collect().await.unwrap().to_bytes().to_vec()).unwrap();
         assert!(body.contains(r#""type":"finished""#));
         assert!(!body.contains("hunter2"), "secrets must never reach the event stream");
 
-        let res = app
-            .oneshot(get(&format!("/api/runs/{run_id}/report")).body(Body::empty()).unwrap())
-            .await
-            .unwrap();
+        let res = app.oneshot(get(&format!("/api/runs/{run_id}/report")).body(Body::empty()).unwrap()).await.unwrap();
         let text = String::from_utf8(res.into_body().collect().await.unwrap().to_bytes().to_vec()).unwrap();
         assert!(!text.contains("hunter2"), "report leaked the secret: {text}");
         let report: RunReport = serde_json::from_str(&text).unwrap();
@@ -366,7 +357,11 @@ mod tests {
         let res = app.clone().oneshot(post_json("/api/runs", config)).await.unwrap();
         assert_eq!(res.status(), StatusCode::CREATED);
         let StartRunResponse { run_id } = json_body(res).await;
-        let stop = Request::delete(format!("/api/runs/{run_id}")).header(header::HOST, HOST).header(TOKEN_HEADER, TOKEN).body(Body::empty()).unwrap();
+        let stop = Request::delete(format!("/api/runs/{run_id}"))
+            .header(header::HOST, HOST)
+            .header(TOKEN_HEADER, TOKEN)
+            .body(Body::empty())
+            .unwrap();
         assert_eq!(status(&app, stop).await, StatusCode::ACCEPTED);
     }
 
@@ -410,10 +405,15 @@ mod tests {
                     query: vec![],
                     body: Default::default(),
                     auth: Default::default(),
-                    expect: Some(Expectation { responses: vec![
-                        ExpectedResponse { status: "200".into(), schema: Some(serde_json::json!({ "$ref": "#/components/schemas/Pet" })) },
-                        ExpectedResponse { status: "404".into(), schema: None },
-                    ]}),
+                    expect: Some(Expectation {
+                        responses: vec![
+                            ExpectedResponse {
+                                status: "200".into(),
+                                schema: Some(serde_json::json!({ "$ref": "#/components/schemas/Pet" })),
+                            },
+                            ExpectedResponse { status: "404".into(), schema: None },
+                        ],
+                    }),
                 }],
             }],
             ..Default::default()
@@ -422,11 +422,14 @@ mod tests {
         let config = format!(
             r#"{{"kind":"latency","endpointId":"{id}","warmup":0,"samples":4,"keepAlive":true,"timeoutMs":5000}}"#
         );
-        let StartRunResponse { run_id } = json_body(app.clone().oneshot(post_json("/api/runs", config)).await.unwrap()).await;
+        let StartRunResponse { run_id } =
+            json_body(app.clone().oneshot(post_json("/api/runs", config)).await.unwrap()).await;
         let events = get(&format!("/api/runs/{run_id}/events")).body(Body::empty()).unwrap();
         app.clone().oneshot(events).await.unwrap().into_body().collect().await.unwrap();
-        let report: RunReport =
-            json_body(app.oneshot(get(&format!("/api/runs/{run_id}/report")).body(Body::empty()).unwrap()).await.unwrap()).await;
+        let report: RunReport = json_body(
+            app.oneshot(get(&format!("/api/runs/{run_id}/report")).body(Body::empty()).unwrap()).await.unwrap(),
+        )
+        .await;
 
         let contract = report.contract.expect("contract summary");
         assert_eq!((contract.checked, contract.schema_mismatch, contract.undeclared_status), (4, 1, 1));
@@ -434,6 +437,77 @@ mod tests {
         assert!(!contract.sampled);
         assert_eq!(report.total_errors, 1, "declared 404 is fine; undeclared 500 is an error");
         assert!(report.samples.iter().any(|s| s.contract.as_ref().is_some_and(|c| !c.passed)));
+    }
+
+    #[tokio::test]
+    async fn complexity_run_sweeps_every_size_and_fits() {
+        use crate::model::{Body as ReqBody, Collection, Endpoint, HttpMethod};
+        let app = Router::new().route(
+            "/count",
+            axum::routing::post(|body: axum::body::Bytes| async move {
+                let items: Vec<i64> = serde_json::from_slice(&body).unwrap();
+                items.len().to_string()
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let (with_n, without_n) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        let endpoint = |id, body: &str| Endpoint {
+            id,
+            name: String::new(),
+            group: None,
+            method: HttpMethod::Post,
+            url: "{{base}}/count".into(),
+            headers: vec![],
+            query: vec![],
+            body: ReqBody::Json { content: body.into() },
+            auth: Default::default(),
+            expect: None,
+        };
+        let workspace = Workspace {
+            collections: vec![Collection {
+                id: uuid::Uuid::new_v4(),
+                name: "c".into(),
+                vars: [("base".to_string(), base)].into(),
+                source: None,
+                schema_defs: None,
+                endpoints: vec![endpoint(with_n, "{{n:int_array}}"), endpoint(without_n, "[1,2,3]")],
+            }],
+            ..Default::default()
+        };
+        let app = app_with(workspace, Secrets::default());
+        let config = |id: uuid::Uuid| {
+            format!(
+                r#"{{"kind":"complexity","endpointId":"{id}","minN":1,"maxN":64,"points":4,"samples":3,"warmup":1,"timeoutMs":5000,"keepAlive":true,"slowMs":5000,"budgetMs":60000}}"#
+            )
+        };
+
+        let res = app.clone().oneshot(post_json("/api/runs", config(without_n))).await.unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body: serde_json::Value = json_body(res).await;
+        assert!(body["error"].as_str().unwrap().contains("{{n}}"), "{body}");
+
+        let StartRunResponse { run_id } =
+            json_body(app.clone().oneshot(post_json("/api/runs", config(with_n))).await.unwrap()).await;
+        let events =
+            app.clone().oneshot(get(&format!("/api/runs/{run_id}/events")).body(Body::empty()).unwrap()).await.unwrap();
+        let stream = String::from_utf8(events.into_body().collect().await.unwrap().to_bytes().to_vec()).unwrap();
+        assert!(stream.contains(r#""type":"complexity""#), "progress events are streamed");
+
+        let report: RunReport = json_body(
+            app.oneshot(get(&format!("/api/runs/{run_id}/report")).body(Body::empty()).unwrap()).await.unwrap(),
+        )
+        .await;
+        assert_eq!(report.status, RunStatus::Completed);
+        assert_eq!(report.total_requests, 12, "4 sizes × 3 rounds; warm-up excluded");
+        let result = report.complexity.expect("complexity result");
+        let sizes: Vec<u64> = result.points.iter().map(|p| p.n).collect();
+        assert_eq!(sizes, vec![1, 4, 16, 64]);
+        assert!(result.points.iter().all(|p| p.samples == 3));
+        assert!(result.points[3].request_bytes > result.points[0].request_bytes * 10, "bodies grow with n");
+        assert!(!result.analysis.fits.is_empty());
     }
 
     /// Start a short fake run, read the whole SSE stream, then fetch the report.
@@ -450,11 +524,8 @@ mod tests {
         assert_eq!(res.status(), StatusCode::CREATED);
         let StartRunResponse { run_id } = json_body(res).await;
 
-        let res = app
-            .clone()
-            .oneshot(get(&format!("/api/runs/{run_id}/events")).body(Body::empty()).unwrap())
-            .await
-            .unwrap();
+        let res =
+            app.clone().oneshot(get(&format!("/api/runs/{run_id}/events")).body(Body::empty()).unwrap()).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
         let body = String::from_utf8(res.into_body().collect().await.unwrap().to_bytes().to_vec()).unwrap();
 
@@ -481,10 +552,7 @@ mod tests {
         let tail = String::from_utf8(body.to_bytes().to_vec()).unwrap();
         assert_eq!(tail.lines().filter(|l| l.starts_with("data: ")).count(), 1);
 
-        let res = app
-            .oneshot(get(&format!("/api/runs/{run_id}/report")).body(Body::empty()).unwrap())
-            .await
-            .unwrap();
+        let res = app.oneshot(get(&format!("/api/runs/{run_id}/report")).body(Body::empty()).unwrap()).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
         let report: RunReport = json_body(res).await;
         assert_eq!(report.status, RunStatus::Completed);

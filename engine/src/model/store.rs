@@ -156,9 +156,7 @@ mod tests {
         fs::write(dir.join(".gitignore"), "/target").unwrap();
 
         let store = WorkspaceStore::open(&dir).unwrap();
-        store
-            .save_workspace(Workspace { active_environment: Some("local".into()), ..Default::default() })
-            .unwrap();
+        store.save_workspace(Workspace { active_environment: Some("local".into()), ..Default::default() }).unwrap();
         store.set_secret("local", "token", Some("s3cret".into())).unwrap();
 
         let reopened = WorkspaceStore::open(&dir).unwrap();

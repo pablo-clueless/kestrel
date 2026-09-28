@@ -4,22 +4,18 @@ import type { Endpoint } from "./Endpoint";
 /**
  * A named set of endpoints, usually one API (one imported spec).
  */
-export type Collection = {
-  id: string;
-  name: string;
-  /**
-   * Defaults for `{{…}}` in this collection's endpoints, e.g. `base`. The active environment's
-   * variables and secrets override these.
-   */
-  vars: { [key in string]: string };
-  endpoints: Array<Endpoint>;
-  /**
-   * Where the collection came from, e.g. "OpenAPI 3.0.3 · Petstore 1.0.0". None if made by hand.
-   */
-  source: string | null;
-  /**
-   * Shared schema definitions from the spec (`{"components": {"schemas": …}}` or `{"definitions": …}`),
-   * stored once so response schemas can keep their `$ref`s (recursive schemas included).
-   */
-  schemaDefs: unknown;
-};
+export type Collection = { id: string, name: string, 
+/**
+ * Defaults for `{{…}}` in this collection's endpoints, e.g. `base`. The active environment's
+ * variables and secrets override these.
+ */
+vars: { [key in string]: string }, endpoints: Array<Endpoint>, 
+/**
+ * Where the collection came from, e.g. "OpenAPI 3.0.3 · Petstore 1.0.0". None if made by hand.
+ */
+source: string | null, 
+/**
+ * Shared schema definitions from the spec (`{"components": {"schemas": …}}` or `{"definitions": …}`),
+ * stored once so response schemas can keep their `$ref`s (recursive schemas included).
+ */
+schemaDefs: unknown, };

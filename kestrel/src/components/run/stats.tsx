@@ -7,6 +7,7 @@ import type { ContractSummary } from "@/types/engine/ContractSummary";
 import { StatGrid, StatTile } from "@/components/shared/stat-tile";
 import { StatusBadge } from "@/components/shared/method-badge";
 import { DistributionChart, LiveChart } from "./charts";
+import { ComplexityLive, ComplexityResults } from "./complexity";
 import { useRunStore } from "@/stores/run-store";
 
 const ms = (v: number | null | undefined) =>
@@ -18,6 +19,8 @@ export const LiveSummary = () => {
   const last = useRunStore((s) => s.buckets.at(-1));
   const isLoad = useRunStore((s) => s.config?.kind === "load");
   const errPct = last && last.requests > 0 ? (last.errors / last.requests) * 100 : undefined;
+  const isComplexity = useRunStore((s) => s.config?.kind === "complexity");
+  if (isComplexity) return <ComplexityLive />;
 
   return (
     <div className="flex flex-col gap-6">
@@ -70,6 +73,15 @@ export const ResultsSummary = () => {
       <p className="text-muted-foreground text-sm">
         Percentiles, the distribution, status codes and error classes appear when a run finishes.
       </p>
+    );
+  }
+
+  if (report.complexity) {
+    return (
+      <div className="flex flex-col gap-6">
+        <ComplexityResults result={report.complexity} />
+        <Notes notes={report.notes} />
+      </div>
     );
   }
 
@@ -211,3 +223,12 @@ const ContractSection = ({ contract }: { contract: ContractSummary }) => {
     </div>
   );
 };
+
+const Notes = ({ notes }: { notes: string[] }) =>
+  notes.length > 0 ? (
+    <ul className="bg-muted text-muted-foreground flex flex-col gap-1.5 rounded-lg p-3 text-xs">
+      {notes.map((n) => (
+        <li key={n}>{n}</li>
+      ))}
+    </ul>
+  ) : null;

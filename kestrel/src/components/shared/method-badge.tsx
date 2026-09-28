@@ -1,11 +1,11 @@
 import { cn } from "cn";
 
 const STYLES: Record<string, string> = {
-  GET: "bg-green-50 text-green-700 dark:bg-green-950 dark:text-green-400",
-  POST: "bg-orange-50 text-orange-700 dark:bg-orange-950 dark:text-orange-400",
-  PUT: "bg-blue-50 text-blue-700 dark:bg-blue-950 dark:text-blue-400",
-  PATCH: "bg-purple-50 text-purple-700 dark:bg-purple-950 dark:text-purple-400",
-  DELETE: "bg-red-50 text-red-700 dark:bg-red-950 dark:text-red-400",
+  GET: "bg-green-100 text-green-700 ",
+  POST: "bg-orange-100 text-orange-700",
+  PUT: "bg-blue-100 text-blue-700",
+  PATCH: "bg-purple-100 text-purple-700",
+  DELETE: "bg-red-100 text-red-700",
 };
 
 const SHORT: Record<string, string> = { DELETE: "DEL", OPTIONS: "OPT", PATCH: "PATCH" };

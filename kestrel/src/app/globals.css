@@ -1,6 +1,10 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 
+/* `dark:` utilities follow the `.dark` class, like the theme tokens, not the OS setting. Otherwise an
+   OS in dark mode applies dark-only styles on top of the light theme. */
+@custom-variant dark (&:where(.dark, .dark *));
+
 :root {
   font-synthesis: none;
   text-rendering: optimizeLegibility;

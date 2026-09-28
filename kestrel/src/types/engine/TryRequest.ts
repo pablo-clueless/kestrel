@@ -4,8 +4,4 @@ import type { Endpoint } from "./Endpoint";
 /**
  * `POST /api/render` and `POST /api/send`. Takes the endpoint inline so unsaved drafts can be tried.
  */
-export type TryRequest = {
-  endpoint: Endpoint;
-  environment: string | null;
-  timeoutMs: number | null;
-};
+export type TryRequest = { endpoint: Endpoint, environment: string | null, timeoutMs: number | null, };

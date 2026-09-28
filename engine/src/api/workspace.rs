@@ -7,7 +7,7 @@ use crate::{
     engine::{
         client::{self, ClientOptions},
         sample,
-        types::{SentRequest, Sample},
+        types::{Sample, SentRequest},
     },
     error::ApiError,
     model::{SetSecretRequest, TryRequest, Workspace, WorkspaceResponse},
@@ -73,7 +73,8 @@ pub async fn send(State(state): State<AppState>, Json(req): Json<TryRequest>) ->
     let redactor = Redactor::new(compiled.api_key_header.as_deref(), &compiled.secret_values, Some(&rendered));
     let mut sample = sample::build(&rendered, &outcome, &redactor, SEND_BODY_BYTES);
     // The draft endpoint carries its own `expect`; schema definitions come from its saved collection.
-    let contract = crate::contract::for_endpoint(&state.store.workspace(), &req.endpoint).map_err(ApiError::BadRequest)?;
+    let contract =
+        crate::contract::for_endpoint(&state.store.workspace(), &req.endpoint).map_err(ApiError::BadRequest)?;
     if let (Some(contract), Some(status)) = (contract, outcome.status) {
         let check = contract.check(status, &outcome.body);
         sample.contract = Some(crate::contract::ContractCheck { message: redactor.text(&check.message), ..check });

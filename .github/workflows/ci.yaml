@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# A newer push to the same branch or PR supersedes the running check.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  engine:
+    name: Engine (Rust)
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy -p engine --all-targets --locked -- -D warnings
+
+      - name: Test
+        run: cargo test -p engine --locked
+
+      # `cargo test` regenerates the TypeScript bindings the UI imports. If they differ from what's
+      # committed, a Rust type changed without its bindings being updated.
+      - name: TypeScript bindings are up to date
+        run: |
+          if [ -n "$(git status --porcelain -- kestrel/src/types/engine)" ]; then
+            echo "::error::kestrel/src/types/engine is out of date. Run 'cargo test -p engine export_bindings' and commit the result."
+            git status --short -- kestrel/src/types/engine
+            git diff -- kestrel/src/types/engine
+            exit 1
+          fi
+
+  web:
+    name: Web (Next.js)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: kestrel
+    steps:
+      - uses: actions/checkout@v4
+
+      # Uses the version pinned in package.json's `packageManager` field.
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: kestrel/package.json
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: kestrel/pnpm-lock.yaml
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Format
+        run: pnpm prettier:check
+
+      - name: Lint
+        run: pnpm lint
+
+      # Also the typecheck: `next build` generates the route types (`LayoutProps` etc.) into .next and
+      # runs TypeScript. A bare `tsc` on a fresh checkout would fail without them.
+      # Static export, as the engine will serve it. No engine or token is needed to build.
+      - name: Build and typecheck
+        run: pnpm build

@@ -1,10 +1,17 @@
 "use client";
 
 import { AlertTriangle, FileUp } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 
+import type { ImportResult } from "@/types/engine/ImportResult";
 import { MethodBadge } from "@/components/shared/method-badge";
+import { useWorkspaceStore } from "@/stores/workspace-store";
+import { errorMessage, importSpec } from "@/lib/client";
+import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
+import { useValues } from "@/hooks/use-values";
+import { Input } from "@/components/ui/input";
+import { cn } from "@/lib/utils";
 import {
   Dialog,
   DialogContent,
@@ -13,39 +20,30 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
-import { errorMessage, importSpec } from "@/lib/client";
-import { cn } from "@/lib/utils";
-import { useWorkspaceStore } from "@/stores/workspace-store";
-import type { ImportResult } from "@/types/engine/ImportResult";
 
 import { Label, Tabs } from "./fields";
 
 type SourceTab = "file" | "paste" | "url";
 
+/** Everything the dialog holds. Closing resets to this. */
+const INITIAL = {
+  tab: "file" as SourceTab,
+  text: "",
+  fileName: null as string | null,
+  url: "",
+  name: "",
+  pending: false,
+  error: null as string | null,
+  result: null as ImportResult | null,
+  dragging: false,
+};
+
 /** OpenAPI 3.0/3.1 or Swagger 2.0 (JSON or YAML) → a new collection. Two steps: source, then review. */
 export const ImportDialog = ({ open, onClose }: { open: boolean; onClose: () => void }) => {
   const addImportedCollection = useWorkspaceStore((s) => s.addImportedCollection);
-  const [tab, setTab] = useState<SourceTab>("file");
-  const [text, setText] = useState("");
-  const [fileName, setFileName] = useState<string | null>(null);
-  const [url, setUrl] = useState("");
-  const [name, setName] = useState("");
-  const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<ImportResult | null>(null);
-  const [dragging, setDragging] = useState(false);
+  const { values, set, patch, reset } = useValues({ initialValue: INITIAL });
+  const { tab, text, fileName, url, name, pending, error, result, dragging } = values;
 
-  const reset = () => {
-    setText("");
-    setFileName(null);
-    setUrl("");
-    setName("");
-    setError(null);
-    setResult(null);
-    setPending(false);
-  };
   const close = () => {
     reset();
     onClose();
@@ -53,24 +51,21 @@ export const ImportDialog = ({ open, onClose }: { open: boolean; onClose: () => 
 
   const readFile = async (file: File | undefined) => {
     if (!file) return;
-    setFileName(file.name);
-    setText(await file.text());
-    setError(null);
+    patch({ fileName: file.name, text: await file.text(), error: null });
   };
 
   const canImport = tab === "url" ? url.trim().length > 0 : text.trim().length > 0;
 
   const run = async () => {
-    setPending(true);
-    setError(null);
+    patch({ pending: true, error: null });
     try {
       const source =
         tab === "url" ? { type: "url" as const, url } : { type: "text" as const, content: text };
-      setResult(await importSpec({ source, name: name.trim() || null }));
+      set("result", await importSpec({ source, name: name.trim() || null }));
     } catch (err) {
-      setError(errorMessage(err));
+      set("error", errorMessage(err));
     } finally {
-      setPending(false);
+      set("pending", false);
     }
   };
 
@@ -97,7 +92,7 @@ export const ImportDialog = ({ open, onClose }: { open: boolean; onClose: () => 
           <div className="flex flex-col gap-4 text-sm">
             <Tabs<SourceTab>
               value={tab}
-              onChange={setTab}
+              onChange={(t) => set("tab", t)}
               tabs={[
                 { id: "file", label: "File" },
                 { id: "paste", label: "Paste" },
@@ -108,12 +103,12 @@ export const ImportDialog = ({ open, onClose }: { open: boolean; onClose: () => 
               <label
                 onDragOver={(e) => {
                   e.preventDefault();
-                  setDragging(true);
+                  set("dragging", true);
                 }}
-                onDragLeave={() => setDragging(false)}
+                onDragLeave={() => set("dragging", false)}
                 onDrop={(e) => {
                   e.preventDefault();
-                  setDragging(false);
+                  set("dragging", false);
                   void readFile(e.dataTransfer.files[0]);
                 }}
                 className={cn(
@@ -140,7 +135,7 @@ export const ImportDialog = ({ open, onClose }: { open: boolean; onClose: () => 
                 className="h-48 font-mono text-xs"
                 placeholder={"openapi: 3.0.3\ninfo:\n  title: My API\n…"}
                 value={text}
-                onChange={(e) => setText(e.target.value)}
+                onChange={(e) => set("text", e.target.value)}
               />
             )}
             {tab === "url" && (
@@ -148,7 +143,7 @@ export const ImportDialog = ({ open, onClose }: { open: boolean; onClose: () => 
                 <Input
                   placeholder="https://api.example.com/openapi.json"
                   value={url}
-                  onChange={(e) => setUrl(e.target.value)}
+                  onChange={(e) => set("url", e.target.value)}
                 />
                 <p className="text-muted-foreground text-xs">
                   The engine fetches it (up to 10 MB).
@@ -160,7 +155,7 @@ export const ImportDialog = ({ open, onClose }: { open: boolean; onClose: () => 
               <Input
                 placeholder="Defaults to the spec's title"
                 value={name}
-                onChange={(e) => setName(e.target.value)}
+                onChange={(e) => set("name", e.target.value)}
               />
             </label>
             {error && <p className="text-destructive">{error}</p>}
@@ -170,7 +165,7 @@ export const ImportDialog = ({ open, onClose }: { open: boolean; onClose: () => 
         <DialogFooter>
           {result ? (
             <>
-              <Button variant="outline" onClick={() => setResult(null)}>
+              <Button variant="outline" onClick={() => set("result", null)}>
                 Back
               </Button>
               <Button onClick={add} disabled={result.collection.endpoints.length === 0}>

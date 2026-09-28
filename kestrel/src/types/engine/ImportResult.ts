@@ -4,14 +4,12 @@ import type { Collection } from "./Collection";
 /**
  * `POST /api/import`. The UI adds `collection` to the workspace.
  */
-export type ImportResult = {
-  collection: Collection;
-  /**
-   * E.g. "OpenAPI 3.0.3".
-   */
-  format: string;
-  /**
-   * Things that were skipped or guessed, for the user to review.
-   */
-  warnings: Array<string>;
-};
+export type ImportResult = { collection: Collection, 
+/**
+ * E.g. "OpenAPI 3.0.3".
+ */
+format: string, 
+/**
+ * Things that were skipped or guessed, for the user to review.
+ */
+warnings: Array<string>, };

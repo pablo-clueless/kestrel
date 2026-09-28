@@ -42,7 +42,7 @@ export const ConfirmHostDialog = ({ host, onClose, onConfirmed }: Props) => {
 
   return (
     <Dialog open={host !== null} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent>
+      <DialogContent className="sm:max-w-150">
         <DialogHeader>
           <DialogTitle>Load test {host}?</DialogTitle>
           <DialogDescription>

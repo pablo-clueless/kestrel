@@ -33,7 +33,12 @@ export const EnvironmentBar = () => {
           ))}
         </SelectContent>
       </Select>
-      <Button variant="outline" size="icon" onClick={() => setOpen(true)} aria-label="Manage environments">
+      <Button
+        variant="outline"
+        size="icon"
+        onClick={() => setOpen(true)}
+        aria-label="Manage environments"
+      >
         <Settings />
       </Button>
       <Sheet open={open} onOpenChange={setOpen}>
@@ -41,7 +46,8 @@ export const EnvironmentBar = () => {
           <SheetHeader>
             <SheetTitle>Environments</SheetTitle>
             <SheetDescription>
-              Variables and write-only secrets. The active environment overrides collection variables.
+              Variables and write-only secrets. The active environment overrides collection
+              variables.
             </SheetDescription>
           </SheetHeader>
           <div className="px-4 pb-6">

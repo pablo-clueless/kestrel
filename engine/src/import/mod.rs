@@ -213,12 +213,8 @@ impl Ctx<'_> {
             .or_else(|| text("operationId"))
             .map(str::to_owned)
             .unwrap_or_else(|| format!("{} {path}", format!("{method:?}").to_uppercase()));
-        let group = op
-            .get("tags")
-            .and_then(Value::as_array)
-            .and_then(|t| t.first())
-            .and_then(Value::as_str)
-            .map(str::to_owned);
+        let group =
+            op.get("tags").and_then(Value::as_array).and_then(|t| t.first()).and_then(Value::as_str).map(str::to_owned);
 
         // `{petId}` → `{{petId}}`; the value lives in a collection variable.
         let url = format!("{{{{base}}}}{}", path.replace('{', "{{").replace('}', "}}"));
@@ -237,7 +233,8 @@ impl Ctx<'_> {
                 }
                 "query" => query.push(KeyValue { key: name, value: self.param_example(&param), enabled: required }),
                 "header" => {
-                    let skip = ["authorization", "content-type", "accept"].contains(&name.to_ascii_lowercase().as_str());
+                    let skip =
+                        ["authorization", "content-type", "accept"].contains(&name.to_ascii_lowercase().as_str());
                     if !skip {
                         headers.push(KeyValue { key: name, value: self.param_example(&param), enabled: required });
                     }
@@ -359,7 +356,9 @@ impl Ctx<'_> {
         let http_scheme = scheme.get("scheme").and_then(Value::as_str).unwrap_or("").to_ascii_lowercase();
         match kind {
             "http" if http_scheme == "bearer" => Auth::Bearer { token: "{{token}}".into() },
-            "http" if http_scheme == "basic" => Auth::Basic { username: "{{username}}".into(), password: "{{password}}".into() },
+            "http" if http_scheme == "basic" => {
+                Auth::Basic { username: "{{username}}".into(), password: "{{password}}".into() }
+            }
             "basic" => Auth::Basic { username: "{{username}}".into(), password: "{{password}}".into() },
             "apiKey" => {
                 let name = scheme.get("name").and_then(Value::as_str).unwrap_or("X-API-Key").to_owned();
@@ -374,7 +373,9 @@ impl Ctx<'_> {
                 Auth::ApiKey { location, name, value: "{{apiKey}}".into() }
             }
             "oauth2" | "openIdConnect" => {
-                self.warn("OAuth2/OpenID Connect is imported as a Bearer token: put an access token in the `token` secret.");
+                self.warn(
+                    "OAuth2/OpenID Connect is imported as a Bearer token: put an access token in the `token` secret.",
+                );
                 Auth::Bearer { token: "{{token}}".into() }
             }
             other => {
@@ -414,11 +415,7 @@ fn media_example(root: &Value, media: &Value) -> Option<Value> {
         return Some(v.clone());
     }
     let first: Option<&Map<String, Value>> = media.get("examples").and_then(Value::as_object);
-    first
-        .and_then(|m| m.values().next())
-        .map(|e| resolve(root, e))
-        .and_then(|e| e.get("value"))
-        .cloned()
+    first.and_then(|m| m.values().next()).map(|e| resolve(root, e)).and_then(|e| e.get("value")).cloned()
 }
 
 fn urlencode(s: &str) -> String {

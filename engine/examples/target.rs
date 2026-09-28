@@ -180,10 +180,5 @@ async fn redirect(Query(q): Query<RedirectQuery>) -> Redirect {
 }
 
 async fn echo_headers(headers: HeaderMap) -> Json<BTreeMap<String, String>> {
-    Json(
-        headers
-            .iter()
-            .map(|(k, v)| (k.to_string(), String::from_utf8_lossy(v.as_bytes()).into_owned()))
-            .collect(),
-    )
+    Json(headers.iter().map(|(k, v)| (k.to_string(), String::from_utf8_lossy(v.as_bytes()).into_owned())).collect())
 }

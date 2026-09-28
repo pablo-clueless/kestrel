@@ -13,12 +13,12 @@ use uuid::Uuid;
 
 use super::AppState;
 use crate::{
+    contract::{self, Contract},
     engine::{
-        self, Prepared, latency, load,
+        self, Prepared, complexity, latency, load,
         registry::Envelope,
         types::{LoadMode, RunConfig, RunEvent, RunReport, RunStatus, RunSummary, StartRunResponse},
     },
-    contract::{self, Contract},
     error::ApiError,
     template::request::CompiledRequest,
 };
@@ -91,6 +91,21 @@ async fn prepare(state: &AppState, config: &RunConfig) -> Result<Prepared, ApiEr
             prepared.contract = contract.map(Arc::new);
             Ok(Prepared::Load(Box::new(prepared)))
         }
+        RunConfig::Complexity(cfg) => {
+            in_range("minN", cfg.min_n, 1, caps.max_n)?;
+            in_range("maxN", cfg.max_n, cfg.min_n, caps.max_n)?;
+            in_range("points", cfg.points, 3, caps.max_points)?;
+            in_range("samples", cfg.samples, 1, caps.max_samples)?;
+            in_range("warmup", cfg.warmup, 0, caps.max_warmup)?;
+            in_range("timeoutMs", cfg.timeout_ms, 1, max_timeout_ms)?;
+            in_range("slowMs", cfg.slow_ms, 1, max_timeout_ms)?;
+            in_range("budgetMs", cfg.budget_ms, 1_000, caps.max_sweep_duration.as_millis() as u32)?;
+            let (request, _) = compile_endpoint(state, cfg.endpoint_id, cfg.environment.as_deref())?;
+            let prepared = complexity::prepare(cfg.clone(), request, caps.max_sweep_duration, state.hosts.list())
+                .await
+                .map_err(ApiError::BadRequest)?;
+            Ok(Prepared::Complexity(Box::new(prepared)))
+        }
     }
 }
 
@@ -144,10 +159,7 @@ pub async fn events(
     headers: HeaderMap,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiError> {
     let run = state.runs.get(id).ok_or(ApiError::RunNotFound)?;
-    let after = headers
-        .get("last-event-id")
-        .and_then(|v| v.to_str().ok()?.parse().ok())
-        .or(query.last_event_id);
+    let after = headers.get("last-event-id").and_then(|v| v.to_str().ok()?.parse().ok()).or(query.last_event_id);
 
     let stream = async_stream::stream! {
         let mut last = after.unwrap_or(0);

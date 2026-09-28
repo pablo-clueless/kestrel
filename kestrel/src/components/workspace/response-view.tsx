@@ -4,8 +4,8 @@ import { ShieldAlert, ShieldCheck } from "lucide-react";
 import { useState } from "react";
 
 import { StatusBadge } from "@/components/shared/method-badge";
-import { cn } from "@/lib/utils";
 import { useSendStore } from "@/stores/send-store";
+import { cn } from "@/lib/utils";
 import { Tabs } from "./fields";
 
 type Tab = "body" | "headers" | "request";
@@ -60,7 +60,6 @@ export const ResponseView = () => {
           <span className="break-all">Spec: {result.contract.message}</span>
         </p>
       )}
-
       <Tabs<Tab>
         value={tab}
         onChange={setTab}

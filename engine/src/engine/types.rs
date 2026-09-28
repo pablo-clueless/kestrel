@@ -16,6 +16,8 @@ pub enum RunConfig {
     Latency(LatencyConfig),
     /// Concurrent load, closed or open model (HANDOFF → Test catalogue → Load test).
     Load(LoadConfig),
+    /// How latency grows with input size (HANDOFF → Test catalogue → Big-O).
+    Complexity(ComplexityConfig),
 }
 
 impl RunConfig {
@@ -24,6 +26,7 @@ impl RunConfig {
             Self::Fake(_) => RunKind::Fake,
             Self::Latency(_) => RunKind::Latency,
             Self::Load(_) => RunKind::Load,
+            Self::Complexity(_) => RunKind::Complexity,
         }
     }
 }
@@ -93,6 +96,7 @@ pub enum RunKind {
     Fake,
     Latency,
     Load,
+    Complexity,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -130,6 +134,8 @@ pub struct RunSummary {
 pub enum RunEvent {
     Started(StartedEvent),
     Bucket(Bucket),
+    /// Big-O runs: medians per size so far. Sent at most every 250 ms.
+    Complexity(ComplexityProgress),
     /// The client missed events that are no longer in history. Clear local state; the retained
     /// history follows immediately.
     Resync,
@@ -225,6 +231,8 @@ pub struct RunReport {
     pub timeline: Vec<Bucket>,
     /// Contract checks against the spec, when the endpoint was imported from one.
     pub contract: Option<crate::contract::ContractSummary>,
+    /// Big-O runs only.
+    pub complexity: Option<ComplexityResult>,
 }
 
 impl RunReport {
@@ -254,6 +262,7 @@ impl RunReport {
             generator_lag: None,
             timeline: vec![],
             contract: None,
+            complexity: None,
         }
     }
 }
@@ -379,4 +388,66 @@ pub struct SentRequest {
     pub url: String,
     pub headers: Vec<(String, String)>,
     pub body: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ComplexityConfig {
+    /// The endpoint must use a size generator (`{{n}}`, `{{n:int_array}}`, …) somewhere.
+    pub endpoint_id: Uuid,
+    #[serde(default)]
+    pub environment: Option<String>,
+    pub min_n: u32,
+    pub max_n: u32,
+    /// How many sizes, spaced geometrically from `min_n` to `max_n`.
+    pub points: u32,
+    /// Samples per size; each is one shuffled round over all sizes.
+    pub samples: u32,
+    /// Requests at the middle size before measuring.
+    pub warmup: u32,
+    pub timeout_ms: u32,
+    pub keep_alive: bool,
+    #[serde(default)]
+    pub ok_statuses: Vec<u16>,
+    /// Once a size's median exceeds this, larger sizes are dropped.
+    pub slow_ms: u32,
+    /// Total time for the sweep.
+    pub budget_ms: u32,
+}
+
+/// Latency at one size. Medians use successful requests only.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ComplexityPoint {
+    #[ts(type = "number")]
+    pub n: u64,
+    pub median_ms: f64,
+    pub p25_ms: f64,
+    pub p75_ms: f64,
+    pub samples: u32,
+    pub errors: u32,
+    /// Median request body size at this n, to see how much growth is just transfer.
+    #[ts(type = "number")]
+    pub request_bytes: u64,
+    #[ts(type = "number")]
+    pub response_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ComplexityProgress {
+    pub round: u32,
+    pub rounds: u32,
+    pub points: Vec<ComplexityPoint>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ComplexityResult {
+    pub points: Vec<ComplexityPoint>,
+    pub analysis: crate::stats::fit::Analysis,
 }

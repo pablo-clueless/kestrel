@@ -85,8 +85,7 @@ pub async fn prepare(
     if !target.pinned.is_loopback() && !confirmed_hosts.iter().any(|h| h.eq_ignore_ascii_case(&host)) {
         return Err(PrepareError::HostNotConfirmed(host));
     }
-    let target_info =
-        TargetInfo { host, pinned_ip: target.pinned.to_string(), loopback: target.pinned.is_loopback() };
+    let target_info = TargetInfo { host, pinned_ip: target.pinned.to_string(), loopback: target.pinned.is_loopback() };
     Ok(Prepared { cfg, request, target, target_info, max_in_flight, max_rps, contract: None })
 }
 
@@ -609,7 +608,13 @@ mod tests {
                     }
                 }),
             )
-            .route("/slow", get(|| async { tokio::time::sleep(Duration::from_millis(300)).await; "ok" }))
+            .route(
+                "/slow",
+                get(|| async {
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+                    "ok"
+                }),
+            )
             .route("/redir", get(|| async { Redirect::to("/ok") }))
             .route("/ok", get(|| async { "ok" }));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

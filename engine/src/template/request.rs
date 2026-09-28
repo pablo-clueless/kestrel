@@ -55,7 +55,9 @@ impl CompiledRequest {
     ) -> Result<Self, CompileError> {
         let env_name = environment.map(str::to_owned).or_else(|| workspace.active_environment.clone());
         let env = match &env_name {
-            Some(name) => Some(workspace.environment(name).ok_or_else(|| CompileError::UnknownEnvironment(name.clone()))?),
+            Some(name) => {
+                Some(workspace.environment(name).ok_or_else(|| CompileError::UnknownEnvironment(name.clone()))?)
+            }
             None => None,
         };
         let scope = Scope {
@@ -66,7 +68,8 @@ impl CompiledRequest {
         };
 
         let mut missing = Vec::new();
-        let mut bind = |src: &str| -> Result<Bound, CompileError> { Ok(Template::parse(src)?.bind(&scope, &mut missing)) };
+        let mut bind =
+            |src: &str| -> Result<Bound, CompileError> { Ok(Template::parse(src)?.bind(&scope, &mut missing)) };
 
         let url = bind(endpoint.url.trim())?;
         let mut query = bind_pairs(&endpoint.query, &mut bind)?;
@@ -121,8 +124,24 @@ impl CompiledRequest {
         self.render_with(&self.generators)
     }
 
+    /// Renders with size n for `{{n…}}` generators (Big-O runs).
+    pub fn render_sized(&self, n: u64) -> Result<RenderedRequest, String> {
+        self.render_sized_with(&self.generators, n)
+    }
+
+    /// Whether the request has a size generator anywhere, i.e. can be used for a Big-O run.
+    pub fn uses_size(&self) -> bool {
+        self.url.uses_size()
+            || self.query.iter().chain(&self.headers).any(|(_, v)| v.uses_size())
+            || self.body.as_ref().is_some_and(|(_, b)| b.uses_size())
+    }
+
     fn render_with(&self, state: &GenState) -> Result<RenderedRequest, String> {
-        let raw_url = self.url.render(state);
+        self.render_sized_with(state, 1)
+    }
+
+    fn render_sized_with(&self, state: &GenState, n: u64) -> Result<RenderedRequest, String> {
+        let raw_url = self.url.render_sized(state, n);
         let mut url = Url::parse(&raw_url).map_err(|e| format!("invalid URL `{raw_url}`: {e}"))?;
         if !matches!(url.scheme(), "http" | "https") {
             return Err(format!("unsupported URL scheme `{}` (use http or https)", url.scheme()));
@@ -130,12 +149,12 @@ impl CompiledRequest {
         if !self.query.is_empty() {
             let mut pairs = url.query_pairs_mut();
             for (k, v) in &self.query {
-                pairs.append_pair(k, &v.render(state));
+                pairs.append_pair(k, &v.render_sized(state, n));
             }
         }
 
         let mut headers: Vec<(String, String)> =
-            self.headers.iter().map(|(k, v)| (k.clone(), v.render(state))).collect();
+            self.headers.iter().map(|(k, v)| (k.clone(), v.render_sized(state, n))).collect();
         if let Some((user, pass)) = &self.basic {
             let creds = format!("{}:{}", user.render(state), pass.render(state));
             let encoded = base64::engine::general_purpose::STANDARD.encode(creds);
@@ -146,7 +165,7 @@ impl CompiledRequest {
             if !headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("content-type")) {
                 headers.push(("Content-Type".into(), content_type.clone()));
             }
-            template.render(state)
+            template.render_sized(state, n)
         });
 
         Ok(RenderedRequest { method: self.method, url, headers, body })
@@ -260,9 +279,8 @@ mod tests {
     #[test]
     fn explains_missing_vars_and_bad_urls() {
         let (ws, secrets) = workspace();
-        let err = CompiledRequest::compile(&endpoint("{{host}}/x", Auth::None), &ws, &secrets, None, false)
-            .err()
-            .unwrap();
+        let err =
+            CompiledRequest::compile(&endpoint("{{host}}/x", Auth::None), &ws, &secrets, None, false).err().unwrap();
         assert_eq!(err.to_string(), "undefined variable: host (define it in environment `local` or the collection)");
 
         let err = CompiledRequest::compile(&endpoint("localhost:8080/x", Auth::None), &ws, &secrets, None, false)

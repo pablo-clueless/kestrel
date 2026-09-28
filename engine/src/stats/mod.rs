@@ -1,5 +1,7 @@
 //! Latency recording. Values are stored in microseconds in HDR histograms.
 
+pub mod fit;
+
 use std::time::Duration;
 
 use hdrhistogram::Histogram;

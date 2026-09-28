@@ -4,13 +4,6 @@ import { useDeferredValue, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Send } from "lucide-react";
 
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { useSelectedEndpoint, useWorkspaceStore } from "@/stores/workspace-store";
 import type { HttpMethod } from "@/types/engine/HttpMethod";
 import { errorMessage, renderRequest } from "@/lib/client";
@@ -23,6 +16,17 @@ import { Button } from "@/components/ui/button";
 import type { Body } from "@/types/engine/Body";
 import { Input } from "@/components/ui/input";
 import { Label, Tabs } from "./fields";
+import { cn } from "@/lib/utils";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+
+/** Every text in the request editor is text-xs. `md:` too, since the ui inputs set `md:text-sm`. */
+export const XS = "text-xs md:text-xs";
 
 const METHODS: HttpMethod[] = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
 type Tab = "query" | "headers" | "body" | "auth";
@@ -36,22 +40,22 @@ export const RequestEditor = () => {
 
   if (!endpoint) {
     return (
-      <p className="text-muted-foreground text-sm">Select or add an endpoint in the sidebar.</p>
+      <p className="text-muted-foreground text-xs">Select or add an endpoint in the sidebar.</p>
     );
   }
   const patch = (p: Partial<Endpoint>) => update(endpoint.id, p);
 
   return (
-    <div className="flex flex-col gap-3">
+    <div className="flex flex-col gap-3 text-xs">
       <Input
-        className="border-none px-0 text-base font-medium"
+        className={cn("max-w-100 border-none px-2 font-medium", XS)}
         value={endpoint.name}
         placeholder="Endpoint name"
         onChange={(e) => patch({ name: e.target.value })}
       />
       <div className="flex gap-2">
         <Select value={endpoint.method} onValueChange={(v) => patch({ method: v as HttpMethod })}>
-          <SelectTrigger className="w-20 font-mono">
+          <SelectTrigger className={cn("w-25 font-mono", XS)}>
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -63,13 +67,13 @@ export const RequestEditor = () => {
           </SelectContent>
         </Select>
         <Input
-          className="flex-1 font-mono"
+          className={cn("flex-1 font-mono", XS)}
           value={endpoint.url}
           placeholder="{{base}}/path"
           onChange={(e) => patch({ url: e.target.value })}
           onKeyDown={(e) => e.key === "Enter" && send(endpoint, environment)}
         />
-        <Button onClick={() => send(endpoint, environment)} disabled={pending}>
+        <Button className={XS} onClick={() => send(endpoint, environment)} disabled={pending}>
           <Send /> Send
         </Button>
       </div>
@@ -85,7 +89,6 @@ export const RequestEditor = () => {
           <span>· checked on Send and during runs</span>
         </p>
       )}
-
       <Tabs<Tab>
         value={tab}
         onChange={setTab}
@@ -149,7 +152,7 @@ const BodyEditor = ({ body, onChange }: { body: Body; onChange: (b: Body) => voi
         );
       }}
     >
-      <SelectTrigger className="w-20 self-start font-mono">
+      <SelectTrigger className={cn("w-50 self-start font-mono", XS)}>
         <SelectValue />
       </SelectTrigger>
       <SelectContent>
@@ -160,6 +163,7 @@ const BodyEditor = ({ body, onChange }: { body: Body; onChange: (b: Body) => voi
     </Select>
     {body.type === "raw" && (
       <Input
+        className={XS}
         placeholder="Content-Type"
         value={body.contentType}
         onChange={(e) => onChange({ ...body, contentType: e.target.value })}
@@ -167,6 +171,7 @@ const BodyEditor = ({ body, onChange }: { body: Body; onChange: (b: Body) => voi
     )}
     {body.type !== "none" && (
       <Textarea
+        className={cn("font-mono", XS)}
         value={body.content}
         placeholder={body.type === "json" ? '{ "id": {{seq}} }' : ""}
         onChange={(e) => onChange({ ...body, content: e.target.value })}
@@ -192,7 +197,7 @@ const AuthEditor = ({ auth, onChange }: { auth: Auth; onChange: (a: Auth) => voi
         );
       }}
     >
-      <SelectTrigger className="w-20 self-start font-mono">
+      <SelectTrigger className={cn("w-50 self-start font-mono capitalize", XS)}>
         <SelectValue />
       </SelectTrigger>
       <SelectContent>
@@ -205,7 +210,7 @@ const AuthEditor = ({ auth, onChange }: { auth: Auth; onChange: (a: Auth) => voi
     {auth.type === "bearer" && (
       <Field label="Token">
         <Input
-          className="font-mono"
+          className={cn("font-mono", XS)}
           value={auth.token}
           onChange={(e) => onChange({ ...auth, token: e.target.value })}
         />
@@ -215,13 +220,14 @@ const AuthEditor = ({ auth, onChange }: { auth: Auth; onChange: (a: Auth) => voi
       <>
         <Field label="Username">
           <Input
+            className={XS}
             value={auth.username}
             onChange={(e) => onChange({ ...auth, username: e.target.value })}
           />
         </Field>
         <Field label="Password">
           <Input
-            className="font-mono"
+            className={cn("font-mono", XS)}
             value={auth.password}
             onChange={(e) => onChange({ ...auth, password: e.target.value })}
           />
@@ -235,7 +241,7 @@ const AuthEditor = ({ auth, onChange }: { auth: Auth; onChange: (a: Auth) => voi
             value={auth.location}
             onValueChange={(v) => onChange({ ...auth, location: v as "header" | "query" })}
           >
-            <SelectTrigger>
+            <SelectTrigger className={XS}>
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -245,11 +251,15 @@ const AuthEditor = ({ auth, onChange }: { auth: Auth; onChange: (a: Auth) => voi
           </Select>
         </Field>
         <Field label="Name">
-          <Input value={auth.name} onChange={(e) => onChange({ ...auth, name: e.target.value })} />
+          <Input
+            className={XS}
+            value={auth.name}
+            onChange={(e) => onChange({ ...auth, name: e.target.value })}
+          />
         </Field>
         <Field label="Value">
           <Input
-            className="font-mono"
+            className={cn("font-mono", XS)}
             value={auth.value}
             onChange={(e) => onChange({ ...auth, value: e.target.value })}
           />

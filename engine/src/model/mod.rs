@@ -169,9 +169,18 @@ pub enum Auth {
     #[default]
     None,
     /// `token` is a template, normally `{{token}}` pointing at a secret.
-    Bearer { token: String },
-    Basic { username: String, password: String },
-    ApiKey { location: ApiKeyLocation, name: String, value: String },
+    Bearer {
+        token: String,
+    },
+    Basic {
+        username: String,
+        password: String,
+    },
+    ApiKey {
+        location: ApiKeyLocation,
+        name: String,
+        value: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]

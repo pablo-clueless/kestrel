@@ -2,12 +2,8 @@
 import type { Collection } from "./Collection";
 import type { Environment } from "./Environment";
 
-export type Workspace = {
-  collections: Array<Collection>;
-  environments: Array<Environment>;
-  activeEnvironment: string | null;
-  /**
-   * The collection shown expanded in the sidebar.
-   */
-  activeCollection: string | null;
-};
+export type Workspace = { collections: Array<Collection>, environments: Array<Environment>, activeEnvironment: string | null, 
+/**
+ * The collection shown expanded in the sidebar.
+ */
+activeCollection: string | null, };

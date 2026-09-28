@@ -1,0 +1,9 @@
+# Prettier only reads the ignore file in its working directory, so this one covers the app.
+node_modules
+.next
+out
+pnpm-lock.yaml
+next-env.d.ts
+
+# Generated from the engine by ts-rs (`cargo test -p engine export_bindings`); ts-rs owns the format.
+src/types/engine/

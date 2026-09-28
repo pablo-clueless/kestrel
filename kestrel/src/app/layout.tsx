@@ -1,4 +1,5 @@
 import { Space_Grotesk, Space_Mono } from "next/font/google";
+import { ThemeProvider } from "next-themes";
 import type { Metadata } from "next";
 
 import { Providers } from "@/components/providers";
@@ -27,7 +28,9 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       className={`${space_grotesk.variable} ${space_mono.variable} h-full antialiased`}
     >
       <body className="flex min-h-full flex-col">
-        <Providers>{children}</Providers>
+        <ThemeProvider defaultTheme="light">
+          <Providers>{children}</Providers>
+        </ThemeProvider>
       </body>
     </html>
   );

@@ -4,4 +4,4 @@ import type { ViolationKind } from "./ViolationKind";
 /**
  * The outcome of checking one response.
  */
-export type ContractCheck = { passed: boolean; kind: ViolationKind | null; message: string };
+export type ContractCheck = { passed: boolean, kind: ViolationKind | null, message: string, };

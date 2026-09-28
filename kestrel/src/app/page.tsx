@@ -16,9 +16,10 @@ const Page = () => {
           <main className="col-span-3 flex min-w-0 flex-col gap-5 overflow-y-auto p-5">
             <Card title="Request">
               <RequestEditor />
-            </Card>
-            <Card title="Response" info="The last Send. Credentials are redacted by the engine.">
-              <ResponseView />
+              <section className="mt-5 flex flex-col gap-3 border-t pt-5">
+                <h3 className="text-sm font-semibold">Response</h3>
+                <ResponseView />
+              </section>
             </Card>
             <Card title="Live" info="Updated every 250 ms while a run is in progress.">
               <LiveSummary />

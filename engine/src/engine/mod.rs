@@ -1,4 +1,5 @@
 pub mod client;
+pub mod complexity;
 pub mod fake;
 pub mod latency;
 pub mod load;
@@ -19,6 +20,7 @@ pub enum Prepared {
     Fake(FakeConfig),
     Latency(Box<latency::Prepared>),
     Load(Box<load::Prepared>),
+    Complexity(Box<complexity::Prepared>),
 }
 
 /// Spawns the runner for `run` and schedules its eviction once it finishes.
@@ -29,6 +31,7 @@ pub fn spawn(registry: &Arc<RunRegistry>, run: Arc<Run>, prepared: Prepared) {
             Prepared::Fake(cfg) => fake::run(Arc::clone(&run), cfg).await,
             Prepared::Latency(p) => latency::run(Arc::clone(&run), *p).await,
             Prepared::Load(p) => load::run(Arc::clone(&run), *p).await,
+            Prepared::Complexity(p) => complexity::run(Arc::clone(&run), *p).await,
         }
         registry.evict_after(run.id, RETENTION);
     });

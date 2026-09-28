@@ -33,6 +33,10 @@ pub struct Caps {
     pub max_rps: u32,
     /// Also the most virtual users a closed-model test may have.
     pub max_in_flight: u32,
+    /// Big-O sweeps run longer than other tests, so they have their own time cap.
+    pub max_sweep_duration: Duration,
+    pub max_n: u32,
+    pub max_points: u32,
 }
 
 impl Default for Caps {
@@ -44,6 +48,9 @@ impl Default for Caps {
             max_warmup: 1_000,
             max_rps: 1_000,
             max_in_flight: 10_000,
+            max_sweep_duration: Duration::from_secs(5 * 60),
+            max_n: 1_000_000,
+            max_points: 40,
         }
     }
 }

@@ -46,7 +46,7 @@ export const EnvironmentEditor = () => {
       {!active ? (
         <p className="text-muted-foreground">Pick an environment in the header, or create one.</p>
       ) : (
-        <>
+        <div className="space-y-2">
           <div className="flex items-center justify-between">
             <span className="font-medium">{active.name}</span>
             <button
@@ -57,7 +57,6 @@ export const EnvironmentEditor = () => {
               <Trash2 className="size-3.5" />
             </button>
           </div>
-
           <section className="flex flex-col gap-1.5">
             <Label>Variables</Label>
             {Object.entries(active.vars).map(([key, value]) => (
@@ -81,7 +80,6 @@ export const EnvironmentEditor = () => {
             ))}
             <NewPair onAdd={(k, v) => setVar(active.name, k, v)} valuePlaceholder="value" />
           </section>
-
           <section className="flex flex-col gap-1.5">
             <Label>Secrets</Label>
             {(secretKeys[active.name] ?? []).map((key) => (
@@ -105,7 +103,7 @@ export const EnvironmentEditor = () => {
               valuePlaceholder="value (write-only)"
             />
           </section>
-        </>
+        </div>
       )}
     </div>
   );

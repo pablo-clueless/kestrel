@@ -18,8 +18,8 @@ import { useRunStore } from "@/stores/run-store";
 
 // Theme tokens, so charts follow light/dark mode with the rest of the page.
 const MUTED = "var(--muted-foreground)";
-const tick = { fill: MUTED, fontSize: 11 };
-const tooltipStyle = {
+export const tick = { fill: MUTED, fontSize: 11 };
+export const tooltipStyle = {
   contentStyle: {
     background: "var(--popover)",
     border: "1px solid var(--border)",
@@ -29,7 +29,7 @@ const tooltipStyle = {
   },
   labelStyle: { color: MUTED },
 };
-const legendProps = {
+export const legendProps = {
   verticalAlign: "top" as const,
   align: "left" as const,
   iconType: "circle" as const,

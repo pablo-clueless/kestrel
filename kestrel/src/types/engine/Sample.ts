@@ -6,22 +6,12 @@ import type { SentRequest } from "./SentRequest";
 /**
  * A redacted request/response pair.
  */
-export type Sample = {
-  request: SentRequest;
-  status: number | null;
-  error: string | null;
-  errorClass: ErrorClass | null;
-  ttfbMs: number;
-  totalMs: number;
-  responseHeaders: Array<[string, string]>;
-  /**
-   * UTF-8 (lossy), truncated.
-   */
-  body: string;
-  bodyBytes: number;
-  bodyTruncated: boolean;
-  /**
-   * Whether this response matches the spec, when the endpoint was imported from one.
-   */
-  contract: ContractCheck | null;
-};
+export type Sample = { request: SentRequest, status: number | null, error: string | null, errorClass: ErrorClass | null, ttfbMs: number, totalMs: number, responseHeaders: Array<[string, string]>, 
+/**
+ * UTF-8 (lossy), truncated.
+ */
+body: string, bodyBytes: number, bodyTruncated: boolean, 
+/**
+ * Whether this response matches the spec, when the endpoint was imported from one.
+ */
+contract: ContractCheck | null, };

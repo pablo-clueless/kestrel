@@ -1,0 +1,1380 @@
+{
+  "collections": [
+    {
+      "id": "8a14ccc0-4900-4dd6-a65b-ecc5fb6d836c",
+      "name": "Social API",
+      "vars": {
+        "base": "https://domieface-server.onrender.com",
+        "id": "djbaalwbrctr35h4bmtjjald5y",
+        "username": "ada"
+      },
+      "endpoints": [
+        {
+          "id": "02440288-bc95-42f2-9e73-77d663a7fa05",
+          "name": "Liveness",
+          "group": "Operations",
+          "method": "GET",
+          "url": "{{base}}/healthz",
+          "headers": [],
+          "query": [],
+          "body": {
+            "type": "none"
+          },
+          "auth": {
+            "type": "none"
+          },
+          "expect": {
+            "responses": [
+              {
+                "status": "200",
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "id": "9d871bf2-7b4a-4b22-adb3-34c913b25168",
+          "name": "Readiness",
+          "group": "Operations",
+          "method": "GET",
+          "url": "{{base}}/readyz",
+          "headers": [],
+          "query": [],
+          "body": {
+            "type": "none"
+          },
+          "auth": {
+            "type": "none"
+          },
+          "expect": {
+            "responses": [
+              {
+                "status": "200",
+                "schema": {
+                  "$ref": "#/components/schemas/Readiness"
+                }
+              },
+              {
+                "status": "503",
+                "schema": {
+                  "$ref": "#/components/schemas/Readiness"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "id": "d703c3f6-0c02-4c8b-8618-0630db00be1d",
+          "name": "Sign in",
+          "group": "Authentication",
+          "method": "POST",
+          "url": "{{base}}/v1/auth/login",
+          "headers": [],
+          "query": [],
+          "body": {
+            "type": "json",
+            "content": "{\n  \"email\": \"ada@example.com\",\n  \"password\": \"correct-horse-battery\"\n}"
+          },
+          "auth": {
+            "type": "none"
+          },
+          "expect": {
+            "responses": [
+              {
+                "status": "200",
+                "schema": {
+                  "$ref": "#/components/schemas/AuthResponse"
+                }
+              },
+              {
+                "status": "400",
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              {
+                "status": "401",
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              {
+                "status": "429",
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              {
+                "status": "500",
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "id": "1147deb2-8e51-47d4-a8bc-d9dbeeb3f967",
+          "name": "End the session",
+          "group": "Authentication",
+          "method": "POST",
+          "url": "{{base}}/v1/auth/logout",
+          "headers": [],
+          "query": [],
+          "body": {
+            "type": "json",
+            "content": "{\n  \"refreshToken\": \"string\"\n}"
+          },
+          "auth": {
+            "type": "bearer",
+            "token": "{{token}}"
+          },
+          "expect": {
+            "responses": [
+              {
+                "status": "204",
+                "schema": null
+              },
+              {
+                "status": "400",
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              {
+                "status": "401",
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              {
+                "status": "429",
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              {
+                "status": "500",
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "id": "950dfec6-3f81-4b38-99db-6886a7cacd26",
+          "name": "Exchange a refresh token for a new pair",
+          "group": "Authentication",
+          "method": "POST",
+          "url": "{{base}}/v1/auth/refresh",
+          "headers": [],
+          "query": [],
+          "body": {
+            "type": "json",
+            "content": "{\n  \"refreshToken\": \"string\"\n}"
+          },
+          "auth": {
+            "type": "none"
+          },
+          "expect": {
+            "responses": [
+              {
+                "status": "200",
+                "schema": {
+                  "$ref": "#/components/schemas/AuthResponse"
+                }
+              },
+              {
+                "status": "400",
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              {
+                "status": "401",
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              {
+                "status": "429",
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              {
+                "status": "500",
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "id": "05ad84e6-1b26-4399-a7db-35d017c5cf77",
+          "name": "Create an account",
+          "group": "Authentication",
+          "method": "POST",
+          "url": "{{base}}/v1/auth/register",
+          "headers": [],
+          "query": [],
+          "body": {
+            "type": "json",
+            "content": "{\n  \"displayName\": \"Ada Lovelace\",\n  \"email\": \"ada@example.com\",\n  \"password\": \"correct-horse-battery\",\n  \"username\": \"ada\"\n}"
+          },
+          "auth": {
+            "type": "none"
+          },
+          "expect": {
+            "responses": [
+              {
+                "status": "201",
+                "schema": {
+                  "$ref": "#/components/schemas/AuthResponse"
+                }
+              },
+              {
+                "status": "400",
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              {
+                "status": "409",
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              {
+                "status": "429",
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              {
+                "status": "500",
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "id": "94cd0ac7-a3e9-4e3f-8b27-25c6de301e16",
+          "name": "The feed",
+          "group": "Posts",
+          "method": "GET",
+          "url": "{{base}}/v1/posts",
+          "headers": [],
+          "query": [
+            {
+              "key": "cursor",
+              "value": "string",
+              "enabled": false
+            },
+            {
+              "key": "limit",
+              "value": "20",
+              "enabled": false
+            }
+          ],
+          "body": {
+            "type": "none"
+          },
+          "auth": {
+            "type": "bearer",
+            "token": "{{token}}"
+          },
+          "expect": {
+            "responses": [
+              {
+                "status": "200",
+                "schema": {
+                  "$ref": "#/components/schemas/PaginatedPosts"
+                }
+              },
+              {
+                "status": "400",
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              {
+                "status": "401",
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              {
+                "status": "429",
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              {
+                "status": "500",
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "id": "513a4777-d23f-43ef-a530-62a5b8095a73",
+          "name": "Create a post",
+          "group": "Posts",
+          "method": "POST",
+          "url": "{{base}}/v1/posts",
+          "headers": [],
+          "query": [],
+          "body": {
+            "type": "json",
+            "content": "{\n  \"caption\": \"Sunset from the office.\",\n  \"imageKey\": \"uploads/a1b2c3d4e5f6a7b8c9d0e1f2/post.jpg\"\n}"
+          },
+          "auth": {
+            "type": "bearer",
+            "token": "{{token}}"
+          },
+          "expect": {
+            "responses": [
+              {
+                "status": "201",
+                "schema": {
+                  "$ref": "#/components/schemas/Post"
+                }
+              },
+              {
+                "status": "400",
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              {
+                "status": "401",
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              {
+                "status": "403",
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              {
+                "status": "429",
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              {
+                "status": "500",
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "id": "72021ca9-7b83-4df2-9b55-f59a0557b83b",
+          "name": "Get one post",
+          "group": "Posts",
+          "method": "GET",
+          "url": "{{base}}/v1/posts/{{id}}",
+          "headers": [],
+          "query": [],
+          "body": {
+            "type": "none"
+          },
+          "auth": {
+            "type": "bearer",
+            "token": "{{token}}"
+          },
+          "expect": {
+            "responses": [
+              {
+                "status": "200",
+                "schema": {
+                  "$ref": "#/components/schemas/Post"
+                }
+              },
+              {
+                "status": "401",
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              {
+                "status": "404",
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              {
+                "status": "429",
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              {
+                "status": "500",
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "id": "ea8c42dd-4294-4a33-b0b0-685757fc2b04",
+          "name": "Delete a post",
+          "group": "Posts",
+          "method": "DELETE",
+          "url": "{{base}}/v1/posts/{{id}}",
+          "headers": [],
+          "query": [],
+          "body": {
+            "type": "none"
+          },
+          "auth": {
+            "type": "bearer",
+            "token": "{{token}}"
+          },
+          "expect": {
+            "responses": [
+              {
+                "status": "204",
+                "schema": null
+              },
+              {
+                "status": "401",
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              {
+                "status": "403",
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              {
+                "status": "404",
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              {
+                "status": "429",
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              {
+                "status": "500",
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "id": "0c971352-c738-433a-94ab-205e50df8732",
+          "name": "Get a presigned upload URL",
+          "group": "Uploads",
+          "method": "POST",
+          "url": "{{base}}/v1/uploads/presign",
+          "headers": [],
+          "query": [],
+          "body": {
+            "type": "json",
+            "content": "{\n  \"contentLength\": 843201,\n  \"contentType\": \"image/jpeg\",\n  \"purpose\": \"avatar\"\n}"
+          },
+          "auth": {
+            "type": "bearer",
+            "token": "{{token}}"
+          },
+          "expect": {
+            "responses": [
+              {
+                "status": "200",
+                "schema": {
+                  "$ref": "#/components/schemas/PresignResponse"
+                }
+              },
+              {
+                "status": "400",
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              {
+                "status": "401",
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              {
+                "status": "413",
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              {
+                "status": "415",
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              {
+                "status": "429",
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              {
+                "status": "500",
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "id": "3ce6f461-2b65-4e6a-b784-00210e9d2d4c",
+          "name": "Get the authenticated user",
+          "group": "Users",
+          "method": "GET",
+          "url": "{{base}}/v1/users/me",
+          "headers": [],
+          "query": [],
+          "body": {
+            "type": "none"
+          },
+          "auth": {
+            "type": "bearer",
+            "token": "{{token}}"
+          },
+          "expect": {
+            "responses": [
+              {
+                "status": "200",
+                "schema": {
+                  "$ref": "#/components/schemas/User"
+                }
+              },
+              {
+                "status": "401",
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              {
+                "status": "429",
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              {
+                "status": "500",
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "id": "a1c9c776-d3fe-4657-979c-1f7070e82843",
+          "name": "Update the authenticated user",
+          "group": "Users",
+          "method": "PATCH",
+          "url": "{{base}}/v1/users/me",
+          "headers": [],
+          "query": [],
+          "body": {
+            "type": "json",
+            "content": "{\n  \"avatarKey\": \"uploads/a1b2c3d4e5f6a7b8c9d0e1f2/avatar.jpg\",\n  \"bio\": \"Building things.\",\n  \"displayName\": \"Ada L.\"\n}"
+          },
+          "auth": {
+            "type": "bearer",
+            "token": "{{token}}"
+          },
+          "expect": {
+            "responses": [
+              {
+                "status": "200",
+                "schema": {
+                  "$ref": "#/components/schemas/User"
+                }
+              },
+              {
+                "status": "400",
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              {
+                "status": "401",
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              {
+                "status": "403",
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              {
+                "status": "429",
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              {
+                "status": "500",
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "id": "1e451596-16d2-4b77-8c21-49fcffb80f81",
+          "name": "Get a user's public profile",
+          "group": "Users",
+          "method": "GET",
+          "url": "{{base}}/v1/users/{{username}}",
+          "headers": [],
+          "query": [],
+          "body": {
+            "type": "none"
+          },
+          "auth": {
+            "type": "bearer",
+            "token": "{{token}}"
+          },
+          "expect": {
+            "responses": [
+              {
+                "status": "200",
+                "schema": {
+                  "$ref": "#/components/schemas/PublicUser"
+                }
+              },
+              {
+                "status": "401",
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              {
+                "status": "404",
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              {
+                "status": "429",
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              {
+                "status": "500",
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "id": "dafca637-cbf8-4dc9-b667-733ca3f10b78",
+          "name": "List one user's posts",
+          "group": "Posts",
+          "method": "GET",
+          "url": "{{base}}/v1/users/{{username}}/posts",
+          "headers": [],
+          "query": [
+            {
+              "key": "cursor",
+              "value": "string",
+              "enabled": false
+            },
+            {
+              "key": "limit",
+              "value": "20",
+              "enabled": false
+            }
+          ],
+          "body": {
+            "type": "none"
+          },
+          "auth": {
+            "type": "bearer",
+            "token": "{{token}}"
+          },
+          "expect": {
+            "responses": [
+              {
+                "status": "200",
+                "schema": {
+                  "$ref": "#/components/schemas/PaginatedPosts"
+                }
+              },
+              {
+                "status": "400",
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              {
+                "status": "401",
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              {
+                "status": "404",
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              {
+                "status": "429",
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              },
+              {
+                "status": "500",
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "source": "OpenAPI 3.1.0 · Social API 1.0.0",
+      "schemaDefs": {
+        "components": {
+          "schemas": {
+            "AuthResponse": {
+              "description": "Returned by register, login and refresh. Carries the user so no follow-up\nrequest is needed, and the access token expiry so the client can refresh\nbefore a request fails rather than after.\n",
+              "properties": {
+                "accessToken": {
+                  "description": "Send as `Authorization: Bearer …`. Hold in memory only.",
+                  "type": "string"
+                },
+                "accessTokenExpiresAt": {
+                  "$ref": "#/components/schemas/Timestamp"
+                },
+                "refreshToken": {
+                  "description": "Store in secure device storage, never in plain async storage. Replaced\non every refresh — persist the new one immediately.\n",
+                  "type": "string"
+                },
+                "user": {
+                  "$ref": "#/components/schemas/User"
+                }
+              },
+              "required": [
+                "accessToken",
+                "refreshToken",
+                "accessTokenExpiresAt",
+                "user"
+              ],
+              "type": "object"
+            },
+            "CreatePostRequest": {
+              "example": {
+                "caption": "Sunset from the office.",
+                "imageKey": "uploads/a1b2c3d4e5f6a7b8c9d0e1f2/post.jpg"
+              },
+              "properties": {
+                "caption": {
+                  "maxLength": 2200,
+                  "type": "string"
+                },
+                "imageKey": {
+                  "$ref": "#/components/schemas/UploadKey"
+                }
+              },
+              "required": [
+                "imageKey"
+              ],
+              "type": "object"
+            },
+            "Error": {
+              "description": "The shape of every failure. `message` is safe to show to the user;\n`code` never is.\n",
+              "properties": {
+                "error": {
+                  "properties": {
+                    "code": {
+                      "description": "Stable identifier to branch on. Never render this.",
+                      "enum": [
+                        "VALIDATION_FAILED",
+                        "INVALID_CREDENTIALS",
+                        "TOKEN_EXPIRED",
+                        "TOKEN_INVALID",
+                        "FORBIDDEN",
+                        "NOT_FOUND",
+                        "CONFLICT",
+                        "FILE_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
+                        "RATE_LIMITED",
+                        "INTERNAL_ERROR"
+                      ],
+                      "type": "string"
+                    },
+                    "details": {
+                      "additionalProperties": {
+                        "type": "string"
+                      },
+                      "description": "Field name to reason. Present on validation and conflict failures.",
+                      "type": "object"
+                    },
+                    "message": {
+                      "description": "User-facing British English. Safe to display.",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              },
+              "required": [
+                "error"
+              ],
+              "type": "object"
+            },
+            "Health": {
+              "description": "What both health endpoints return. More than a status word on purpose:\nduring an incident these are the fields you want without shelling into\nthe box -- which build is running, and how long it has been up. An\n`uptimeSeconds` that keeps resetting means the process is crash-looping.\n",
+              "properties": {
+                "environment": {
+                  "examples": [
+                    "production",
+                    "development"
+                  ],
+                  "type": "string"
+                },
+                "goVersion": {
+                  "examples": [
+                    "1.26.0"
+                  ],
+                  "type": "string"
+                },
+                "revision": {
+                  "description": "Short VCS revision, with `-dirty` appended when the working tree had\nuncommitted changes. Absent when not built from a repository.\n",
+                  "examples": [
+                    "9f2c1ab4de70"
+                  ],
+                  "type": "string"
+                },
+                "service": {
+                  "description": "Identifies this service where several report to one dashboard.",
+                  "examples": [
+                    "domieface-server"
+                  ],
+                  "type": "string"
+                },
+                "status": {
+                  "enum": [
+                    "ok",
+                    "degraded"
+                  ],
+                  "type": "string"
+                },
+                "time": {
+                  "$ref": "#/components/schemas/Timestamp"
+                },
+                "uptimeSeconds": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "version": {
+                  "description": "The release stamped at build time, falling back to the VCS revision,\nand to `dev` for a local build.\n",
+                  "examples": [
+                    "1.4.0"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "service",
+                "version",
+                "goVersion",
+                "environment",
+                "time",
+                "uptimeSeconds"
+              ],
+              "type": "object"
+            },
+            "HealthCheck": {
+              "description": "One dependency's verdict.",
+              "properties": {
+                "error": {
+                  "description": "Why the check failed, omitted when it passed. These endpoints are\nunauthenticated, so this says what failed, not where.\n",
+                  "examples": [
+                    "unreachable"
+                  ],
+                  "type": "string"
+                },
+                "latencyMs": {
+                  "description": "How long the check took. Worth watching on its own: a check that\npasses in 1900ms is a dependency about to start failing.\n",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "name": {
+                  "examples": [
+                    "database"
+                  ],
+                  "type": "string"
+                },
+                "status": {
+                  "enum": [
+                    "ok",
+                    "degraded"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "status",
+                "latencyMs"
+              ],
+              "type": "object"
+            },
+            "LoginRequest": {
+              "example": {
+                "email": "ada@example.com",
+                "password": "correct-horse-battery"
+              },
+              "properties": {
+                "email": {
+                  "format": "email",
+                  "type": "string"
+                },
+                "password": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "email",
+                "password"
+              ],
+              "type": "object"
+            },
+            "PaginatedPosts": {
+              "properties": {
+                "items": {
+                  "description": "Always an array. Empty rather than null when there is nothing.",
+                  "items": {
+                    "$ref": "#/components/schemas/Post"
+                  },
+                  "type": "array"
+                },
+                "nextCursor": {
+                  "description": "Pass to `cursor` for the next page. Null on the last page.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "items",
+                "nextCursor"
+              ],
+              "type": "object"
+            },
+            "Post": {
+              "properties": {
+                "author": {
+                  "$ref": "#/components/schemas/PublicUser"
+                },
+                "caption": {
+                  "description": "Empty string when there is no caption.",
+                  "maxLength": 2200,
+                  "type": "string"
+                },
+                "createdAt": {
+                  "$ref": "#/components/schemas/Timestamp"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "imageUrl": {
+                  "description": "Where to render the image from. The storage key is internal and not exposed.",
+                  "format": "uri",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "author",
+                "imageUrl",
+                "caption",
+                "createdAt"
+              ],
+              "type": "object"
+            },
+            "PresignRequest": {
+              "example": {
+                "contentLength": 843201,
+                "contentType": "image/jpeg",
+                "purpose": "avatar"
+              },
+              "properties": {
+                "contentLength": {
+                  "description": "Exact byte length of what you will upload. It is part of the\nsignature, so a mismatched `PUT` is rejected by storage.\n",
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "contentType": {
+                  "enum": [
+                    "image/jpeg",
+                    "image/png",
+                    "image/webp"
+                  ],
+                  "type": "string"
+                },
+                "purpose": {
+                  "description": "Decides the size limit and what the key may be attached to.",
+                  "enum": [
+                    "avatar",
+                    "post"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "contentType",
+                "contentLength",
+                "purpose"
+              ],
+              "type": "object"
+            },
+            "PresignResponse": {
+              "properties": {
+                "expiresAt": {
+                  "$ref": "#/components/schemas/Timestamp"
+                },
+                "key": {
+                  "$ref": "#/components/schemas/UploadKey"
+                },
+                "uploadUrl": {
+                  "description": "PUT the raw bytes here. Third-party host — send no `Authorization`\nheader of ours.\n",
+                  "format": "uri",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "uploadUrl",
+                "key",
+                "expiresAt"
+              ],
+              "type": "object"
+            },
+            "PublicUser": {
+              "description": "Every other user, and every post author. Never carries `email`.",
+              "properties": {
+                "avatarUrl": {
+                  "format": "uri",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "bio": {
+                  "maxLength": 160,
+                  "type": "string"
+                },
+                "createdAt": {
+                  "$ref": "#/components/schemas/Timestamp"
+                },
+                "displayName": {
+                  "maxLength": 50,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "username": {
+                  "$ref": "#/components/schemas/Username"
+                }
+              },
+              "required": [
+                "id",
+                "username",
+                "displayName",
+                "bio",
+                "avatarUrl",
+                "createdAt"
+              ],
+              "type": "object"
+            },
+            "Readiness": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/Health"
+                },
+                {
+                  "properties": {
+                    "checks": {
+                      "items": {
+                        "$ref": "#/components/schemas/HealthCheck"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "checks"
+                  ],
+                  "type": "object"
+                }
+              ],
+              "description": "Everything in `Health`, plus per-dependency results.\n\nObject storage is deliberately not among the checks. Uploads need it but\nevery read path does not, so a storage blip should not pull the whole\ninstance out of rotation.\n"
+            },
+            "RefreshTokenRequest": {
+              "properties": {
+                "refreshToken": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "refreshToken"
+              ],
+              "type": "object"
+            },
+            "RegisterRequest": {
+              "example": {
+                "displayName": "Ada Lovelace",
+                "email": "ada@example.com",
+                "password": "correct-horse-battery",
+                "username": "ada"
+              },
+              "properties": {
+                "displayName": {
+                  "maxLength": 50,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "email": {
+                  "description": "Stored lowercase.",
+                  "format": "email",
+                  "maxLength": 254,
+                  "type": "string"
+                },
+                "password": {
+                  "description": "Length is the only rule; there are deliberately no composition requirements.",
+                  "maxLength": 128,
+                  "minLength": 8,
+                  "type": "string"
+                },
+                "username": {
+                  "$ref": "#/components/schemas/Username"
+                }
+              },
+              "required": [
+                "email",
+                "username",
+                "displayName",
+                "password"
+              ],
+              "type": "object"
+            },
+            "Timestamp": {
+              "description": "ISO 8601 UTC with exactly three fractional digits.",
+              "examples": [
+                "2026-09-04T11:23:00.000Z"
+              ],
+              "format": "date-time",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+              "type": "string"
+            },
+            "UpdateMeRequest": {
+              "description": "Send only the fields that changed. `username` is not accepted.",
+              "example": {
+                "avatarKey": "uploads/a1b2c3d4e5f6a7b8c9d0e1f2/avatar.jpg",
+                "bio": "Building things.",
+                "displayName": "Ada L."
+              },
+              "properties": {
+                "avatarKey": {
+                  "description": "A key from a `purpose: \"avatar\"` presign. Null removes the avatar.\nOmit to leave it unchanged.\n",
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/UploadKey"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "bio": {
+                  "description": "Null clears the bio.",
+                  "maxLength": 160,
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "displayName": {
+                  "maxLength": 50,
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "UploadKey": {
+              "description": "The `key` returned by `POST /v1/uploads/presign`.",
+              "examples": [
+                "uploads/a1b2c3d4e5f6a7b8c9d0e1f2/post.jpg"
+              ],
+              "type": "string"
+            },
+            "User": {
+              "description": "The full private profile. Only ever returned to its owner.",
+              "properties": {
+                "avatarUrl": {
+                  "description": "Null when the user has no avatar.",
+                  "format": "uri",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "bio": {
+                  "examples": [
+                    "Building things."
+                  ],
+                  "maxLength": 160,
+                  "type": "string"
+                },
+                "createdAt": {
+                  "$ref": "#/components/schemas/Timestamp"
+                },
+                "displayName": {
+                  "examples": [
+                    "Ada Lovelace"
+                  ],
+                  "maxLength": 50,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "email": {
+                  "examples": [
+                    "ada@example.com"
+                  ],
+                  "format": "email",
+                  "maxLength": 254,
+                  "type": "string"
+                },
+                "id": {
+                  "examples": [
+                    "djbaalwbrctr35h4bmtjjald5y"
+                  ],
+                  "type": "string"
+                },
+                "username": {
+                  "$ref": "#/components/schemas/Username"
+                }
+              },
+              "required": [
+                "id",
+                "email",
+                "username",
+                "displayName",
+                "bio",
+                "avatarUrl",
+                "createdAt"
+              ],
+              "type": "object"
+            },
+            "Username": {
+              "description": "Lowercase letters, digits and underscores. Immutable after registration.",
+              "examples": [
+                "ada"
+              ],
+              "maxLength": 30,
+              "minLength": 3,
+              "pattern": "^[a-z0-9_]+$",
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "4c6861ed-c53c-45c3-a25d-513f2aad3c82",
+      "name": "Heirs OCR",
+      "vars": {},
+      "endpoints": [
+        {
+          "id": "0d9b3848-76f6-444f-a5e5-eddd9528109b",
+          "name": "Health",
+          "group": null,
+          "method": "GET",
+          "url": "{{base}}/healthz",
+          "headers": [],
+          "query": [],
+          "body": {
+            "type": "none"
+          },
+          "auth": {
+            "type": "none"
+          },
+          "expect": null
+        },
+        {
+          "id": "f80a3135-4dbd-42f6-8fa3-58d43f6114e1",
+          "name": "Functions",
+          "group": null,
+          "method": "GET",
+          "url": "{{base}}/v1/ocr/functions",
+          "headers": [],
+          "query": [],
+          "body": {
+            "type": "none"
+          },
+          "auth": {
+            "type": "none"
+          },
+          "expect": null
+        }
+      ],
+      "source": null,
+      "schemaDefs": null
+    }
+  ],
+  "environments": [
+    {
+      "name": "heirs-ocr",
+      "vars": {
+        "base": "http://3.250.7.135:8080"
+      }
+    }
+  ],
+  "activeEnvironment": "heirs-ocr",
+  "activeCollection": "4c6861ed-c53c-45c3-a25d-513f2aad3c82"
+}
