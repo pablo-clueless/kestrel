@@ -2,6 +2,7 @@
 import type { Auth } from "./Auth";
 import type { Body } from "./Body";
 import type { Expectation } from "./Expectation";
+import type { Extract } from "./Extract";
 import type { HttpMethod } from "./HttpMethod";
 import type { KeyValue } from "./KeyValue";
 
@@ -17,4 +18,8 @@ url: string, headers: Array<KeyValue>, query: Array<KeyValue>, body: Body, auth:
 /**
  * Responses the spec declares, for contract checks. None for hand-made endpoints.
  */
-expect: Expectation | null, };
+expect: Expectation | null, 
+/**
+ * Values to save from the response after each Send (not during runs).
+ */
+extract: Array<Extract>, };

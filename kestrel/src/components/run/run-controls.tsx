@@ -13,6 +13,7 @@ import { ConfirmHostDialog } from "./confirm-host-dialog";
 import { Label } from "@/components/workspace/fields";
 import { useRunEvents } from "@/hooks/use-run-events";
 import { useRunStore } from "@/stores/run-store";
+import { useSendStore } from "@/stores/send-store";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { useValues } from "@/hooks/use-values";
@@ -44,12 +45,24 @@ const PORT_EXHAUSTION_RPS = 200;
 const SIZE_GENERATOR = /{{s*n(:(int_array|string|object_array))?s*}}/;
 
 const usesSize = (e: Endpoint) =>
-  [
-    e.url,
-    ...e.query.map((q) => q.value),
-    ...e.headers.map((h) => h.value),
-    e.body.type === "none" ? "" : e.body.content,
-  ].some((s) => SIZE_GENERATOR.test(s));
+  [e.url, ...e.query.map((q) => q.value), ...e.headers.map((h) => h.value), ...bodyTexts(e)].some(
+    (s) => SIZE_GENERATOR.test(s),
+  );
+
+/** Every template string in the body. */
+const bodyTexts = ({ body }: Endpoint): string[] => {
+  switch (body.type) {
+    case "none":
+      return [];
+    case "json":
+    case "raw":
+      return [body.content];
+    case "form":
+      return body.fields.filter((f) => f.enabled).map((f) => f.value);
+    case "multipart":
+      return body.fields.filter((f) => f.enabled && f.kind === "text").map((f) => f.value);
+  }
+};
 
 /** "404, 409" → [404, 409] */
 const parseStatuses = (s: string) =>
@@ -90,7 +103,17 @@ type NumberSetting = {
 /** The right-hand panel: picks a test, starts and stops runs, shows the current run's details, and
  * re-attaches to a run in progress after a reload. */
 export const RunControls = () => {
-  const { runId, status, error, config: lastConfig, report, attach, setError } = useRunStore();
+  const {
+    runId,
+    status,
+    error,
+    config: lastConfig,
+    report,
+    attach,
+    setError,
+    clear,
+  } = useRunStore();
+  const clearResponse = useSendStore((s) => s.clear);
   const endpoint = useSelectedEndpoint();
   const environment = useWorkspaceStore((s) => s.workspace?.activeEnvironment ?? null);
   const flush = useWorkspaceStore((s) => s.flush);
@@ -132,6 +155,16 @@ export const RunControls = () => {
     const active = runs.data.find((r) => r.status === "running");
     if (active && !useRunStore.getState().runId) attach(active.runId);
   }, [runs.data, attach]);
+
+  // A different endpoint makes the shown response and run results stale.
+  const endpointId = endpoint?.id ?? null;
+  const prevEndpointId = useRef(endpointId);
+  useEffect(() => {
+    if (prevEndpointId.current === endpointId) return;
+    prevEndpointId.current = endpointId;
+    clearResponse();
+    clear();
+  }, [endpointId, clear, clearResponse]);
 
   const buildConfig = (): RunConfig => {
     if (kind === "fake") return { kind, durationMs: Math.round(durationS * 1000) };
@@ -215,7 +248,14 @@ export const RunControls = () => {
       </div>
       <div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto p-5 text-sm">
         <Field label="Test type">
-          <Select value={kind} disabled={running} onValueChange={(v) => set("kind", v as TestKind)}>
+          <Select
+            value={kind}
+            disabled={running}
+            onValueChange={(v) => {
+              set("kind", v as TestKind);
+              clear();
+            }}
+          >
             <SelectTrigger className="w-full font-mono text-xs capitalize">
               <SelectValue placeholder="Select a test" />
             </SelectTrigger>

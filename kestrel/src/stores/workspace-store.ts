@@ -4,6 +4,7 @@ import { errorMessage, getWorkspace, putWorkspace, setSecret } from "@/lib/clien
 import type { Collection } from "@/types/engine/Collection";
 import type { Workspace } from "@/types/engine/Workspace";
 import type { Endpoint } from "@/types/engine/Endpoint";
+import type { Saved } from "@/types/engine/Saved";
 
 const SAVE_DEBOUNCE_MS = 400;
 
@@ -37,6 +38,8 @@ interface WorkspaceState {
   removeEnvironment: (name: string) => void;
   setVar: (env: string, key: string, value: string | null) => void;
   setSecret: (env: string, key: string, value: string | null) => Promise<void>;
+  /** Reflects what a Send's extract rules saved: variables are set here, secrets were stored by the engine. */
+  applySaved: (env: string, saved: Saved[]) => void;
   /** Writes pending edits now. Runs call this so the engine sees what's on screen. */
   flush: () => Promise<void>;
 }
@@ -173,6 +176,7 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => {
         body: { type: "none" },
         auth: { type: "none" },
         expect: null,
+        extract: [],
       };
       edit((ws) => {
         const target = activeCollectionOf(ws) ?? newCollection("Default");
@@ -245,6 +249,19 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => {
       } catch (err) {
         set({ saveState: "error", saveError: errorMessage(err) });
       }
+    },
+
+    applySaved: (env, saved) => {
+      const ok = saved.filter((s) => s.error === null);
+      for (const s of ok) {
+        if (s.target === "variable" && s.value !== null) get().setVar(env, s.name, s.value);
+      }
+      const secrets = ok.filter((s) => s.target === "secret").map((s) => s.name);
+      if (secrets.length === 0) return;
+      set((s) => {
+        const keys = new Set([...(s.secretKeys[env] ?? []), ...secrets]);
+        return { secretKeys: { ...s.secretKeys, [env]: [...keys].sort() } };
+      });
     },
 
     flush: async () => {

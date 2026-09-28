@@ -13,7 +13,7 @@ pub fn build(req: &RenderedRequest, outcome: &Outcome, redactor: &Redactor, max_
             method: req.method,
             url: redactor.text(req.url.as_str()),
             headers: redactor.headers(req.headers.iter().map(|(k, v)| (k.as_str(), v.as_str()))),
-            body: req.body.as_deref().map(|b| redactor.text(b)),
+            body: req.body_text().map(|b| redactor.text(&b)),
         },
         status: outcome.status,
         error: outcome.error.as_ref().map(|(_, msg)| redactor.text(msg)),

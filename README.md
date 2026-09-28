@@ -57,6 +57,11 @@ pnpm install
 pnpm dev                          # http://localhost:3000
 ```
 
+**Single binary:** the engine also serves the built UI. Run `pnpm build` in `kestrel/`, then
+`cargo run --release -p engine` and open http://localhost:7070. Release builds embed the UI, so the
+binary is the whole app. The engine injects the session token into the page it serves, so no `.env`
+is needed this way.
+
 To try everything against something with known behaviour, start the reference server and import its
 spec:
 
@@ -83,7 +88,8 @@ set an endpoint's body to `{{n:int_array}}`, for example on `/sort` or `/linear`
 | Variable | Default | |
 |---|---|---|
 | `KESTREL_TOKEN` | random per start | Required by every API call. The UI reads it at build time, so set it in `.env` |
-| `KESTREL_PORT` | `7070` | The engine always binds `127.0.0.1` only |
+| `KESTREL_PORT` | `7070` | |
+| `KESTREL_BIND` | `127.0.0.1` | Loopback by default. Only change it on a private network (see Deploying) |
 | `KESTREL_WORKSPACE_DIR` | working directory | Where `kestrel.json` and `kestrel.secrets.json` live |
 | `KESTREL_UI_ORIGINS` | `http://localhost:3000,http://127.0.0.1:3000` | Origins allowed to call the engine |
 | `TARGET_PORT` | `8089` | Reference server port |
@@ -152,9 +158,48 @@ HANDOFF.md              design notes, decisions and milestone status
 
 ## Deploying
 
-Kestrel is designed to run **on your machine**, next to the engine. Hosting the UI on Vercel is easy,
-since it's a static export. Hosting the engine there isn't a good fit, even though Vercel runs Rust
-functions:
+One container holds everything: the engine binary with the UI embedded, serving both on port 7070.
+
+```bash
+docker build -t kestrel .
+docker run --rm -p 127.0.0.1:7070:7070 -v kestrel-data:/data kestrel    # http://localhost:7070
+```
+
+> **There is no login.** Anyone who can load the UI can drive the load generator. Publish the port on
+> `127.0.0.1` (as above) or keep it on a private network. Never expose it publicly.
+
+### Fly.io (private)
+
+`fly.toml` deploys one machine with **no public IP**. You open it through `fly proxy` over Fly's
+WireGuard, so only members of your Fly org can reach it.
+
+```bash
+fly apps create <your-app-name>                    # and set `app` in fly.toml to match
+fly volumes create kestrel_data --size 1 --region iad
+fly deploy --no-public-ips --ha=false              # exactly one machine: runs and the workspace live on it
+fly proxy 7070:7070                                # then open http://localhost:7070
+```
+
+- The workspace (`kestrel.json`, secrets) lives on the `kestrel_data` volume and survives deploys.
+- It's a dedicated-CPU machine because shared CPU adds jitter to latency numbers. Switch `cpu_kind`
+  to `shared` in `fly.toml` for lighter, cheaper use.
+- Latency is measured from the Fly region, not from your machine.
+- To use a different local port (`fly proxy 8000:7070`), set `KESTREL_ALLOWED_HOSTS=localhost:8000`,
+  since the engine checks the `Host` header.
+- Only load-test APIs you own or have permission to test. That's also Fly's rule.
+
+| Variable | Container default | |
+|---|---|---|
+| `KESTREL_BIND` | `::` | Any address, IPv4 and IPv6 (Fly's private network is IPv6). Defaults to `127.0.0.1` outside the container |
+| `KESTREL_WORKSPACE_DIR` | `/data` | Mount a volume here |
+| `KESTREL_ALLOWED_HOSTS` | – | Extra `Host` values to accept, comma-separated |
+
+`GET /healthz` answers `ok` without a token, for health checks.
+
+### Why not Vercel
+
+Hosting the UI on Vercel is easy, since it's a static export. Hosting the engine there isn't a good
+fit, even though Vercel runs Rust functions:
 
 - **Runs outlive requests.** A run starts on one request and keeps working in the background while
   the UI streams events from another. Serverless instances can't be relied on to stay alive or share
@@ -168,14 +213,13 @@ functions:
 - **Load-testing third parties from shared cloud infrastructure** risks the host's acceptable-use
   rules.
 
-A hosted setup would need a long-running host for the engine (a VM or container), real user
-authentication in place of the build-time token, persistent storage, and per-user limits. The planned
-direction is the opposite: a single binary, with the engine serving the built UI itself (milestone M5
-in `HANDOFF.md`).
+The container above solves all of these except login. A **public** deployment needs real
+authentication before it's safe to expose.
 
 ## Status
 
 Built: M0–M4. That covers the engine and API guard, latency probe, load test (both models), OpenAPI
-import with contract checks, and Big-O. Next: JSON/CSV export and single-binary packaging, then
-stress, spike, soak, rate-limit discovery, and Postman / curl import. See `HANDOFF.md` for the design
+import with contract checks, Big-O, and single-binary / container packaging (UI served by the engine,
+private Fly.io deploy). Next: JSON/CSV export and login for public deployments, then stress, spike,
+soak, rate-limit discovery, and Postman / curl import. See `HANDOFF.md` for the design
 notes and full roadmap.

@@ -14,11 +14,13 @@
           "name": "Liveness",
           "group": "Operations",
           "method": "GET",
-          "url": "{{base}}/healthz",
+          "url": "{{baseUrl}}/healthz",
           "headers": [],
           "query": [],
           "body": {
-            "type": "none"
+            "type": "raw",
+            "contentType": "application/x-www-form-urlencoded",
+            "content": ""
           },
           "auth": {
             "type": "none"
@@ -32,14 +34,15 @@
                 }
               }
             ]
-          }
+          },
+          "extract": []
         },
         {
           "id": "9d871bf2-7b4a-4b22-adb3-34c913b25168",
           "name": "Readiness",
           "group": "Operations",
           "method": "GET",
-          "url": "{{base}}/readyz",
+          "url": "{{baseUrl}}/readyz",
           "headers": [],
           "query": [],
           "body": {
@@ -63,14 +66,15 @@
                 }
               }
             ]
-          }
+          },
+          "extract": []
         },
         {
           "id": "d703c3f6-0c02-4c8b-8618-0630db00be1d",
           "name": "Sign in",
           "group": "Authentication",
           "method": "POST",
-          "url": "{{base}}/v1/auth/login",
+          "url": "{{baseUrl}}/v1/auth/login",
           "headers": [],
           "query": [],
           "body": {
@@ -113,14 +117,30 @@
                 }
               }
             ]
-          }
+          },
+          "extract": [
+            {
+              "source": "body",
+              "path": "accessToken",
+              "target": "secret",
+              "name": "token",
+              "enabled": true
+            },
+            {
+              "source": "body",
+              "path": "user.username",
+              "target": "variable",
+              "name": "username",
+              "enabled": true
+            }
+          ]
         },
         {
           "id": "1147deb2-8e51-47d4-a8bc-d9dbeeb3f967",
           "name": "End the session",
           "group": "Authentication",
           "method": "POST",
-          "url": "{{base}}/v1/auth/logout",
+          "url": "{{baseUrl}}/v1/auth/logout",
           "headers": [],
           "query": [],
           "body": {
@@ -162,14 +182,15 @@
                 }
               }
             ]
-          }
+          },
+          "extract": []
         },
         {
           "id": "950dfec6-3f81-4b38-99db-6886a7cacd26",
           "name": "Exchange a refresh token for a new pair",
           "group": "Authentication",
           "method": "POST",
-          "url": "{{base}}/v1/auth/refresh",
+          "url": "{{baseUrl}}/v1/auth/refresh",
           "headers": [],
           "query": [],
           "body": {
@@ -212,14 +233,15 @@
                 }
               }
             ]
-          }
+          },
+          "extract": []
         },
         {
           "id": "05ad84e6-1b26-4399-a7db-35d017c5cf77",
           "name": "Create an account",
           "group": "Authentication",
           "method": "POST",
-          "url": "{{base}}/v1/auth/register",
+          "url": "{{baseUrl}}/v1/auth/register",
           "headers": [],
           "query": [],
           "body": {
@@ -262,14 +284,15 @@
                 }
               }
             ]
-          }
+          },
+          "extract": []
         },
         {
           "id": "94cd0ac7-a3e9-4e3f-8b27-25c6de301e16",
           "name": "The feed",
           "group": "Posts",
           "method": "GET",
-          "url": "{{base}}/v1/posts",
+          "url": "{{baseUrl}}/v1/posts",
           "headers": [],
           "query": [
             {
@@ -323,19 +346,20 @@
                 }
               }
             ]
-          }
+          },
+          "extract": []
         },
         {
           "id": "513a4777-d23f-43ef-a530-62a5b8095a73",
           "name": "Create a post",
           "group": "Posts",
           "method": "POST",
-          "url": "{{base}}/v1/posts",
+          "url": "{{baseUrl}}/v1/posts",
           "headers": [],
           "query": [],
           "body": {
             "type": "json",
-            "content": "{\n  \"caption\": \"Sunset from the office.\",\n  \"imageKey\": \"uploads/a1b2c3d4e5f6a7b8c9d0e1f2/post.jpg\"\n}"
+            "content": "{\n  \"caption\": \"Sunset from the office.\",\n  \"imageKey\": \"\"\n}"
           },
           "auth": {
             "type": "bearer",
@@ -380,14 +404,15 @@
                 }
               }
             ]
-          }
+          },
+          "extract": []
         },
         {
           "id": "72021ca9-7b83-4df2-9b55-f59a0557b83b",
           "name": "Get one post",
           "group": "Posts",
           "method": "GET",
-          "url": "{{base}}/v1/posts/{{id}}",
+          "url": "{{baseUrl}}/v1/posts/{{id}}",
           "headers": [],
           "query": [],
           "body": {
@@ -430,14 +455,15 @@
                 }
               }
             ]
-          }
+          },
+          "extract": []
         },
         {
           "id": "ea8c42dd-4294-4a33-b0b0-685757fc2b04",
           "name": "Delete a post",
           "group": "Posts",
           "method": "DELETE",
-          "url": "{{base}}/v1/posts/{{id}}",
+          "url": "{{baseUrl}}/v1/posts/{{id}}",
           "headers": [],
           "query": [],
           "body": {
@@ -484,14 +510,15 @@
                 }
               }
             ]
-          }
+          },
+          "extract": []
         },
         {
           "id": "0c971352-c738-433a-94ab-205e50df8732",
           "name": "Get a presigned upload URL",
           "group": "Uploads",
           "method": "POST",
-          "url": "{{base}}/v1/uploads/presign",
+          "url": "{{baseUrl}}/v1/uploads/presign",
           "headers": [],
           "query": [],
           "body": {
@@ -547,14 +574,15 @@
                 }
               }
             ]
-          }
+          },
+          "extract": []
         },
         {
           "id": "3ce6f461-2b65-4e6a-b784-00210e9d2d4c",
           "name": "Get the authenticated user",
           "group": "Users",
           "method": "GET",
-          "url": "{{base}}/v1/users/me",
+          "url": "{{baseUrl}}/v1/users/me",
           "headers": [],
           "query": [],
           "body": {
@@ -591,19 +619,20 @@
                 }
               }
             ]
-          }
+          },
+          "extract": []
         },
         {
           "id": "a1c9c776-d3fe-4657-979c-1f7070e82843",
           "name": "Update the authenticated user",
           "group": "Users",
           "method": "PATCH",
-          "url": "{{base}}/v1/users/me",
+          "url": "{{baseUrl}}/v1/users/me",
           "headers": [],
           "query": [],
           "body": {
             "type": "json",
-            "content": "{\n  \"avatarKey\": \"uploads/a1b2c3d4e5f6a7b8c9d0e1f2/avatar.jpg\",\n  \"bio\": \"Building things.\",\n  \"displayName\": \"Ada L.\"\n}"
+            "content": "{\n  \"avatarKey\": \"uploads/a1b2c3d4e5f6a7b8c9d0e1f2/avatar.jpg\",\n  \"bio\": \"Building things.\",\n  \"displayName\": \"Ada Lovelace\"\n}"
           },
           "auth": {
             "type": "bearer",
@@ -648,14 +677,15 @@
                 }
               }
             ]
-          }
+          },
+          "extract": []
         },
         {
           "id": "1e451596-16d2-4b77-8c21-49fcffb80f81",
           "name": "Get a user's public profile",
           "group": "Users",
           "method": "GET",
-          "url": "{{base}}/v1/users/{{username}}",
+          "url": "{{baseUrl}}/v1/users/{{username}}",
           "headers": [],
           "query": [],
           "body": {
@@ -698,14 +728,15 @@
                 }
               }
             ]
-          }
+          },
+          "extract": []
         },
         {
           "id": "dafca637-cbf8-4dc9-b667-733ca3f10b78",
           "name": "List one user's posts",
           "group": "Posts",
           "method": "GET",
-          "url": "{{base}}/v1/users/{{username}}/posts",
+          "url": "{{baseUrl}}/v1/users/{{username}}/posts",
           "headers": [],
           "query": [
             {
@@ -765,7 +796,8 @@
                 }
               }
             ]
-          }
+          },
+          "extract": []
         }
       ],
       "source": "OpenAPI 3.1.0 · Social API 1.0.0",
@@ -1324,57 +1356,17 @@
           }
         }
       }
-    },
-    {
-      "id": "4c6861ed-c53c-45c3-a25d-513f2aad3c82",
-      "name": "Heirs OCR",
-      "vars": {},
-      "endpoints": [
-        {
-          "id": "0d9b3848-76f6-444f-a5e5-eddd9528109b",
-          "name": "Health",
-          "group": null,
-          "method": "GET",
-          "url": "{{base}}/healthz",
-          "headers": [],
-          "query": [],
-          "body": {
-            "type": "none"
-          },
-          "auth": {
-            "type": "none"
-          },
-          "expect": null
-        },
-        {
-          "id": "f80a3135-4dbd-42f6-8fa3-58d43f6114e1",
-          "name": "Functions",
-          "group": null,
-          "method": "GET",
-          "url": "{{base}}/v1/ocr/functions",
-          "headers": [],
-          "query": [],
-          "body": {
-            "type": "none"
-          },
-          "auth": {
-            "type": "none"
-          },
-          "expect": null
-        }
-      ],
-      "source": null,
-      "schemaDefs": null
     }
   ],
   "environments": [
     {
-      "name": "heirs-ocr",
+      "name": "domie-face",
       "vars": {
-        "base": "http://3.250.7.135:8080"
+        "baseUrl": "https://domieface-server.onrender.com",
+        "username": "ada"
       }
     }
   ],
-  "activeEnvironment": "heirs-ocr",
-  "activeCollection": "4c6861ed-c53c-45c3-a25d-513f2aad3c82"
+  "activeEnvironment": "domie-face",
+  "activeCollection": "8a14ccc0-4900-4dd6-a65b-ecc5fb6d836c"
 }

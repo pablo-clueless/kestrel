@@ -2,7 +2,7 @@
 //! rename) so a crash never leaves a half-written workspace.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     fs,
     io::Write,
     path::{Path, PathBuf},
@@ -10,16 +10,48 @@ use std::{
 };
 
 use anyhow::Context;
+use bytes::Bytes;
+use uuid::Uuid;
 
 use super::{Secrets, Workspace};
 
 pub const WORKSPACE_FILE: &str = "kestrel.json";
 pub const SECRETS_FILE: &str = "kestrel.secrets.json";
+/// Uploaded files for multipart bodies, one per id.
+pub const FILES_DIR: &str = "kestrel-files";
 
 pub struct WorkspaceStore {
     dir: PathBuf,
     workspace: RwLock<Workspace>,
     secrets: RwLock<Secrets>,
+    /// Only used by the in-memory store (tests); otherwise files live in [`FILES_DIR`].
+    memory_files: RwLock<HashMap<Uuid, Bytes>>,
+}
+
+/// Where compiled requests read uploaded files from.
+pub trait FileSource {
+    fn read_file(&self, id: Uuid) -> anyhow::Result<Bytes>;
+}
+
+/// For requests that can't reference files.
+#[cfg(test)]
+pub struct NoFiles;
+
+#[cfg(test)]
+impl FileSource for NoFiles {
+    fn read_file(&self, id: Uuid) -> anyhow::Result<Bytes> {
+        anyhow::bail!("file {id} not found")
+    }
+}
+
+impl FileSource for WorkspaceStore {
+    fn read_file(&self, id: Uuid) -> anyhow::Result<Bytes> {
+        if self.dir.as_os_str().is_empty() {
+            return self.memory_files.read().unwrap().get(&id).cloned().context("file not found");
+        }
+        let path = self.dir.join(FILES_DIR).join(id.to_string());
+        fs::read(&path).map(Bytes::from).with_context(|| format!("reading {}", path.display()))
+    }
 }
 
 impl WorkspaceStore {
@@ -33,13 +65,31 @@ impl WorkspaceStore {
             None => Workspace::default(),
         };
         let secrets = read_json(&dir.join(SECRETS_FILE))?.unwrap_or_default();
-        Ok(Self { dir, workspace: RwLock::new(workspace), secrets: RwLock::new(secrets) })
+        Ok(Self { dir, workspace: RwLock::new(workspace), secrets: RwLock::new(secrets), memory_files: Default::default() })
     }
 
     /// A store that never touches disk, for tests.
     #[cfg(test)]
     pub fn in_memory(workspace: Workspace, secrets: Secrets) -> Self {
-        Self { dir: PathBuf::new(), workspace: RwLock::new(workspace), secrets: RwLock::new(secrets) }
+        Self {
+            dir: PathBuf::new(),
+            workspace: RwLock::new(workspace),
+            secrets: RwLock::new(secrets),
+            memory_files: Default::default(),
+        }
+    }
+
+    /// Stores an uploaded file and returns its id. Files are never rewritten, so no locking.
+    pub fn save_file(&self, bytes: Bytes) -> anyhow::Result<Uuid> {
+        let id = Uuid::new_v4();
+        if self.dir.as_os_str().is_empty() {
+            self.memory_files.write().unwrap().insert(id, bytes);
+            return Ok(id);
+        }
+        let dir = self.dir.join(FILES_DIR);
+        fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+        write_atomic(&dir.join(id.to_string()), &bytes)?;
+        Ok(id)
     }
 
     pub fn workspace(&self) -> Workspace {

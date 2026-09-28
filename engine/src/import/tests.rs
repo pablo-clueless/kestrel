@@ -127,3 +127,59 @@ fn rejects_what_it_cannot_import() {
     assert!(import(r#"{"info":{"_postman_id":"x"}}"#, None).unwrap_err().contains("Postman"));
     assert!(import("title: hello\n", None).unwrap_err().contains("not an OpenAPI"));
 }
+
+#[test]
+fn imports_form_bodies() {
+    let spec = json!({
+        "openapi": "3.0.3",
+        "info": { "title": "Forms", "version": "1" },
+        "paths": {
+            "/login": { "post": { "summary": "login", "requestBody": { "content": {
+                "application/x-www-form-urlencoded": { "schema": { "type": "object", "properties": {
+                    "username": { "type": "string", "example": "ada" },
+                    "password": { "type": "string", "example": "pw" }
+                } } }
+            } } } },
+            "/upload": { "post": { "summary": "upload", "requestBody": { "content": {
+                "multipart/form-data": { "schema": { "type": "object", "properties": {
+                    "title": { "type": "string", "example": "cat" },
+                    "file": { "type": "string", "format": "binary" }
+                } } }
+            } } } }
+        }
+    });
+    let r = import(&spec.to_string(), None).unwrap();
+    let login = endpoint(&r.collection, "login");
+    let Body::Form { fields } = &login.body else { panic!("expected a form, got {:?}", login.body) };
+    let pairs: Vec<_> = fields.iter().map(|f| format!("{}={}", f.key, f.value)).collect();
+    assert_eq!(pairs, ["password=pw", "username=ada"]);
+
+    let upload = endpoint(&r.collection, "upload");
+    let Body::Multipart { fields } = &upload.body else { panic!("expected multipart, got {:?}", upload.body) };
+    let parts: Vec<_> = fields.iter().map(|f| (f.key.as_str(), f.kind, f.value.as_str())).collect();
+    assert_eq!(parts, [("title", FieldKind::Text, "cat"), ("file", FieldKind::File, "")]);
+    assert!(fields[1].file.is_none(), "files are chosen by hand");
+    assert!(r.warnings.iter().any(|w| w.contains("choose a file")), "{:?}", r.warnings);
+}
+
+#[test]
+fn imports_swagger_form_data() {
+    let spec = json!({
+        "swagger": "2.0",
+        "info": { "title": "Legacy forms", "version": "1" },
+        "host": "api.example.com",
+        "paths": { "/pets": { "post": {
+            "summary": "add",
+            "consumes": ["multipart/form-data"],
+            "parameters": [
+                { "in": "formData", "name": "name", "type": "string", "required": true, "x-example": "Rex" },
+                { "in": "formData", "name": "photo", "type": "file" }
+            ]
+        } } }
+    });
+    let r = import(&spec.to_string(), None).unwrap();
+    let add = endpoint(&r.collection, "add");
+    let Body::Multipart { fields } = &add.body else { panic!("expected multipart, got {:?}", add.body) };
+    let parts: Vec<_> = fields.iter().map(|f| (f.key.as_str(), f.kind)).collect();
+    assert_eq!(parts, [("name", FieldKind::Text), ("photo", FieldKind::File)]);
+}

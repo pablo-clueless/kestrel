@@ -3,6 +3,7 @@ import { ThemeProvider } from "next-themes";
 import type { Metadata } from "next";
 
 import { Providers } from "@/components/providers";
+import { Toaster } from "@/components/ui/sonner";
 import "./globals.css";
 
 const space_grotesk = Space_Grotesk({
@@ -29,7 +30,10 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
     >
       <body className="flex min-h-full flex-col">
         <ThemeProvider defaultTheme="light">
-          <Providers>{children}</Providers>
+          <Providers>
+            {children}
+            <Toaster position="top-right" richColors />
+          </Providers>
         </ThemeProvider>
       </body>
     </html>

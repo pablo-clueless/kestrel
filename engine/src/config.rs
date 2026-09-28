@@ -1,4 +1,8 @@
-use std::{path::PathBuf, time::Duration};
+use std::{
+    net::{IpAddr, Ipv4Addr},
+    path::PathBuf,
+    time::Duration,
+};
 
 use anyhow::Context;
 use uuid::Uuid;
@@ -10,6 +14,8 @@ const DEFAULT_UI_ORIGINS: [&str; 2] = ["http://localhost:3000", "http://127.0.0.
 #[derive(Debug, Clone)]
 pub struct Config {
     pub port: u16,
+    /// `KESTREL_BIND`. Loopback unless deliberately changed (e.g. `::` inside a private container).
+    pub bind: IpAddr,
     pub token: String,
     /// True when `KESTREL_TOKEN` was unset and a random one was generated.
     pub token_generated: bool,
@@ -73,6 +79,19 @@ impl Config {
         };
 
         let mut config = Self::new(port, token, token_generated, ui_origins);
+        if let Ok(bind) = std::env::var("KESTREL_BIND")
+            && !bind.trim().is_empty()
+        {
+            config.bind = bind.trim().parse().context("KESTREL_BIND must be an IP address, e.g. 127.0.0.1 or ::")?;
+        }
+        // Extra `Host` values to accept, e.g. `localhost:8000` behind `fly proxy 8000:7070`. Their http
+        // origins are allowed too, since the engine serves the UI on them.
+        if let Ok(hosts) = std::env::var("KESTREL_ALLOWED_HOSTS") {
+            for host in hosts.split(',').map(str::trim).filter(|h| !h.is_empty()) {
+                config.allowed_hosts.push(host.to_owned());
+                config.allowed_origins.push(format!("http://{host}"));
+            }
+        }
         config.workspace_dir = match std::env::var("KESTREL_WORKSPACE_DIR") {
             Ok(dir) if !dir.trim().is_empty() => PathBuf::from(dir.trim()),
             _ => std::env::current_dir().context("reading the working directory")?,
@@ -88,6 +107,7 @@ impl Config {
 
         Self {
             port,
+            bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
             token,
             token_generated,
             allowed_hosts,

@@ -3,6 +3,7 @@ mod config;
 mod contract;
 mod engine;
 mod error;
+mod extract;
 mod import;
 mod model;
 mod platform;
@@ -25,19 +26,26 @@ async fn main() -> anyhow::Result<()> {
     platform::high_res_timer();
     let config = config::Config::from_env()?;
     if config.token_generated {
-        tracing::warn!(
-            "KESTREL_TOKEN is not set; generated a session token. The dev UI won't be able to \
-             connect — copy .env.example to .env and set it there."
+        tracing::info!(
+            "KESTREL_TOKEN is not set; generated a session token. The UI served by the engine gets it \
+             automatically; `pnpm dev` needs KESTREL_TOKEN in .env."
         );
     }
-
-    // Loopback only: the engine is a load generator and must never be reachable from the network.
-    let addr = SocketAddr::from(([127, 0, 0, 1], config.port));
+    // The engine is a load generator and the UI it serves carries the session token, so anything
+    // that can reach it can drive it. Loopback by default; `KESTREL_BIND` is for private networks.
+    if !config.bind.is_loopback() {
+        tracing::warn!(
+            "listening on {} (not loopback): keep it private, e.g. `fly deploy --no-public-ips` + \
+             `fly proxy`. There is no login.",
+            config.bind
+        );
+    }
+    let addr = SocketAddr::new(config.bind, config.port);
     let store = model::store::WorkspaceStore::open(&config.workspace_dir)?;
     tracing::info!("workspace: {}", config.workspace_dir.join(model::store::WORKSPACE_FILE).display());
     let app = api::router(api::AppState::new(config, store));
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    tracing::info!("engine listening on http://{addr}/api");
+    let listener = listen(addr)?;
+    tracing::info!("engine listening on http://{addr} (UI at /, API at /api)");
 
     axum::serve(listener, app)
         .with_graceful_shutdown(async {
@@ -45,4 +53,18 @@ async fn main() -> anyhow::Result<()> {
         })
         .await?;
     Ok(())
+}
+
+/// Binds `addr`. An IPv6 address also accepts IPv4 on every OS: Linux does this by default, Windows
+/// doesn't, and `::` should mean "any address" everywhere.
+fn listen(addr: SocketAddr) -> std::io::Result<tokio::net::TcpListener> {
+    use socket2::{Domain, Socket, Type};
+    let socket = Socket::new(Domain::for_address(addr), Type::STREAM, None)?;
+    if addr.is_ipv6() {
+        socket.set_only_v6(false)?;
+    }
+    socket.set_nonblocking(true)?;
+    socket.bind(&addr.into())?;
+    socket.listen(1024)?;
+    tokio::net::TcpListener::from_std(socket.into())
 }

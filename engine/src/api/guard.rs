@@ -67,6 +67,10 @@ fn has_body(headers: &HeaderMap) -> bool {
 }
 
 fn is_allowed_content_type(path: &str, headers: &HeaderMap) -> bool {
+    // Uploads are the raw file, whatever its type. The token check above still applies.
+    if path.ends_with("/files") {
+        return true;
+    }
     let Some(ct) = header_str(headers, header::CONTENT_TYPE) else { return false };
     let mime = ct.split(';').next().unwrap_or_default().trim().to_ascii_lowercase();
     mime == "application/json" || (path.ends_with("/import") && mime == "multipart/form-data")

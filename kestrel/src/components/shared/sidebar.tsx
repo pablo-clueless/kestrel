@@ -18,13 +18,28 @@ import { cn } from "cn";
 export const Sidebar = () => {
   const open = useLayoutStore((s) => s.sidebarOpen);
   // Stays mounted when collapsed so CollectionList keeps the workspace loaded.
+  // Width animates on the outer shell; the inner panel keeps a fixed width so content doesn't reflow mid-slide.
   return (
-    <aside className={cn("bg-card flex h-full w-68 shrink-0 flex-col border-r", !open && "hidden")}>
-      <div className="flex h-14 shrink-0 items-center gap-2 border-b px-4 font-semibold">
-        <Feather className="text-primary size-5" /> Kestrel
-      </div>
-      <div className="min-h-0 flex-1 p-3">
-        <CollectionList />
+    <aside
+      inert={!open}
+      aria-hidden={!open}
+      className={cn(
+        "bg-card h-full shrink-0 overflow-hidden border-r transition-[width,border-color] duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none",
+        open ? "w-68" : "w-0 border-r-transparent",
+      )}
+    >
+      <div
+        className={cn(
+          "flex h-full w-68 flex-col transition-[opacity,translate] duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none",
+          open ? "translate-x-0 opacity-100" : "-translate-x-4 opacity-0",
+        )}
+      >
+        <div className="flex h-14 shrink-0 items-center gap-2 border-b px-4 font-semibold">
+          <Feather className="text-primary size-5" /> Kestrel
+        </div>
+        <div className="min-h-0 flex-1 p-3">
+          <CollectionList />
+        </div>
       </div>
     </aside>
   );

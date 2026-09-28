@@ -653,6 +653,7 @@ mod tests {
             body: Default::default(),
             auth: Default::default(),
             expect: None,
+            extract: vec![],
         };
         let request =
             CompiledRequest::compile(&endpoint, &Workspace::default(), &Default::default(), None, false).unwrap();

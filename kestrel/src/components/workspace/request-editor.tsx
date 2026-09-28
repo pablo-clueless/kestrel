@@ -10,6 +10,9 @@ import { errorMessage, renderRequest } from "@/lib/client";
 import type { Endpoint } from "@/types/engine/Endpoint";
 import { Textarea } from "@/components/ui/textarea";
 import { KeyValueEditor } from "./key-value-editor";
+import { FormFieldEditor } from "./form-field-editor";
+import type { FormField } from "@/types/engine/FormField";
+import { ExtractEditor } from "./extract-editor";
 import { useSendStore } from "@/stores/send-store";
 import type { Auth } from "@/types/engine/Auth";
 import { Button } from "@/components/ui/button";
@@ -29,7 +32,16 @@ import {
 export const XS = "text-xs md:text-xs";
 
 const METHODS: HttpMethod[] = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
-type Tab = "query" | "headers" | "body" | "auth";
+type Tab = "query" | "headers" | "body" | "auth" | "after";
+
+const CONTENT_TYPES = [
+  "application/json",
+  "application/x-www-form-urlencoded",
+  "application/form-data",
+  "application/octet-stream",
+  "text/html",
+  "text/plain",
+];
 
 export const RequestEditor = () => {
   const endpoint = useSelectedEndpoint();
@@ -97,6 +109,7 @@ export const RequestEditor = () => {
           { id: "headers", label: "Headers", count: endpoint.headers.length },
           { id: "body", label: "Body" },
           { id: "auth", label: "Auth" },
+          { id: "after", label: "On Response", count: endpoint.extract?.length ?? 0 },
         ]}
       />
       {tab === "query" && (
@@ -107,6 +120,9 @@ export const RequestEditor = () => {
       )}
       {tab === "body" && <BodyEditor body={endpoint.body} onChange={(body) => patch({ body })} />}
       {tab === "auth" && <AuthEditor auth={endpoint.auth} onChange={(auth) => patch({ auth })} />}
+      {tab === "after" && (
+        <ExtractEditor rules={endpoint.extract} onChange={(extract) => patch({ extract })} />
+      )}
     </div>
   );
 };
@@ -136,46 +152,94 @@ const RenderedPreview = ({
   );
 };
 
+/** Switches body type, carrying text between JSON/raw and fields between the two form types
+ * (file fields are dropped going to URL-encoded, which can't carry them). */
+const withType = (body: Body, type: Body["type"]): Body => {
+  const content = body.type === "json" || body.type === "raw" ? body.content : "";
+  const fields: FormField[] =
+    body.type === "multipart"
+      ? body.fields
+      : body.type === "form"
+        ? body.fields.map((f) => ({ ...f, kind: "text", file: null }))
+        : [];
+  switch (type) {
+    case "none":
+      return { type };
+    case "json":
+      return { type, content };
+    case "raw":
+      return { type, content, contentType: "text/plain" };
+    case "form":
+      return {
+        type,
+        fields: fields
+          .filter((f) => f.kind === "text")
+          .map(({ key, value, enabled }) => ({ key, value, enabled })),
+      };
+    case "multipart":
+      return { type, fields };
+  }
+};
+
 const BodyEditor = ({ body, onChange }: { body: Body; onChange: (b: Body) => void }) => (
   <div className="flex flex-col gap-2">
-    <Select
-      value={body.type}
-      onValueChange={(v) => {
-        const type = v as Body["type"];
-        const content = body.type === "none" ? "" : body.content;
-        onChange(
-          type === "none"
-            ? { type }
-            : type === "json"
-              ? { type, content }
-              : { type, content, contentType: "text/plain" },
-        );
-      }}
-    >
-      <SelectTrigger className={cn("w-50 self-start font-mono", XS)}>
-        <SelectValue />
-      </SelectTrigger>
-      <SelectContent>
-        <SelectItem value="none">No body</SelectItem>
-        <SelectItem value="json">JSON</SelectItem>
-        <SelectItem value="raw">Raw</SelectItem>
-      </SelectContent>
-    </Select>
-    {body.type === "raw" && (
-      <Input
-        className={XS}
-        placeholder="Content-Type"
-        value={body.contentType}
-        onChange={(e) => onChange({ ...body, contentType: e.target.value })}
-      />
-    )}
-    {body.type !== "none" && (
+    <div className="flex items-center gap-x-4">
+      <Select value={body.type} onValueChange={(v) => onChange(withType(body, v as Body["type"]))}>
+        <SelectTrigger className={cn("w-50 self-start font-mono capitalize", XS)}>
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="none">None</SelectItem>
+          <SelectItem value="json">JSON</SelectItem>
+          <SelectItem value="form">Form URL-encoded</SelectItem>
+          <SelectItem value="multipart">Multipart form data</SelectItem>
+          <SelectItem value="raw">Raw</SelectItem>
+        </SelectContent>
+      </Select>
+      {body.type === "raw" && (
+        <Select
+          value={body.contentType}
+          onValueChange={(value) => onChange({ ...body, contentType: value || "" })}
+        >
+          <SelectTrigger className={cn("w-75 self-start font-mono", XS)}>
+            <SelectValue placeholder="Content-Type" />
+          </SelectTrigger>
+          <SelectContent>
+            {CONTENT_TYPES.map((type) => (
+              <SelectItem key={type} value={type}>
+                {type}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      )}
+    </div>
+    {(body.type === "json" || body.type === "raw") && (
       <Textarea
         className={cn("font-mono", XS)}
         value={body.content}
         placeholder={body.type === "json" ? '{ "id": {{seq}} }' : ""}
         onChange={(e) => onChange({ ...body, content: e.target.value })}
       />
+    )}
+    {body.type === "form" && (
+      <>
+        <KeyValueEditor
+          rows={body.fields}
+          onChange={(fields) => onChange({ ...body, fields })}
+          keyPlaceholder="field"
+        />
+        <p className="text-muted-foreground text-xs">Sent as application/x-www-form-urlencoded.</p>
+      </>
+    )}
+    {body.type === "multipart" && (
+      <>
+        <FormFieldEditor rows={body.fields} onChange={(fields) => onChange({ ...body, fields })} />
+        <p className="text-muted-foreground text-xs">
+          Sent as multipart/form-data. Files are uploaded to the engine and kept in kestrel-files/
+          next to kestrel.json (up to 50 MB each).
+        </p>
+      </>
     )}
   </div>
 );

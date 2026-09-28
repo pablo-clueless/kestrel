@@ -1,6 +1,7 @@
 "use client";
 
-import { ChevronDown, ChevronRight, FileUp, Plus, Settings2, Trash2, X } from "lucide-react";
+import { ChevronRight, FileUp, Plus, Settings2, Trash2, X } from "lucide-react";
+import { AnimatePresence, motion } from "framer-motion";
 import { useEffect } from "react";
 
 import { activeCollectionOf, useWorkspaceStore } from "@/stores/workspace-store";
@@ -8,8 +9,8 @@ import type { Collection } from "@/types/engine/Collection";
 import { Button } from "@/components/ui/button";
 import { EndpointList } from "./endpoint-list";
 import { ImportDialog } from "./import-dialog";
-import { Input } from "@/components/ui/input";
 import { useValues } from "@/hooks/use-values";
+import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { Label } from "./fields";
 import {
@@ -20,6 +21,18 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+
+/** Height + fade for sections that expand/collapse in the sidebar. */
+const collapse = {
+  initial: { height: 0, opacity: 0 },
+  animate: { height: "auto", opacity: 1 },
+  exit: { height: 0, opacity: 0 },
+  transition: { duration: 0.25, ease: [0.32, 0.72, 0, 1] },
+} as const;
+
+/** Row actions that fade in on hover/focus instead of popping in (keeps row layout stable). */
+const hoverAction =
+  "text-muted-foreground pointer-events-none opacity-0 transition-[opacity,color] duration-150 group-hover:pointer-events-auto group-hover:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100";
 
 /** Sidebar: collections of endpoints. The active one is expanded; clicking another switches to it.
  * Also loads the workspace. */
@@ -45,12 +58,12 @@ export const CollectionList = () => {
 
   if (loadError) {
     return (
-      <div className="flex flex-col gap-2 text-sm">
+      <motion.div className="flex flex-col gap-2 text-sm">
         <p className="text-red-600">{loadError}</p>
         <button className="text-primary self-start" onClick={() => void load()}>
           Retry
         </button>
-      </div>
+      </motion.div>
     );
   }
 
@@ -61,10 +74,10 @@ export const CollectionList = () => {
   };
 
   return (
-    <div className="flex h-full flex-col gap-3">
-      <div className="flex items-center justify-between">
+    <motion.div className="flex h-full flex-col gap-3">
+      <motion.div className="flex items-center justify-between">
         <span className="text-muted-foreground text-xs uppercase">Collections</span>
-        <div className="flex items-center gap-2">
+        <motion.div className="flex items-center gap-2">
           <button
             className="text-muted-foreground hover:text-primary"
             onClick={() => set("importing", true)}
@@ -83,34 +96,38 @@ export const CollectionList = () => {
           >
             <Plus className="size-4" />
           </button>
-        </div>
-      </div>
-      {adding && (
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            create();
-          }}
-        >
-          <Input
-            autoFocus
-            placeholder="Collection name"
-            value={newName}
-            onChange={(e) => set("newName", e.target.value)}
-            onBlur={create}
-            onKeyDown={(e) => e.key === "Escape" && set("adding", false)}
-          />
-        </form>
-      )}
+        </motion.div>
+      </motion.div>
+      <AnimatePresence initial={false}>
+        {adding && (
+          <motion.form
+            {...collapse}
+            className="overflow-hidden"
+            onSubmit={(e) => {
+              e.preventDefault();
+              create();
+            }}
+          >
+            <Input
+              autoFocus
+              placeholder="Collection name"
+              value={newName}
+              onChange={(e) => set("newName", e.target.value)}
+              onBlur={create}
+              onKeyDown={(e) => e.key === "Escape" && set("adding", false)}
+            />
+          </motion.form>
+        )}
+      </AnimatePresence>
       <nav className="-mx-2 flex-1 overflow-y-auto">
         {workspace?.collections.map((c) => {
           const isActive = c.id === active?.id;
           return (
-            <div key={c.id} className="mb-1">
-              <div
+            <motion.div key={c.id} className="mb-1">
+              <motion.div
                 className={cn(
-                  "group flex items-center gap-1.5 rounded-xs px-2 py-1.5 text-sm",
-                  isActive ? "font-medium" : "hover:bg-muted/60",
+                  "group flex items-center gap-1.5 rounded-xs px-2 py-1.5 text-sm transition-colors duration-150",
+                  isActive ? "font-medium" : "hover:bg-muted",
                 )}
               >
                 <button
@@ -118,33 +135,40 @@ export const CollectionList = () => {
                   onClick={() => setActiveCollection(c.id)}
                   aria-expanded={isActive}
                 >
-                  {isActive ? (
-                    <ChevronDown className="size-4 shrink-0" />
-                  ) : (
-                    <ChevronRight className="text-muted-foreground size-4 shrink-0" />
-                  )}
+                  <ChevronRight
+                    className={cn(
+                      "size-4 shrink-0 transition-[rotate,color] duration-200 ease-out motion-reduce:transition-none",
+                      isActive ? "rotate-90" : "text-muted-foreground",
+                    )}
+                  />
                   <span className="truncate">{c.name}</span>
                   <span className="text-muted-foreground text-xs font-normal">
                     {c.endpoints.length}
                   </span>
                 </button>
                 <button
-                  className="text-muted-foreground hover:text-primary hidden group-hover:block"
+                  className={cn(hoverAction, "hover:text-primary")}
                   onClick={() => set("editing", c)}
                   aria-label={`Settings for ${c.name}`}
                 >
                   <Settings2 className="size-3.5" />
                 </button>
                 <button
-                  className="text-muted-foreground hidden group-hover:block hover:text-red-600"
+                  className={cn(hoverAction, "hover:text-red-600")}
                   onClick={() => set("deleting", c)}
                   aria-label={`Delete ${c.name}`}
                 >
                   <Trash2 className="size-3.5" />
                 </button>
-              </div>
-              {isActive && <EndpointList collection={c} />}
-            </div>
+              </motion.div>
+              <AnimatePresence initial={false}>
+                {isActive && (
+                  <motion.div key="endpoints" {...collapse} className="overflow-hidden">
+                    <EndpointList collection={c} />
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </motion.div>
           );
         })}
         {workspace && workspace.collections.length === 0 && (
@@ -156,7 +180,7 @@ export const CollectionList = () => {
       <CollectionSettingsDialog collection={editing} onClose={() => set("editing", null)} />
       <DeleteCollectionDialog collection={deleting} onClose={() => set("deleting", null)} />
       <ImportDialog open={importing} onClose={() => set("importing", false)} />
-    </div>
+    </motion.div>
   );
 };
 
@@ -191,7 +215,7 @@ const CollectionSettingsDialog = ({
           </DialogDescription>
         </DialogHeader>
         {live && (
-          <div className="flex flex-col gap-4 text-sm">
+          <motion.div className="flex flex-col gap-4 text-sm">
             <label className="flex flex-col gap-1.5">
               <Label>Name</Label>
               <Input
@@ -199,10 +223,10 @@ const CollectionSettingsDialog = ({
                 onChange={(e) => renameCollection(live.id, e.target.value)}
               />
             </label>
-            <div className="flex flex-col gap-1.5">
+            <motion.div className="flex flex-col gap-1.5">
               <Label>Variables</Label>
               {Object.entries(live.vars).map(([k, v]) => (
-                <div key={k} className="flex items-center gap-1.5">
+                <motion.div key={k} className="flex items-center gap-1.5">
                   <span className="w-24 shrink-0 truncate font-mono text-xs" title={k}>
                     {k}
                   </span>
@@ -218,7 +242,7 @@ const CollectionSettingsDialog = ({
                   >
                     <X className="size-4" />
                   </button>
-                </div>
+                </motion.div>
               ))}
               <form
                 className="flex items-center gap-1.5"
@@ -249,8 +273,8 @@ const CollectionSettingsDialog = ({
                   <Plus className="size-4" />
                 </button>
               </form>
-            </div>
-          </div>
+            </motion.div>
+          </motion.div>
         )}
         <DialogFooter>
           <Button onClick={onClose}>Done</Button>

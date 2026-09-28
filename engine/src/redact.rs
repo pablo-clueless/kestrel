@@ -68,6 +68,7 @@ mod tests {
             url: "http://x/".parse().unwrap(),
             headers: vec![("Authorization".into(), "Basic bWU6aHVudGVyMg==".into())],
             body: None,
+            body_display: None,
         };
         let r = Redactor::new(Some("X-Api-Key"), &["hunter2".into(), "k".into()], Some(&sent));
 

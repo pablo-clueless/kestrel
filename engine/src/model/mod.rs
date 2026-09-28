@@ -86,6 +86,42 @@ pub struct Endpoint {
     /// Responses the spec declares, for contract checks. None for hand-made endpoints.
     #[serde(default)]
     pub expect: Option<Expectation>,
+    /// Values to save from the response after each Send (not during runs).
+    #[serde(default)]
+    pub extract: Vec<Extract>,
+}
+
+/// "After response" rule: copy one value from the response into the active environment.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct Extract {
+    pub source: ExtractSource,
+    /// Body: a path like `data.token` or `items[0].id` (empty = the whole body). Header: its name.
+    #[serde(default)]
+    pub path: String,
+    pub target: ExtractTarget,
+    /// Variable or secret name, used as `{{name}}`.
+    pub name: String,
+    #[serde(default = "enabled")]
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum ExtractSource {
+    Body,
+    Header,
+    Status,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum ExtractTarget {
+    Variable,
+    Secret,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -160,6 +196,56 @@ pub enum Body {
     Json { content: String },
     /// Template. Sent with the given content type.
     Raw { content_type: String, content: String },
+    /// `application/x-www-form-urlencoded`. Values are templates.
+    Form { fields: Vec<KeyValue> },
+    /// `multipart/form-data`: text fields (templates) and uploaded files.
+    Multipart { fields: Vec<FormField> },
+}
+
+/// A multipart field. Reads plain `KeyValue`s too, as text fields.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct FormField {
+    pub key: String,
+    #[serde(default)]
+    pub kind: FieldKind,
+    /// Template. Text fields only.
+    #[serde(default)]
+    pub value: String,
+    /// File fields only. None until a file is chosen.
+    #[serde(default)]
+    pub file: Option<FileRef>,
+    #[serde(default = "enabled")]
+    pub enabled: bool,
+}
+
+impl FormField {
+    pub fn text(key: impl Into<String>, value: impl Into<String>, enabled: bool) -> Self {
+        Self { key: key.into(), kind: FieldKind::Text, value: value.into(), file: None, enabled }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum FieldKind {
+    #[default]
+    Text,
+    File,
+}
+
+/// A file uploaded to the engine (`POST /api/files`), stored next to the workspace.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct FileRef {
+    pub id: Uuid,
+    /// Sent as the part's filename.
+    pub name: String,
+    pub content_type: String,
+    #[ts(type = "number")]
+    pub size: u64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
@@ -223,6 +309,28 @@ pub struct TryRequest {
     pub environment: Option<String>,
     #[serde(default)]
     pub timeout_ms: Option<u32>,
+}
+
+/// `POST /api/send`: the sample, plus what the endpoint's extract rules saved.
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct SendResponse {
+    #[serde(flatten)]
+    pub sample: crate::engine::types::Sample,
+    pub saved: Vec<Saved>,
+}
+
+/// Outcome of one extract rule.
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct Saved {
+    pub name: String,
+    pub target: ExtractTarget,
+    /// Variables only; secrets are write-only. None if the rule failed.
+    pub value: Option<String>,
+    pub error: Option<String>,
 }
 
 /// `PUT /api/secrets`. `value: null` deletes the secret.

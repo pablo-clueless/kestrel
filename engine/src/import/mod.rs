@@ -15,7 +15,8 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::model::{
-    ApiKeyLocation, Auth, Body, Collection, Endpoint, Expectation, ExpectedResponse, HttpMethod, KeyValue,
+    ApiKeyLocation, Auth, Body, Collection, Endpoint, Expectation, ExpectedResponse, FieldKind, FormField, HttpMethod,
+    KeyValue,
 };
 use schema::{example_string, resolve, synthesize, to_json_schema};
 
@@ -222,6 +223,7 @@ impl Ctx<'_> {
         let mut query = Vec::new();
         let mut headers = Vec::new();
         let mut body = Body::None;
+        let mut form = Vec::new();
         for param in self.parameters(item, op) {
             let Some(name) = param.get("name").and_then(Value::as_str).map(str::to_owned) else { continue };
             let location = param.get("in").and_then(Value::as_str).unwrap_or("");
@@ -245,9 +247,19 @@ impl Ctx<'_> {
                     let schema = param.get("schema").cloned().unwrap_or(Value::Null);
                     body = self.json_body(None, &schema);
                 }
-                "formData" => self.warn("Swagger formData parameters aren't imported; set the body by hand."),
+                "formData" if is_file(&param) => {
+                    form.push(FormField { kind: FieldKind::File, ..FormField::text(name, "", required) });
+                }
+                "formData" => form.push(FormField::text(name, self.param_example(&param), required)),
                 _ => {}
             }
+        }
+        if !form.is_empty() {
+            // Swagger 2.0 picks the encoding with `consumes`, on the operation or the root.
+            let consumes = op.get("consumes").or_else(|| self.root.get("consumes")).and_then(Value::as_array);
+            let multipart = form.iter().any(|f| f.kind == FieldKind::File)
+                || consumes.is_some_and(|c| c.iter().any(|ct| ct.as_str() == Some("multipart/form-data")));
+            body = self.form_body(multipart, form);
         }
         if let Some(request_body) = op.get("requestBody") {
             body = self.request_body(resolve(self.root, request_body));
@@ -264,6 +276,7 @@ impl Ctx<'_> {
             body,
             auth: self.auth(op),
             expect: self.expectation(op),
+            extract: vec![],
         }
     }
 
@@ -306,27 +319,53 @@ impl Ctx<'_> {
             let schema = media.get("schema").cloned().unwrap_or(Value::Null);
             return self.json_body(example, &schema);
         }
-        if let Some(media) = content.get("application/x-www-form-urlencoded") {
-            let example = media_example(self.root, media)
-                .unwrap_or_else(|| synthesize(self.root, media.get("schema").unwrap_or(&Value::Null), true));
-            let form = example
-                .as_object()
-                .map(|o| {
-                    o.iter()
-                        .map(|(k, v)| format!("{}={}", urlencode(k), urlencode(&example_string(v))))
-                        .collect::<Vec<_>>()
-                        .join("&")
-                })
+        for (content_type, multipart) in [("application/x-www-form-urlencoded", false), ("multipart/form-data", true)] {
+            let Some(media) = content.get(content_type) else { continue };
+            let schema = resolve(self.root, media.get("schema").unwrap_or(&Value::Null));
+            let example = media_example(self.root, media).unwrap_or_else(|| synthesize(self.root, schema, true));
+            let files: Vec<String> = schema
+                .get("properties")
+                .and_then(Value::as_object)
+                .map(|props| props.iter().filter(|(_, p)| is_file(resolve(self.root, p))).map(|(k, _)| k.clone()).collect())
                 .unwrap_or_default();
-            return Body::Raw { content_type: "application/x-www-form-urlencoded".into(), content: form };
+            let fields = self.form_fields(&example, &files);
+            return self.form_body(multipart, fields);
         }
         let Some((content_type, media)) = content.iter().next() else { return Body::None };
         if content_type.starts_with("multipart/") {
-            self.warn("Multipart request bodies aren't supported yet; those endpoints were imported without a body.");
+            self.warn("Only multipart/form-data bodies are imported; other multipart endpoints have no body.");
             return Body::None;
         }
         let content = media_example(self.root, media).map(|v| example_string(&v)).unwrap_or_default();
         Body::Raw { content_type: content_type.clone(), content }
+    }
+
+    /// An example object's properties as text fields, then the named file fields (empty).
+    fn form_fields(&self, example: &Value, files: &[String]) -> Vec<FormField> {
+        let text = example
+            .as_object()
+            .into_iter()
+            .flatten()
+            .filter(|(k, _)| !files.contains(k))
+            .map(|(k, v)| FormField::text(k.clone(), example_string(v), true));
+        let files = files.iter().map(|k| FormField { kind: FieldKind::File, ..FormField::text(k.clone(), "", true) });
+        text.chain(files).collect()
+    }
+
+    fn form_body(&mut self, multipart: bool, fields: Vec<FormField>) -> Body {
+        if !multipart {
+            // URL-encoded forms can't carry files.
+            let fields = fields
+                .into_iter()
+                .filter(|f| f.kind == FieldKind::Text)
+                .map(|f| KeyValue { key: f.key, value: f.value, enabled: f.enabled })
+                .collect();
+            return Body::Form { fields };
+        }
+        if fields.iter().any(|f| f.kind == FieldKind::File) {
+            self.warn("File fields were imported empty; choose a file for each before sending.");
+        }
+        Body::Multipart { fields }
     }
 
     fn json_body(&self, example: Option<Value>, schema: &Value) -> Body {
@@ -418,8 +457,10 @@ fn media_example(root: &Value, media: &Value) -> Option<Value> {
     first.and_then(|m| m.values().next()).map(|e| resolve(root, e)).and_then(|e| e.get("value")).cloned()
 }
 
-fn urlencode(s: &str) -> String {
-    url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
+/// A file upload field: `format: binary` (3.x) or `type: file` (Swagger 2.0).
+fn is_file(schema: &Value) -> bool {
+    schema.get("format").and_then(Value::as_str) == Some("binary")
+        || schema.get("type").and_then(Value::as_str) == Some("file")
 }
 
 #[cfg(test)]

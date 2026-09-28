@@ -25,6 +25,8 @@ interface RunState {
   applyEvent: (event: RunEvent) => void;
   setReport: (report: RunReport) => void;
   setError: (error: string | null) => void;
+  /** Drop the shown run (e.g. the endpoint or test type changed). No-op while a run is live. */
+  clear: () => void;
 }
 
 export const useRunStore = create<RunState>()((set) => ({
@@ -68,4 +70,18 @@ export const useRunStore = create<RunState>()((set) => ({
 
   setReport: (report) => set({ report }),
   setError: (error) => set({ error }),
+  clear: () =>
+    set((state) =>
+      state.status === "running"
+        ? state
+        : {
+            runId: null,
+            status: null,
+            config: null,
+            buckets: [],
+            complexity: null,
+            report: null,
+            error: null,
+          },
+    ),
 }));

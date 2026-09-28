@@ -1,0 +1,21 @@
+# Build outputs (the image builds its own)
+target
+**/node_modules
+kestrel/.next
+kestrel/out
+
+# Local config and data: never bake these into an image
+.env
+.env.*
+kestrel.json
+kestrel.secrets.json
+**/kestrel.secrets.json
+kestrel-files
+**/kestrel-files
+
+# Not needed to build
+.git
+.github
+.claude
+.qodo
+*.md

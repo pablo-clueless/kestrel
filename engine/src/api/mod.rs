@@ -2,12 +2,14 @@ mod guard;
 mod hosts;
 mod import;
 mod runs;
+mod ui;
 mod workspace;
 
 use std::sync::Arc;
 
 use axum::{
     Json, Router,
+    extract::DefaultBodyLimit,
     http::{HeaderName, HeaderValue, Method, header},
     middleware,
     routing::{get, post, put},
@@ -18,6 +20,9 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 use crate::{config::Config, engine::registry::RunRegistry, model::store::WorkspaceStore};
 
 pub use guard::TOKEN_HEADER;
+
+/// Largest file accepted for multipart file fields.
+const MAX_UPLOAD_BYTES: usize = 50 * 1024 * 1024;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -40,6 +45,7 @@ pub fn router(state: AppState) -> Router {
         .route("/secrets", put(workspace::set_secret))
         .route("/render", post(workspace::render))
         .route("/send", post(workspace::send))
+        .route("/files", post(workspace::upload_file).layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES)))
         .route("/import", post(import::import))
         .route("/hosts", get(hosts::list))
         .route("/hosts/confirm", post(hosts::confirm))
@@ -51,7 +57,14 @@ pub fn router(state: AppState) -> Router {
         .with_state(state.clone());
 
     // CORS is outermost so preflights are answered without a token (browsers never send one).
-    Router::new().nest("/api", api).layer(cors(&state.config))
+    Router::new()
+        .nest("/api", api)
+        // Liveness for container health checks: no token, and it reveals nothing.
+        .route("/healthz", get(|| async { "ok" }))
+        // Everything else is the built UI.
+        .fallback(ui::serve)
+        .with_state(state.clone())
+        .layer(cors(&state.config))
 }
 
 fn cors(config: &Config) -> CorsLayer {
@@ -113,6 +126,25 @@ mod tests {
     #[tokio::test]
     async fn accepts_a_valid_request() {
         assert_eq!(status(&app(), get("/api/health").body(Body::empty()).unwrap()).await, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn healthz_needs_no_token() {
+        let req = Request::get("/healthz").header(header::HOST, "anything:1").body(Body::empty()).unwrap();
+        assert_eq!(status(&app(), req).await, StatusCode::OK);
+    }
+
+    /// Works whether or not the UI has been built (it isn't in CI).
+    #[tokio::test]
+    async fn serves_the_ui_with_the_token_or_explains_how_to_build_it() {
+        let res = app().oneshot(Request::get("/").body(Body::empty()).unwrap()).await.unwrap();
+        let status = res.status();
+        let body = String::from_utf8(res.into_body().collect().await.unwrap().to_bytes().to_vec()).unwrap();
+        match status {
+            StatusCode::OK => assert!(body.contains(r#"<meta name="kestrel-token" content="test-token">"#)),
+            StatusCode::NOT_FOUND => assert!(body.contains("pnpm build"), "{body}"),
+            other => panic!("unexpected {other}"),
+        }
     }
 
     #[tokio::test]
@@ -239,6 +271,7 @@ mod tests {
                     body: Body::None,
                     auth: Auth::Bearer { token: "{{token}}".into() },
                     expect: None,
+                    extract: vec![],
                 }],
             }],
             environments: vec![Environment {
@@ -302,6 +335,61 @@ mod tests {
         assert!(sample.body.contains(crate::redact::REDACTED), "{}", sample.body);
         let auth = sample.request.headers.iter().find(|(k, _)| k == "Authorization").unwrap();
         assert_eq!(auth.1, crate::redact::REDACTED);
+    }
+
+    #[tokio::test]
+    async fn uploads_files_of_any_type() {
+        let app = app();
+        let upload = |name: &str| {
+            Request::post(format!("/api/files?name={name}"))
+                .header(header::HOST, HOST)
+                .header(TOKEN_HEADER, TOKEN)
+                .header(header::CONTENT_TYPE, "image/png")
+                .body(Body::from(vec![0x89, b'P', b'N', b'G']))
+                .unwrap()
+        };
+        let res = app.clone().oneshot(upload("cat.png")).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let file: crate::model::FileRef = json_body(res).await;
+        assert_eq!((file.name.as_str(), file.content_type.as_str(), file.size), ("cat.png", "image/png", 4));
+        assert_eq!(status(&app, upload("%20")).await, StatusCode::BAD_REQUEST, "a name is required");
+
+        let no_token = Request::post("/api/files?name=x").header(header::HOST, HOST).body(Body::from("x")).unwrap();
+        assert_eq!(status(&app, no_token).await, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn send_runs_extract_rules() {
+        let base = echo_headers_server().await;
+        let (workspace, secrets, _) = echo_workspace(&base);
+        let mut endpoint = serde_json::to_value(&workspace.collections[0].endpoints[0]).unwrap();
+        endpoint["extract"] = serde_json::json!([
+            { "source": "body", "path": "host", "target": "secret", "name": "echoedHost" },
+            { "source": "header", "path": "Content-Type", "target": "variable", "name": "ct" },
+            { "source": "body", "path": "no.such", "target": "variable", "name": "missing" },
+            { "source": "status", "target": "variable", "name": "skipped", "enabled": false },
+        ]);
+        let app = app_with(workspace, secrets);
+        let body = serde_json::json!({ "endpoint": endpoint, "environment": "local" }).to_string();
+
+        let res = app.clone().oneshot(post_json("/api/send", body)).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let text = String::from_utf8(res.into_body().collect().await.unwrap().to_bytes().to_vec()).unwrap();
+        let host = base.trim_start_matches("http://");
+        assert!(!text.contains(host), "a secret saved from this response is redacted in it too: {text}");
+        let res: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(res["status"], 200, "the sample is flattened into the response");
+
+        let saved = res["saved"].as_array().unwrap();
+        assert_eq!(saved.len(), 3, "disabled rules don't run: {saved:?}");
+        assert_eq!(saved[0]["target"], "secret");
+        assert!(saved[0]["value"].is_null() && saved[0]["error"].is_null(), "secret values aren't returned");
+        assert_eq!(saved[1]["value"], "application/json");
+        assert!(saved[2]["error"].as_str().unwrap().contains("not found"));
+
+        let res = app.oneshot(get("/api/workspace").body(Body::empty()).unwrap()).await.unwrap();
+        let ws: serde_json::Value = json_body(res).await;
+        assert!(ws["secretKeys"]["local"].as_array().unwrap().contains(&"echoedHost".into()));
     }
 
     #[tokio::test]
@@ -395,6 +483,7 @@ mod tests {
                     "type": "object", "required": ["id", "name"], "properties": { "id": { "type": "integer" } }
                 }}}})),
                 endpoints: vec![Endpoint {
+                    extract: vec![],
                     id,
                     name: "get pet".into(),
                     group: None,
@@ -465,6 +554,7 @@ mod tests {
             body: ReqBody::Json { content: body.into() },
             auth: Default::default(),
             expect: None,
+            extract: vec![],
         };
         let workspace = Workspace {
             collections: vec![Collection {

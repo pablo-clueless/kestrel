@@ -1,0 +1,51 @@
+# Kestrel on Fly.io: one private machine running the engine with the UI built in.
+#
+# There's no login, so the app gets NO public IP. You reach it through `fly proxy` over Fly's
+# WireGuard, so only members of your Fly org can use it.
+#
+# First deploy:
+#   fly apps create <your-app-name>                  # then set `app` below to the same name
+#   fly volumes create kestrel_data --size 1 --region <primary_region>
+#   fly deploy --no-public-ips --ha=false            # exactly one machine: runs and the workspace live on it
+#
+# Use it:
+#   fly proxy 7070:7070                              # then open http://localhost:7070
+#
+# Later deploys: `fly deploy --no-public-ips --ha=false` again. Check nothing public was allocated with
+# `fly ips list` (it should be empty or private-only).
+
+app = "kestrel"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  # IPv6 any-address: Fly's private network (and `fly proxy`) is IPv6.
+  KESTREL_BIND = "::"
+  KESTREL_PORT = "7070"
+  KESTREL_WORKSPACE_DIR = "/data"
+
+# kestrel.json and kestrel.secrets.json survive deploys and restarts.
+[mounts]
+  source = "kestrel_data"
+  destination = "/data"
+
+# No [http_service] / [[services]] on purpose: nothing is routed through Fly's public proxy.
+
+# Dedicated CPU: shared CPU steals cycles, and that jitter shows up in latency numbers. For light use,
+# `cpu_kind = "shared"` is cheaper.
+[[vm]]
+  cpu_kind = "performance"
+  cpus = 1
+  memory = "2gb"
+
+[checks]
+  [checks.alive]
+    type = "http"
+    port = 7070
+    path = "/healthz"
+    method = "get"
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "15s"
