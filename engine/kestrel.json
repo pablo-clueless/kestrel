@@ -35,7 +35,15 @@
               }
             ]
           },
-          "extract": []
+          "extract": [
+            {
+              "source": "body",
+              "path": "",
+              "target": "variable",
+              "name": "",
+              "enabled": true
+            }
+          ]
         },
         {
           "id": "9d871bf2-7b4a-4b22-adb3-34c913b25168",
