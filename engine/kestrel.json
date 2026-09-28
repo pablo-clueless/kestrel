@@ -18,9 +18,7 @@
           "headers": [],
           "query": [],
           "body": {
-            "type": "raw",
-            "contentType": "application/x-www-form-urlencoded",
-            "content": ""
+            "type": "none"
           },
           "auth": {
             "type": "none"
@@ -87,7 +85,7 @@
           "query": [],
           "body": {
             "type": "json",
-            "content": "{\n  \"email\": \"ada@example.com\",\n  \"password\": \"correct-horse-battery\"\n}"
+            "content": "{\n  \"email\": {{n:string}},\n  \"password\": {{n:string}}\n}"
           },
           "auth": {
             "type": "none"
