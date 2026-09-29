@@ -76,7 +76,7 @@ export const ImportDialog = ({ open, onClose }: { open: boolean; onClose: () => 
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && close()}>
-      <DialogContent className="sm:max-w-lg">
+      <DialogContent className="sm:max-w-200">
         <DialogHeader>
           <DialogTitle>{result ? "Review import" : "Import API spec"}</DialogTitle>
           <DialogDescription>

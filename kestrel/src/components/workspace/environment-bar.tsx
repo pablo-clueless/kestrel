@@ -42,7 +42,7 @@ export const EnvironmentBar = () => {
         <Settings />
       </Button>
       <Sheet open={open} onOpenChange={setOpen}>
-        <SheetContent side="right" className="overflow-y-auto">
+        <SheetContent side="right" className="w-125 overflow-y-auto">
           <SheetHeader>
             <SheetTitle>Environments</SheetTitle>
             <SheetDescription>

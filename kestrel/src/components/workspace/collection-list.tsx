@@ -1,6 +1,6 @@
 "use client";
 
-import { ChevronRight, FileUp, Plus, Settings2, Trash2, X } from "lucide-react";
+import { ChevronRight, FileUp, Plus, Settings2, Trash, Trash2 } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
 import { useEffect } from "react";
 
@@ -206,7 +206,7 @@ const CollectionSettingsDialog = ({
 
   return (
     <Dialog open={live !== null} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent>
+      <DialogContent className="sm:max-w-150">
         <DialogHeader>
           <DialogTitle>Collection settings</DialogTitle>
           <DialogDescription>
@@ -226,7 +226,7 @@ const CollectionSettingsDialog = ({
             <motion.div className="flex flex-col gap-1.5">
               <Label>Variables</Label>
               {Object.entries(live.vars).map(([k, v]) => (
-                <motion.div key={k} className="flex items-center gap-1.5">
+                <motion.div key={k} className="flex items-center gap-4">
                   <span className="w-24 shrink-0 truncate font-mono text-xs" title={k}>
                     {k}
                   </span>
@@ -236,16 +236,16 @@ const CollectionSettingsDialog = ({
                     onChange={(e) => setCollectionVar(live.id, k, e.target.value)}
                   />
                   <button
-                    className="text-muted-foreground hover:text-red-600"
+                    className="text-muted-foreground hover:text-red-500"
                     onClick={() => setCollectionVar(live.id, k, null)}
                     aria-label={`Remove ${k}`}
                   >
-                    <X className="size-4" />
+                    <Trash className="size-4" />
                   </button>
                 </motion.div>
               ))}
               <form
-                className="flex items-center gap-1.5"
+                className="flex items-center gap-4"
                 onSubmit={(e) => {
                   e.preventDefault();
                   if (!draft.key.trim()) return;
@@ -267,7 +267,7 @@ const CollectionSettingsDialog = ({
                 />
                 <button
                   type="submit"
-                  className="text-muted-foreground hover:text-primary"
+                  className="text-muted-foreground hover:text-green-500"
                   aria-label="Add variable"
                 >
                   <Plus className="size-4" />

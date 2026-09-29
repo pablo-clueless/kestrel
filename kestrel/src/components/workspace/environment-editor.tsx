@@ -1,6 +1,6 @@
 "use client";
 
-import { Plus, Trash2, X } from "lucide-react";
+import { Minus, Plus, Trash2 } from "lucide-react";
 import { useState } from "react";
 
 import { useWorkspaceStore } from "@/stores/workspace-store";
@@ -37,7 +37,7 @@ export const EnvironmentEditor = () => {
         />
         <button
           type="submit"
-          className="text-muted-foreground hover:text-primary"
+          className="text-muted-foreground hover:text-green-500"
           aria-label="Add environment"
         >
           <Plus className="size-4" />
@@ -60,7 +60,7 @@ export const EnvironmentEditor = () => {
           <section className="flex flex-col gap-1.5">
             <Label>Variables</Label>
             {Object.entries(active.vars).map(([key, value]) => (
-              <div key={key} className="flex items-center gap-1.5">
+              <div key={key} className="flex items-center gap-3">
                 <span className="w-16 shrink-0 truncate font-mono text-xs" title={key}>
                   {key}
                 </span>
@@ -70,11 +70,11 @@ export const EnvironmentEditor = () => {
                   onChange={(e) => setVar(active.name, key, e.target.value)}
                 />
                 <button
-                  className="text-muted-foreground hover:text-destructive"
+                  className="text-muted-foreground hover:text-red-500"
                   onClick={() => setVar(active.name, key, null)}
                   aria-label={`Remove ${key}`}
                 >
-                  <X className="size-4" />
+                  <Minus className="size-4" />
                 </button>
               </div>
             ))}
@@ -83,17 +83,17 @@ export const EnvironmentEditor = () => {
           <section className="flex flex-col gap-1.5">
             <Label>Secrets</Label>
             {(secretKeys[active.name] ?? []).map((key) => (
-              <div key={key} className="flex items-center gap-1.5">
+              <div key={key} className="flex items-center gap-3">
                 <span className="w-16 shrink-0 truncate font-mono text-xs" title={key}>
                   {key}
                 </span>
                 <span className="text-muted-foreground flex-1">••••••</span>
                 <button
-                  className="text-muted-foreground hover:text-destructive"
+                  className="text-muted-foreground hover:text-red-500"
                   onClick={() => void setSecret(active.name, key, null)}
                   aria-label={`Remove ${key}`}
                 >
-                  <X className="size-4" />
+                  <Minus className="size-4" />
                 </button>
               </div>
             ))}
@@ -122,7 +122,7 @@ const NewPair = ({
   const [value, setValue] = useState("");
   return (
     <form
-      className="flex items-center gap-1.5"
+      className="flex items-center gap-3"
       onSubmit={(e) => {
         e.preventDefault();
         if (!key.trim()) return;
@@ -145,7 +145,7 @@ const NewPair = ({
         value={value}
         onChange={(e) => setValue(e.target.value)}
       />
-      <button type="submit" className="text-muted-foreground hover:text-primary" aria-label="Add">
+      <button type="submit" className="text-muted-foreground hover:text-green-500" aria-label="Add">
         <Plus className="size-4" />
       </button>
     </form>
