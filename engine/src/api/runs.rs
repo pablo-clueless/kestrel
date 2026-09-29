@@ -1,4 +1,4 @@
-use std::{convert::Infallible, sync::Arc};
+use std::{collections::HashSet, convert::Infallible, sync::Arc};
 
 use axum::{
     Json,
@@ -30,7 +30,7 @@ pub async fn start(
     let prepared = prepare(&state, &config).await?;
     let run = state.runs.create(config);
     let run_id = run.id;
-    engine::spawn(&state.runs, run, prepared);
+    engine::spawn(&state.runs, &state.store, run, prepared);
     Ok((StatusCode::CREATED, Json(StartRunResponse { run_id })))
 }
 
@@ -62,7 +62,7 @@ async fn prepare(state: &AppState, config: &RunConfig) -> Result<Prepared, ApiEr
             let (request, contract) = compile_endpoint(state, cfg.endpoint_id, cfg.environment.as_deref())?;
             let mut cfg = cfg.clone();
             cfg.ok_statuses.extend(contract::ok_statuses_from(contract.as_ref()));
-            let mut prepared = latency::prepare(cfg, request, caps.max_duration, state.hosts.list())
+            let mut prepared = latency::prepare(cfg, request, caps.max_duration, state.store.confirmed_hosts())
                 .await
                 .map_err(ApiError::BadRequest)?;
             prepared.contract = contract.map(Arc::new);
@@ -82,12 +82,13 @@ async fn prepare(state: &AppState, config: &RunConfig) -> Result<Prepared, ApiEr
             let (request, contract) = compile_endpoint(state, cfg.endpoint_id, cfg.environment.as_deref())?;
             let mut cfg = cfg.clone();
             cfg.ok_statuses.extend(contract::ok_statuses_from(contract.as_ref()));
-            let mut prepared = load::prepare(cfg, request, &state.hosts.list(), caps.max_in_flight, caps.max_rps)
-                .await
-                .map_err(|e| match e {
-                    load::PrepareError::Invalid(msg) => ApiError::BadRequest(msg),
-                    load::PrepareError::HostNotConfirmed(host) => ApiError::HostNotConfirmed(host),
-                })?;
+            let mut prepared =
+                load::prepare(cfg, request, &state.store.confirmed_hosts(), caps.max_in_flight, caps.max_rps)
+                    .await
+                    .map_err(|e| match e {
+                        load::PrepareError::Invalid(msg) => ApiError::BadRequest(msg),
+                        load::PrepareError::HostNotConfirmed(host) => ApiError::HostNotConfirmed(host),
+                    })?;
             prepared.contract = contract.map(Arc::new);
             Ok(Prepared::Load(Box::new(prepared)))
         }
@@ -101,9 +102,10 @@ async fn prepare(state: &AppState, config: &RunConfig) -> Result<Prepared, ApiEr
             in_range("slowMs", cfg.slow_ms, 1, max_timeout_ms)?;
             in_range("budgetMs", cfg.budget_ms, 1_000, caps.max_sweep_duration.as_millis() as u32)?;
             let (request, _) = compile_endpoint(state, cfg.endpoint_id, cfg.environment.as_deref())?;
-            let prepared = complexity::prepare(cfg.clone(), request, caps.max_sweep_duration, state.hosts.list())
-                .await
-                .map_err(ApiError::BadRequest)?;
+            let prepared =
+                complexity::prepare(cfg.clone(), request, caps.max_sweep_duration, state.store.confirmed_hosts())
+                    .await
+                    .map_err(ApiError::BadRequest)?;
             Ok(Prepared::Complexity(Box::new(prepared)))
         }
     }
@@ -126,8 +128,14 @@ fn compile_endpoint(
     Ok((request, contract))
 }
 
-pub async fn list(State(state): State<AppState>) -> Json<Vec<RunSummary>> {
-    Json(state.runs.list())
+/// Runs in memory (in progress or recently finished) and saved ones, newest first.
+pub async fn list(State(state): State<AppState>) -> Result<Json<Vec<RunSummary>>, ApiError> {
+    let mut runs = state.runs.list();
+    let live: HashSet<Uuid> = runs.iter().map(|r| r.run_id).collect();
+    let saved = state.store.runs().map_err(|e| ApiError::Internal(format!("{e:#}")))?;
+    runs.extend(saved.into_iter().filter(|r| !live.contains(&r.run_id)));
+    runs.sort_by_key(|r| std::cmp::Reverse(r.started_at_ms));
+    Ok(Json(runs))
 }
 
 pub async fn stop(State(state): State<AppState>, Path(id): Path<Uuid>) -> Result<StatusCode, ApiError> {
@@ -137,7 +145,11 @@ pub async fn stop(State(state): State<AppState>, Path(id): Path<Uuid>) -> Result
 }
 
 pub async fn report(State(state): State<AppState>, Path(id): Path<Uuid>) -> Result<Json<RunReport>, ApiError> {
-    let run = state.runs.get(id).ok_or(ApiError::RunNotFound)?;
+    let Some(run) = state.runs.get(id) else {
+        // Evicted from memory (or from before a restart): serve the saved report.
+        let saved = state.store.run_report(id).map_err(|e| ApiError::Internal(format!("{e:#}")))?;
+        return saved.map(Json).ok_or(ApiError::RunNotFound);
+    };
     if run.status() == RunStatus::Running {
         return Err(ApiError::Conflict("run is still in progress"));
     }

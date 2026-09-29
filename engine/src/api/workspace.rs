@@ -17,9 +17,7 @@ use crate::{
     },
     error::ApiError,
     extract,
-    model::{
-        ExtractTarget, FileRef, Saved, SendResponse, SetSecretRequest, TryRequest, Workspace, WorkspaceResponse,
-    },
+    model::{ExtractTarget, FileRef, Saved, SendResponse, SetSecretRequest, TryRequest, Workspace, WorkspaceResponse},
     redact::Redactor,
     template::request::CompiledRequest,
 };
@@ -108,7 +106,8 @@ pub async fn render(State(state): State<AppState>, Json(req): Json<TryRequest>) 
 pub async fn send(State(state): State<AppState>, Json(req): Json<TryRequest>) -> Result<Json<SendResponse>, ApiError> {
     let compiled = compile(&state, &req, false)?;
     let rendered = compiled.render().map_err(ApiError::BadRequest)?;
-    let opts = ClientOptions { keep_alive: true, follow_redirects: true, confirmed_hosts: state.hosts.list() };
+    let opts =
+        ClientOptions { keep_alive: true, follow_redirects: true, confirmed_hosts: state.store.confirmed_hosts() };
     let target = client::connect(&rendered.url, &opts).await.map_err(ApiError::BadRequest)?;
     let timeout = req.timeout_ms.map_or(DEFAULT_SEND_TIMEOUT, |ms| Duration::from_millis(ms.into()));
     let outcome = client::execute(&target.client, &rendered, timeout.min(state.config.caps.max_timeout)).await;
@@ -138,14 +137,13 @@ fn run_extracts(state: &AppState, req: &TryRequest, outcome: &Outcome) -> (Vec<S
         let result = match (outcome.status, req.environment.as_deref()) {
             (_, None) => Err("no active environment to save into".to_owned()),
             (None, _) => Err("no response".to_owned()),
-            (Some(status), Some(env)) => {
-                extract::pick(rule, status, &outcome.response_headers, &outcome.body).and_then(|value| {
+            (Some(status), Some(env)) => extract::pick(rule, status, &outcome.response_headers, &outcome.body)
+                .and_then(|value| {
                     if rule.target == ExtractTarget::Secret {
                         state.store.set_secret(env, &name, Some(value.clone())).map_err(|e| format!("{e:#}"))?;
                     }
                     Ok(value)
-                })
-            }
+                }),
         };
         let (value, error) = match result {
             Ok(v) if rule.target == ExtractTarget::Secret => {

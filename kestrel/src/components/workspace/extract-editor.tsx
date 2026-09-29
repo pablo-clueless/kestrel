@@ -56,7 +56,7 @@ export const ExtractEditor = ({
             value={rule.source}
             onValueChange={(v) => update(i, { source: v as ExtractSource })}
           >
-            <SelectTrigger className={cn("w-22 shrink-0", XS)} aria-label="Source">
+            <SelectTrigger className={cn("w-22 shrink-0 capitalize", XS)} aria-label="Source">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>

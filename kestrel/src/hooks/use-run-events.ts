@@ -15,7 +15,8 @@ export function useRunEvents() {
   const runId = useRunStore((s) => s.runId);
 
   useEffect(() => {
-    if (!runId) return;
+    // A finished run shown from history has nothing left to stream.
+    if (!runId || useRunStore.getState().status !== "running") return;
     const { applyEvent, setReport, setError } = useRunStore.getState();
     const source = new EventSource(runEventsUrl(runId));
 

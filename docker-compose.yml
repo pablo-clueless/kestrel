@@ -1,0 +1,19 @@
+# Kestrel in Docker: `docker compose up -d --build`, then open http://localhost:7070.
+#
+# Everything the engine keeps is in /data/kestrel.db on the `kestrel-data` volume, so the container
+# can be rebuilt and recreated freely. There is no login: the port is published on 127.0.0.1 only.
+services:
+  kestrel:
+    build: .
+    image: kestrel
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:7070:7070"
+    volumes:
+      - kestrel-data:/data
+    # Optional: a fixed session token instead of a random one per start (only needed by `pnpm dev`).
+    # environment:
+    #   KESTREL_TOKEN: change-me-to-a-long-random-string
+
+volumes:
+  kestrel-data:

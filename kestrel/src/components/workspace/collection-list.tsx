@@ -299,8 +299,7 @@ const DeleteCollectionDialog = ({
         <DialogHeader>
           <DialogTitle>Delete {collection?.name}?</DialogTitle>
           <DialogDescription>
-            This removes the collection and its {count} endpoint{count === 1 ? "" : "s"} from
-            kestrel.json.
+            This removes the collection and its {count} endpoint{count === 1 ? "" : "s"}.
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>

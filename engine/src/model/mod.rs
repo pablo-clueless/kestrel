@@ -1,5 +1,5 @@
 //! The workspace: collections of endpoints, and environments. Everything here round-trips through
-//! `kestrel.json` and is exported to TypeScript. String fields marked "template" may contain `{{…}}`.
+//! `kestrel.db` and is exported to TypeScript. String fields marked "template" may contain `{{…}}`.
 
 pub mod store;
 
@@ -286,7 +286,7 @@ pub struct Environment {
     pub vars: BTreeMap<String, String>,
 }
 
-/// Secret values per environment. Lives in `kestrel.secrets.json`; never sent to the UI.
+/// Secret values per environment. Stored in `kestrel.db`; never sent to the UI.
 pub type Secrets = BTreeMap<String, BTreeMap<String, String>>;
 
 /// `GET /api/workspace`. Secrets are write-only, so only their names are returned.

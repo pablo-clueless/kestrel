@@ -1,4 +1,5 @@
 /target
 .env
 kestrel.secrets.json
+kestrel.db*
 HANDOFF.md

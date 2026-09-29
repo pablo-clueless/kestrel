@@ -326,7 +326,9 @@ impl Ctx<'_> {
             let files: Vec<String> = schema
                 .get("properties")
                 .and_then(Value::as_object)
-                .map(|props| props.iter().filter(|(_, p)| is_file(resolve(self.root, p))).map(|(k, _)| k.clone()).collect())
+                .map(|props| {
+                    props.iter().filter(|(_, p)| is_file(resolve(self.root, p))).map(|(k, _)| k.clone()).collect()
+                })
                 .unwrap_or_default();
             let fields = self.form_fields(&example, &files);
             return self.form_body(multipart, fields);

@@ -29,12 +29,11 @@ pub struct AppState {
     pub config: Arc<Config>,
     pub runs: Arc<RunRegistry>,
     pub store: Arc<WorkspaceStore>,
-    pub hosts: Arc<hosts::ConfirmedHosts>,
 }
 
 impl AppState {
     pub fn new(config: Config, store: WorkspaceStore) -> Self {
-        Self { config: Arc::new(config), runs: Arc::default(), store: Arc::new(store), hosts: Arc::default() }
+        Self { config: Arc::new(config), runs: Arc::default(), store: Arc::new(store) }
     }
 }
 

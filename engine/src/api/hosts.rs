@@ -1,7 +1,5 @@
 //! "I own or am authorised to test this host." Required before load-type tests against anything that
-//! doesn't resolve to loopback. Held for the engine's lifetime; the UI asks again after a restart.
-
-use std::{collections::BTreeSet, sync::RwLock};
+//! doesn't resolve to loopback. Kept in the database, so it survives restarts.
 
 use axum::{Json, extract::State, http::StatusCode};
 use serde::Deserialize;
@@ -9,19 +7,6 @@ use ts_rs::TS;
 
 use super::AppState;
 use crate::error::ApiError;
-
-#[derive(Default)]
-pub struct ConfirmedHosts(RwLock<BTreeSet<String>>);
-
-impl ConfirmedHosts {
-    pub fn list(&self) -> Vec<String> {
-        self.0.read().unwrap().iter().cloned().collect()
-    }
-
-    fn insert(&self, host: String) {
-        self.0.write().unwrap().insert(host);
-    }
-}
 
 #[derive(Debug, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -31,7 +16,7 @@ pub struct ConfirmHostRequest {
 }
 
 pub async fn list(State(state): State<AppState>) -> Json<Vec<String>> {
-    Json(state.hosts.list())
+    Json(state.store.confirmed_hosts())
 }
 
 pub async fn confirm(
@@ -43,6 +28,6 @@ pub async fn confirm(
         return Err(ApiError::BadRequest("host must be a bare hostname, e.g. api.example.com".into()));
     }
     tracing::info!("host confirmed for load testing: {host}");
-    state.hosts.insert(host);
+    state.store.confirm_host(&host).map_err(|e| ApiError::Internal(format!("{e:#}")))?;
     Ok(StatusCode::NO_CONTENT)
 }

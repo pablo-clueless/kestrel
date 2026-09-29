@@ -2,9 +2,13 @@
 
 import { ChevronRight, PanelLeft } from "lucide-react";
 
-import { useActiveCollection, useSelectedEndpoint } from "@/stores/workspace-store";
+import {
+  useActiveCollection,
+  useSelectedEndpoint,
+  useSelectedIsDraft,
+} from "@/stores/workspace-store";
 import { useLayoutStore } from "@/stores/layout-store";
-import { EnvironmentBar } from "../workspace";
+import { EnvironmentBar, History } from "../workspace";
 import { MethodBadge } from "./method-badge";
 
 /** Breadcrumb (collection / endpoint) on the left, environment on the right. */
@@ -12,6 +16,7 @@ export const Header = () => {
   const toggleSidebar = useLayoutStore((s) => s.toggleSidebar);
   const collection = useActiveCollection();
   const endpoint = useSelectedEndpoint();
+  const isDraft = useSelectedIsDraft();
 
   return (
     <header className="bg-card flex h-14 w-full shrink-0 items-center justify-between gap-4 border-b px-4">
@@ -25,7 +30,7 @@ export const Header = () => {
         </button>
         <nav className="flex min-w-0 items-center gap-1.5" aria-label="Breadcrumb">
           <span className="text-muted-foreground truncate">
-            {collection?.name ?? "No collection"}
+            {isDraft ? "Unsaved" : (collection?.name ?? "No collection")}
           </span>
           {endpoint && (
             <>
@@ -36,7 +41,10 @@ export const Header = () => {
           )}
         </nav>
       </div>
-      <EnvironmentBar />
+      <div className="flex items-center gap-2">
+        <EnvironmentBar />
+        <History />
+      </div>
     </header>
   );
 };

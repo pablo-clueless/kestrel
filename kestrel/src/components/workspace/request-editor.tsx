@@ -2,9 +2,14 @@
 
 import { useDeferredValue, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Send } from "lucide-react";
+import { Save, Send } from "lucide-react";
 
-import { useSelectedEndpoint, useWorkspaceStore } from "@/stores/workspace-store";
+import {
+  useActiveCollection,
+  useSelectedEndpoint,
+  useSelectedIsDraft,
+  useWorkspaceStore,
+} from "@/stores/workspace-store";
 import type { HttpMethod } from "@/types/engine/HttpMethod";
 import { errorMessage, renderRequest } from "@/lib/client";
 import type { FormField } from "@/types/engine/FormField";
@@ -12,7 +17,7 @@ import type { Endpoint } from "@/types/engine/Endpoint";
 import { FormFieldEditor } from "./form-field-editor";
 import { Textarea } from "@/components/ui/textarea";
 import { KeyValueEditor } from "./key-value-editor";
-import { useSendStore } from "@/stores/send-store";
+import { useSendEntry, useSendStore } from "@/stores/send-store";
 import { ExtractEditor } from "./extract-editor";
 import type { Auth } from "@/types/engine/Auth";
 import { Button } from "@/components/ui/button";
@@ -45,14 +50,20 @@ const CONTENT_TYPES = [
 
 export const RequestEditor = () => {
   const endpoint = useSelectedEndpoint();
+  const isDraft = useSelectedIsDraft();
+  const collection = useActiveCollection();
+  const saveDraft = useWorkspaceStore((s) => s.saveDraft);
   const update = useWorkspaceStore((s) => s.updateEndpoint);
   const environment = useWorkspaceStore((s) => s.workspace?.activeEnvironment ?? null);
-  const { send, pending } = useSendStore();
+  const send = useSendStore((s) => s.send);
+  const { pending } = useSendEntry(endpoint?.id);
   const [tab, setTab] = useState<Tab>("query");
 
   if (!endpoint) {
     return (
-      <p className="text-muted-foreground text-xs">Select or add an endpoint in the sidebar.</p>
+      <p className="text-muted-foreground text-xs">
+        Open a new tab, or select an endpoint in the sidebar.
+      </p>
     );
   }
   const patch = (p: Partial<Endpoint>) => update(endpoint.id, p);
@@ -66,6 +77,11 @@ export const RequestEditor = () => {
           placeholder="Endpoint name"
           onChange={(e) => patch({ name: e.target.value })}
         />
+        {isDraft && (
+          <Button variant="outline" className={XS} onClick={() => saveDraft(endpoint.id)}>
+            <Save /> Save to {collection?.name ?? "a new collection"}
+          </Button>
+        )}
       </div>
       <div className="flex gap-2">
         <Select value={endpoint.method} onValueChange={(v) => patch({ method: v as HttpMethod })}>
@@ -138,11 +154,15 @@ const RenderedPreview = ({
   environment: string | null;
 }) => {
   const deferred = useDeferredValue(endpoint);
+  const empty = !deferred.url.trim();
   const preview = useQuery({
     queryKey: ["render", environment, deferred],
     queryFn: () => renderRequest({ endpoint: deferred, environment, timeoutMs: null }),
     placeholderData: (prev) => prev,
+    enabled: !empty,
   });
+  // Nothing to resolve yet (a fresh request); an error here would only be noise.
+  if (empty) return null;
   return (
     <p className="truncate font-mono text-xs">
       {preview.isError ? (
@@ -238,8 +258,8 @@ const BodyEditor = ({ body, onChange }: { body: Body; onChange: (b: Body) => voi
       <>
         <FormFieldEditor rows={body.fields} onChange={(fields) => onChange({ ...body, fields })} />
         <p className="text-muted-foreground text-xs">
-          Sent as multipart/form-data. Files are uploaded to the engine and kept in kestrel-files/
-          next to kestrel.json (up to 50 MB each).
+          Sent as multipart/form-data. Files are uploaded to the engine and kept in its database (up
+          to 50 MB each).
         </p>
       </>
     )}
@@ -335,7 +355,7 @@ const AuthEditor = ({ auth, onChange }: { auth: Auth; onChange: (a: Auth) => voi
     {auth.type !== "none" && (
       <p className="text-muted-foreground text-xs">
         Put credentials in a secret (Environment card) and reference it as {"{{name}}"}. Secrets are
-        stored in kestrel.secrets.json and redacted from results.
+        stored in the engine&apos;s database and redacted from results.
       </p>
     )}
   </div>

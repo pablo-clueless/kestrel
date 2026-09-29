@@ -9,10 +9,7 @@ import { StatusBadge } from "@/components/shared/method-badge";
 import { DistributionChart, LiveChart } from "./charts";
 import { ComplexityLive, ComplexityResults } from "./complexity";
 import { useRunStore } from "@/stores/run-store";
-
-const ms = (v: number | null | undefined) =>
-  v == null ? "–" : v < 10 ? v.toFixed(2) : v.toFixed(1);
-const int = (v: number | null | undefined) => (v == null ? "–" : Math.round(v).toLocaleString());
+import { int, ms } from "@/lib/format";
 
 /** Latest window's numbers above the live chart. */
 export const LiveSummary = () => {

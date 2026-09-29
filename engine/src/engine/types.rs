@@ -29,6 +29,16 @@ impl RunConfig {
             Self::Complexity(_) => RunKind::Complexity,
         }
     }
+
+    /// The endpoint under test; none for synthetic runs.
+    pub fn endpoint_id(&self) -> Option<Uuid> {
+        match self {
+            Self::Fake(_) => None,
+            Self::Latency(c) => Some(c.endpoint_id),
+            Self::Load(c) => Some(c.endpoint_id),
+            Self::Complexity(c) => Some(c.endpoint_id),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -125,6 +135,47 @@ pub struct RunSummary {
     pub status: RunStatus,
     #[ts(type = "number")]
     pub started_at_ms: u64,
+    /// The endpoint under test; none for synthetic runs. It may since have been deleted.
+    pub endpoint_id: Option<Uuid>,
+    /// Headline numbers, once the run has finished.
+    pub result: Option<RunResult>,
+}
+
+/// The few report numbers a run list shows.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct RunResult {
+    #[ts(type = "number")]
+    pub finished_at_ms: u64,
+    #[ts(type = "number")]
+    pub total_requests: u64,
+    #[ts(type = "number")]
+    pub total_errors: u64,
+    pub mean_rps: f64,
+    /// All requests, as in the report's headline latency.
+    pub p50_ms: Option<f64>,
+    pub p99_ms: Option<f64>,
+}
+
+impl RunSummary {
+    pub fn of_report(report: &RunReport) -> Self {
+        Self {
+            run_id: report.run_id,
+            kind: report.config.kind(),
+            status: report.status,
+            started_at_ms: report.started_at_ms,
+            endpoint_id: report.config.endpoint_id(),
+            result: Some(RunResult {
+                finished_at_ms: report.finished_at_ms,
+                total_requests: report.total_requests,
+                total_errors: report.total_errors,
+                mean_rps: report.mean_rps,
+                p50_ms: report.latency.as_ref().map(|l| l.p50_ms),
+                p99_ms: report.latency.as_ref().map(|l| l.p99_ms),
+            }),
+        }
+    }
 }
 
 /// One SSE `data:` payload. The SSE `id:` line carries the event id, not this struct.

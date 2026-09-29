@@ -22,6 +22,8 @@ interface RunState {
 
   /** Point the store at a run. Clears everything; the SSE history replay refills it. */
   attach: (runId: string) => void;
+  /** Show a finished run from its report (e.g. picked from history). Opens no event stream. */
+  showReport: (report: RunReport) => void;
   applyEvent: (event: RunEvent) => void;
   setReport: (report: RunReport) => void;
   setError: (error: string | null) => void;
@@ -46,6 +48,17 @@ export const useRunStore = create<RunState>()((set) => ({
       buckets: [],
       complexity: null,
       report: null,
+      error: null,
+    }),
+
+  showReport: (report) =>
+    set({
+      runId: report.runId,
+      status: report.status,
+      config: report.config,
+      buckets: report.timeline.slice(-MAX_BUCKETS),
+      complexity: null,
+      report,
       error: null,
     }),
 

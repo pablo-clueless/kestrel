@@ -90,14 +90,24 @@ set an endpoint's body to `{{n:int_array}}`, for example on `/sort` or `/linear`
 | `KESTREL_TOKEN` | random per start | Required by every API call. The UI reads it at build time, so set it in `.env` |
 | `KESTREL_PORT` | `7070` | |
 | `KESTREL_BIND` | `127.0.0.1` | Loopback by default. Only change it on a private network (see Deploying) |
-| `KESTREL_WORKSPACE_DIR` | working directory | Where `kestrel.json` and `kestrel.secrets.json` live |
+| `KESTREL_WORKSPACE_DIR` | working directory | Where `kestrel.db` lives |
 | `KESTREL_UI_ORIGINS` | `http://localhost:3000,http://127.0.0.1:3000` | Origins allowed to call the engine |
 | `TARGET_PORT` | `8089` | Reference server port |
 
-**Workspace files:**
-- `kestrel.json` holds collections, endpoints and environments. It's safe to commit.
-- `kestrel.secrets.json` holds secret values. It's added to `.gitignore` automatically and is never
-  sent to the UI or included in reports.
+**Storage:** everything lives in one SQLite database, `kestrel.db` (plus its `-wal`/`-shm` files
+while the engine runs):
+- collections, endpoints and environments;
+- secret values, which are never sent to the UI or included in reports;
+- files uploaded for multipart bodies;
+- the reports of the last 500 finished runs;
+- hosts confirmed for load testing.
+
+It holds secrets, so `kestrel.db*` is added to a `.gitignore` in the same directory automatically.
+A new database imports an existing `kestrel.json`, `kestrel.secrets.json` and `kestrel-files/`
+once; after that those files aren't read and can be deleted.
+
+To back it up while the engine runs, copy it with SQLite rather than `cp`, so the copy is
+consistent: `sqlite3 kestrel.db ".backup kestrel-backup.db"`.
 
 ## Safety
 
@@ -161,8 +171,18 @@ HANDOFF.md              design notes, decisions and milestone status
 One container holds everything: the engine binary with the UI embedded, serving both on port 7070.
 
 ```bash
+docker compose up -d --build                                            # http://localhost:7070
+# or without compose:
 docker build -t kestrel .
-docker run --rm -p 127.0.0.1:7070:7070 -v kestrel-data:/data kestrel    # http://localhost:7070
+docker run --rm -p 127.0.0.1:7070:7070 -v kestrel-data:/data kestrel
+```
+
+All data is in `kestrel.db` on the `/data` volume, so the container itself is disposable: rebuild
+and recreate it freely. Only remove the volume if you mean to wipe the workspace and run history.
+Back up from the host with:
+
+```bash
+docker run --rm -v kestrel-data:/data -v "$PWD":/backup alpine   sh -c 'apk add -q sqlite && sqlite3 /data/kestrel.db ".backup /backup/kestrel-backup.db"'
 ```
 
 > **There is no login.** Anyone who can load the UI can drive the load generator. Publish the port on
@@ -180,7 +200,8 @@ fly deploy --no-public-ips --ha=false              # exactly one machine: runs a
 fly proxy 7070:7070                                # then open http://localhost:7070
 ```
 
-- The workspace (`kestrel.json`, secrets) lives on the `kestrel_data` volume and survives deploys.
+- `kestrel.db` (workspace, secrets, run history) lives on the `kestrel_data` volume and survives
+  deploys.
 - It's a dedicated-CPU machine because shared CPU adds jitter to latency numbers. Switch `cpu_kind`
   to `shared` in `fly.toml` for lighter, cheaper use.
 - Latency is measured from the Fly region, not from your machine.
@@ -208,8 +229,7 @@ fit, even though Vercel runs Rust functions:
   function instance adds its own jitter, and the p99 lateness numbers above wouldn't hold.
 - **The security model is local.** The session token is built into the UI bundle, which is fine on
   localhost. On a public URL, anyone who loads the page gets a token for a load generator.
-- **Storage is local files** (`kestrel.json`, `kestrel.secrets.json`), which don't persist on
-  serverless.
+- **Storage is a local SQLite file** (`kestrel.db`), which doesn't persist on serverless.
 - **Load-testing third parties from shared cloud infrastructure** risks the host's acceptable-use
   rules.
 

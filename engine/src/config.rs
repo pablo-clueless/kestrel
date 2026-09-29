@@ -24,8 +24,7 @@ pub struct Config {
     /// Values accepted in the `Origin` header, when one is present.
     pub allowed_origins: Vec<String>,
     pub caps: Caps,
-    /// Where `kestrel.json` and `kestrel.secrets.json` live. `KESTREL_WORKSPACE_DIR`, else the
-    /// working directory.
+    /// Where `kestrel.db` lives. `KESTREL_WORKSPACE_DIR`, else the working directory.
     pub workspace_dir: PathBuf,
 }
 

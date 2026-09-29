@@ -62,7 +62,11 @@ struct Part {
 enum PartValue {
     Text(Bound),
     /// Loaded once at compile; `Bytes` clones are cheap.
-    File { filename: String, content_type: String, bytes: Bytes },
+    File {
+        filename: String,
+        content_type: String,
+        bytes: Bytes,
+    },
 }
 
 /// Quotes and line breaks would end a Content-Disposition header early (HTML's escaping rules).
@@ -75,18 +79,14 @@ impl CompiledBody {
         match self {
             Self::Text(_, b) => b.uses_size(),
             Self::Form(fields) => fields.iter().any(|(_, v)| v.uses_size()),
-            Self::Multipart(_, parts) => {
-                parts.iter().any(|p| matches!(&p.value, PartValue::Text(v) if v.uses_size()))
-            }
+            Self::Multipart(_, parts) => parts.iter().any(|p| matches!(&p.value, PartValue::Text(v) if v.uses_size())),
         }
     }
 
     /// Content type, body bytes, and (when the bytes aren't all text) a readable version.
     fn render(&self, state: &GenState, n: u64) -> (String, Bytes, Option<String>) {
         match self {
-            Self::Text(content_type, template) => {
-                (content_type.clone(), template.render_sized(state, n).into(), None)
-            }
+            Self::Text(content_type, template) => (content_type.clone(), template.render_sized(state, n).into(), None),
             Self::Form(fields) => {
                 let mut form = url::form_urlencoded::Serializer::new(String::new());
                 for (k, v) in fields {
@@ -407,13 +407,21 @@ mod tests {
         assert_eq!(header(&req), "application/x-www-form-urlencoded");
         assert_eq!(req.body_text().as_deref(), Some("user+name=a%26b%3Dhunter2&id=2"));
 
-        ep.body = Body::Multipart { fields: fields.into_iter().map(|f| FormField::text(f.key, f.value, f.enabled)).collect() };
+        ep.body = Body::Multipart {
+            fields: fields.into_iter().map(|f| FormField::text(f.key, f.value, f.enabled)).collect(),
+        };
         ep.headers.push(KeyValue { key: "content-type".into(), value: "multipart/form-data".into(), enabled: true });
         let req = CompiledRequest::compile(&ep, &ws, &secrets, None, false).unwrap().render().unwrap();
         let ct = header(&req);
-        let boundary = ct.strip_prefix("multipart/form-data; boundary=").expect("our boundary replaces the hand-set header");
+        let boundary =
+            ct.strip_prefix("multipart/form-data; boundary=").expect("our boundary replaces the hand-set header");
         let body = req.body_text().unwrap().into_owned();
-        assert!(body.starts_with(&format!("--{boundary}\r\nContent-Disposition: form-data; name=\"user name\"\r\n\r\na&b=hunter2\r\n")), "{body}");
+        assert!(
+            body.starts_with(&format!(
+                "--{boundary}\r\nContent-Disposition: form-data; name=\"user name\"\r\n\r\na&b=hunter2\r\n"
+            )),
+            "{body}"
+        );
         assert!(body.contains("name=\"id\"\r\n\r\n2\r\n"), "{body}");
         assert!(!body.contains("name=\"off\""));
         assert!(body.ends_with(&format!("--{boundary}--\r\n")));

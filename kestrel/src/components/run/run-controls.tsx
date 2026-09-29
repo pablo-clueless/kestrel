@@ -5,7 +5,11 @@ import { useEffect, useRef, useState } from "react";
 import { Play, Square } from "lucide-react";
 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
-import { useSelectedEndpoint, useWorkspaceStore } from "@/stores/workspace-store";
+import {
+  useSelectedEndpoint,
+  useSelectedIsDraft,
+  useWorkspaceStore,
+} from "@/stores/workspace-store";
 import { MethodBadge } from "@/components/shared/method-badge";
 import type { RunConfig } from "@/types/engine/RunConfig";
 import type { Endpoint } from "@/types/engine/Endpoint";
@@ -13,7 +17,6 @@ import { ConfirmHostDialog } from "./confirm-host-dialog";
 import { Label } from "@/components/workspace/fields";
 import { useRunEvents } from "@/hooks/use-run-events";
 import { useRunStore } from "@/stores/run-store";
-import { useSendStore } from "@/stores/send-store";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { useValues } from "@/hooks/use-values";
@@ -113,8 +116,8 @@ export const RunControls = () => {
     setError,
     clear,
   } = useRunStore();
-  const clearResponse = useSendStore((s) => s.clear);
   const endpoint = useSelectedEndpoint();
+  const isDraft = useSelectedIsDraft();
   const environment = useWorkspaceStore((s) => s.workspace?.activeEnvironment ?? null);
   const flush = useWorkspaceStore((s) => s.flush);
   const running = status === "running";
@@ -156,15 +159,17 @@ export const RunControls = () => {
     if (active && !useRunStore.getState().runId) attach(active.runId);
   }, [runs.data, attach]);
 
-  // A different endpoint makes the shown response and run results stale.
+  // A different endpoint makes the run results stale, unless the shown run is of that endpoint (a
+  // run opened from history selects its endpoint). Responses are kept per tab.
   const endpointId = endpoint?.id ?? null;
   const prevEndpointId = useRef(endpointId);
   useEffect(() => {
     if (prevEndpointId.current === endpointId) return;
     prevEndpointId.current = endpointId;
-    clearResponse();
+    const shown = useRunStore.getState().config;
+    if (shown && shown.kind !== "fake" && shown.endpointId === endpointId) return;
     clear();
-  }, [endpointId, clear, clearResponse]);
+  }, [endpointId, clear]);
 
   const buildConfig = (): RunConfig => {
     if (kind === "fake") return { kind, durationMs: Math.round(durationS * 1000) };
@@ -276,7 +281,13 @@ export const RunControls = () => {
                 <MethodBadge method={endpoint.method} />
                 <span className="truncate font-medium">{endpoint.name || endpoint.url}</span>
               </div>
-            ) : (
+            ) : null}
+            {endpoint && isDraft && (
+              <p className="text-muted-foreground text-xs">
+                Unsaved request. Save it to a collection to run tests against it.
+              </p>
+            )}
+            {!endpoint && (
               <p className="text-muted-foreground rounded-xs border border-dashed px-3 py-2">
                 Select an endpoint in the sidebar.
               </p>
@@ -554,7 +565,12 @@ export const RunControls = () => {
           className="flex-1"
           size="lg"
           onClick={() => start.mutate()}
-          disabled={running || start.isPending || !health.isSuccess || (needsEndpoint && !endpoint)}
+          disabled={
+            running ||
+            start.isPending ||
+            !health.isSuccess ||
+            (needsEndpoint && (!endpoint || isDraft))
+          }
         >
           <Play /> Run
         </Button>

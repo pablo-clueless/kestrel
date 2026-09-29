@@ -1,20 +1,20 @@
 {
   "collections": [
     {
-      "id": "8a14ccc0-4900-4dd6-a65b-ecc5fb6d836c",
+      "id": "cbbb4bcf-cb9a-44e9-9cd0-a2b1f9748b7e",
       "name": "Social API",
       "vars": {
-        "base": "https://domieface-server.onrender.com",
+        "base": "",
         "id": "djbaalwbrctr35h4bmtjjald5y",
         "username": "ada"
       },
       "endpoints": [
         {
-          "id": "02440288-bc95-42f2-9e73-77d663a7fa05",
+          "id": "f33b4c67-6bd5-482a-aa99-d2fa5cb72a22",
           "name": "Liveness",
           "group": "Operations",
           "method": "GET",
-          "url": "{{baseUrl}}/healthz",
+          "url": "{{base}}/healthz",
           "headers": [],
           "query": [],
           "body": {
@@ -37,18 +37,18 @@
             {
               "source": "body",
               "path": "",
-              "target": "variable",
+              "target": "secret",
               "name": "",
               "enabled": true
             }
           ]
         },
         {
-          "id": "9d871bf2-7b4a-4b22-adb3-34c913b25168",
+          "id": "2bbf4aef-fe0b-4b02-84b7-4d74049e572a",
           "name": "Readiness",
           "group": "Operations",
           "method": "GET",
-          "url": "{{baseUrl}}/readyz",
+          "url": "{{base}}/readyz",
           "headers": [],
           "query": [],
           "body": {
@@ -76,11 +76,11 @@
           "extract": []
         },
         {
-          "id": "d703c3f6-0c02-4c8b-8618-0630db00be1d",
+          "id": "6b33bb6a-5015-4acd-b41b-836f85994b14",
           "name": "Sign in",
           "group": "Authentication",
           "method": "POST",
-          "url": "{{baseUrl}}/v1/auth/login",
+          "url": "{{base}}/v1/auth/login",
           "headers": [],
           "query": [],
           "body": {
@@ -131,22 +131,15 @@
               "target": "secret",
               "name": "token",
               "enabled": true
-            },
-            {
-              "source": "body",
-              "path": "user.username",
-              "target": "variable",
-              "name": "username",
-              "enabled": true
             }
           ]
         },
         {
-          "id": "1147deb2-8e51-47d4-a8bc-d9dbeeb3f967",
+          "id": "6fc8cff9-69c1-4c94-a4ef-5be5cd88a152",
           "name": "End the session",
           "group": "Authentication",
           "method": "POST",
-          "url": "{{baseUrl}}/v1/auth/logout",
+          "url": "{{base}}/v1/auth/logout",
           "headers": [],
           "query": [],
           "body": {
@@ -192,11 +185,11 @@
           "extract": []
         },
         {
-          "id": "950dfec6-3f81-4b38-99db-6886a7cacd26",
+          "id": "0cd9d5ae-767c-4e9a-948f-1d4e36cc3d89",
           "name": "Exchange a refresh token for a new pair",
           "group": "Authentication",
           "method": "POST",
-          "url": "{{baseUrl}}/v1/auth/refresh",
+          "url": "{{base}}/v1/auth/refresh",
           "headers": [],
           "query": [],
           "body": {
@@ -243,11 +236,11 @@
           "extract": []
         },
         {
-          "id": "05ad84e6-1b26-4399-a7db-35d017c5cf77",
+          "id": "74010c90-ad1c-49a3-9468-ae1b63486517",
           "name": "Create an account",
           "group": "Authentication",
           "method": "POST",
-          "url": "{{baseUrl}}/v1/auth/register",
+          "url": "{{base}}/v1/auth/register",
           "headers": [],
           "query": [],
           "body": {
@@ -294,11 +287,11 @@
           "extract": []
         },
         {
-          "id": "94cd0ac7-a3e9-4e3f-8b27-25c6de301e16",
+          "id": "360aea82-eb56-461b-92b5-caefac2c0968",
           "name": "The feed",
           "group": "Posts",
           "method": "GET",
-          "url": "{{baseUrl}}/v1/posts",
+          "url": "{{base}}/v1/posts",
           "headers": [],
           "query": [
             {
@@ -356,16 +349,16 @@
           "extract": []
         },
         {
-          "id": "513a4777-d23f-43ef-a530-62a5b8095a73",
+          "id": "14bbbbe7-e9cd-4c48-a7aa-02ae00fb5f90",
           "name": "Create a post",
           "group": "Posts",
           "method": "POST",
-          "url": "{{baseUrl}}/v1/posts",
+          "url": "{{base}}/v1/posts",
           "headers": [],
           "query": [],
           "body": {
             "type": "json",
-            "content": "{\n  \"caption\": \"Sunset from the office.\",\n  \"imageKey\": \"\"\n}"
+            "content": "{\n  \"caption\": \"Sunset from the office.\"\n}"
           },
           "auth": {
             "type": "bearer",
@@ -414,11 +407,11 @@
           "extract": []
         },
         {
-          "id": "72021ca9-7b83-4df2-9b55-f59a0557b83b",
+          "id": "763750e5-fabb-46eb-ab05-610327bbaf21",
           "name": "Get one post",
           "group": "Posts",
           "method": "GET",
-          "url": "{{baseUrl}}/v1/posts/{{id}}",
+          "url": "{{base}}/v1/posts/{{id}}",
           "headers": [],
           "query": [],
           "body": {
@@ -465,11 +458,11 @@
           "extract": []
         },
         {
-          "id": "ea8c42dd-4294-4a33-b0b0-685757fc2b04",
+          "id": "e807ad1e-28f8-4920-bcbe-c5fd76889d69",
           "name": "Delete a post",
           "group": "Posts",
           "method": "DELETE",
-          "url": "{{baseUrl}}/v1/posts/{{id}}",
+          "url": "{{base}}/v1/posts/{{id}}",
           "headers": [],
           "query": [],
           "body": {
@@ -520,16 +513,16 @@
           "extract": []
         },
         {
-          "id": "0c971352-c738-433a-94ab-205e50df8732",
+          "id": "4a1cf15b-d15b-4366-9795-ff7d28256f57",
           "name": "Get a presigned upload URL",
           "group": "Uploads",
           "method": "POST",
-          "url": "{{baseUrl}}/v1/uploads/presign",
+          "url": "{{base}}/v1/uploads/presign",
           "headers": [],
           "query": [],
           "body": {
             "type": "json",
-            "content": "{\n  \"contentLength\": 1031066,\n  \"contentType\": \"image/png\",\n  \"purpose\": \"post\"\n}"
+            "content": "{\n  \"contentLength\": 843201,\n  \"contentType\": \"image/jpeg\",\n  \"purpose\": \"avatar\"\n}"
           },
           "auth": {
             "type": "bearer",
@@ -584,11 +577,11 @@
           "extract": []
         },
         {
-          "id": "3ce6f461-2b65-4e6a-b784-00210e9d2d4c",
+          "id": "ebe0804d-ee1a-4ee4-bead-c19f5a249938",
           "name": "Get the authenticated user",
           "group": "Users",
           "method": "GET",
-          "url": "{{baseUrl}}/v1/users/me",
+          "url": "{{base}}/v1/users/me",
           "headers": [],
           "query": [],
           "body": {
@@ -629,16 +622,16 @@
           "extract": []
         },
         {
-          "id": "a1c9c776-d3fe-4657-979c-1f7070e82843",
+          "id": "e22b37f1-6cd3-46c3-967a-9267f68f352a",
           "name": "Update the authenticated user",
           "group": "Users",
           "method": "PATCH",
-          "url": "{{baseUrl}}/v1/users/me",
+          "url": "{{base}}/v1/users/me",
           "headers": [],
           "query": [],
           "body": {
             "type": "json",
-            "content": "{\n  \"avatarKey\": \"uploads/a1b2c3d4e5f6a7b8c9d0e1f2/avatar.jpg\",\n  \"bio\": \"Building things.\",\n  \"displayName\": \"Ada Lovelace\"\n}"
+            "content": "{\n  \"avatarKey\": \"uploads/a1b2c3d4e5f6a7b8c9d0e1f2/avatar.jpg\",\n  \"bio\": \"Building things.\",\n  \"displayName\": \"Ada L.\"\n}"
           },
           "auth": {
             "type": "bearer",
@@ -687,11 +680,11 @@
           "extract": []
         },
         {
-          "id": "1e451596-16d2-4b77-8c21-49fcffb80f81",
+          "id": "d1e7f6c4-018b-47b2-9127-40d2ee98398e",
           "name": "Get a user's public profile",
           "group": "Users",
           "method": "GET",
-          "url": "{{baseUrl}}/v1/users/{{username}}",
+          "url": "{{base}}/v1/users/{{username}}",
           "headers": [],
           "query": [],
           "body": {
@@ -738,11 +731,11 @@
           "extract": []
         },
         {
-          "id": "dafca637-cbf8-4dc9-b667-733ca3f10b78",
+          "id": "c731ac6f-5fc2-4344-bc53-520f54986500",
           "name": "List one user's posts",
           "group": "Posts",
           "method": "GET",
-          "url": "{{baseUrl}}/v1/users/{{username}}/posts",
+          "url": "{{base}}/v1/users/{{username}}/posts",
           "headers": [],
           "query": [
             {
@@ -838,8 +831,7 @@
             },
             "CreatePostRequest": {
               "example": {
-                "caption": "Sunset from the office.",
-                "imageKey": "uploads/a1b2c3d4e5f6a7b8c9d0e1f2/post.jpg"
+                "caption": "Sunset from the office."
               },
               "properties": {
                 "caption": {
@@ -847,12 +839,17 @@
                   "type": "string"
                 },
                 "imageKey": {
-                  "$ref": "#/components/schemas/UploadKey"
+                  "description": "Optional key from a `purpose: \"post\"` presign. Omit or send null to\ncreate a text-only post.\n",
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/UploadKey"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 }
               },
-              "required": [
-                "imageKey"
-              ],
               "type": "object"
             },
             "Error": {
@@ -1060,9 +1057,12 @@
                   "type": "string"
                 },
                 "imageUrl": {
-                  "description": "Where to render the image from. The storage key is internal and not exposed.",
+                  "description": "Null when the post has no image. The storage key is internal and not exposed.",
                   "format": "uri",
-                  "type": "string"
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 }
               },
               "required": [
@@ -1368,11 +1368,11 @@
     {
       "name": "domie-face",
       "vars": {
-        "baseUrl": "https://domieface-server.onrender.com",
+        "base": "https://domieface-server.onrender.com",
         "username": "ada"
       }
     }
   ],
   "activeEnvironment": "domie-face",
-  "activeCollection": "8a14ccc0-4900-4dd6-a65b-ecc5fb6d836c"
+  "activeCollection": "cbbb4bcf-cb9a-44e9-9cd0-a2b1f9748b7e"
 }

@@ -15,12 +15,25 @@ interface WorkspaceState {
   /** Environment → names of secrets set. Values never leave the engine. */
   secretKeys: Record<string, string[]>;
   selectedId: string | null;
+  /** Endpoints open as tabs, in tab order. The selected endpoint is always among them. */
+  openIds: string[];
+  /** Unsaved requests opened with a new tab. Not part of the workspace until saved. */
+  drafts: Record<string, Endpoint>;
   saveState: SaveState;
   saveError: string | null;
   loadError: string | null;
 
   load: () => Promise<void>;
+  /** Shows an endpoint, opening a tab for it if it has none. */
   select: (id: string | null) => void;
+  /** Closes a tab; closing the selected one selects its neighbour, as a browser does. */
+  closeTab: (id: string) => void;
+  /** Sets the tab order (drag to reorder). */
+  reorderTabs: (ids: string[]) => void;
+  /** Opens a tab with a new draft request, without adding it to any collection. */
+  newTab: () => void;
+  /** Moves a draft into the active collection; its tab stays open. */
+  saveDraft: (id: string) => void;
   /** Switches the sidebar to another collection and selects its first endpoint. */
   setActiveCollection: (id: string) => void;
   addCollection: (name: string) => void;
@@ -50,6 +63,24 @@ let saveTimer: ReturnType<typeof setTimeout> | undefined;
 export const activeCollectionOf = (ws: Workspace | null): Collection | null =>
   ws?.collections.find((c) => c.id === ws.activeCollection) ?? ws?.collections[0] ?? null;
 
+/** `openIds` with `id` appended if it isn't already open. */
+const withTab = (openIds: string[], id: string | null) =>
+  id === null || openIds.includes(id) ? openIds : [...openIds, id];
+
+const newEndpoint = (name: string): Endpoint => ({
+  id: crypto.randomUUID(),
+  name,
+  group: null,
+  method: "GET",
+  url: "",
+  headers: [],
+  query: [],
+  body: { type: "none" },
+  auth: { type: "none" },
+  expect: null,
+  extract: [],
+});
+
 const newCollection = (name: string): Collection => ({
   id: crypto.randomUUID(),
   name,
@@ -59,6 +90,20 @@ const newCollection = (name: string): Collection => ({
   schemaDefs: null,
 });
 
+/** Appends to the active collection (creating a "Default" one if there are none) and makes it active. */
+const insertEndpoint = (ws: Workspace, endpoint: Endpoint): Workspace => {
+  const target = activeCollectionOf(ws) ?? newCollection("Default");
+  const exists = ws.collections.some((c) => c.id === target.id);
+  const withEndpoint = { ...target, endpoints: [...target.endpoints, endpoint] };
+  return {
+    ...ws,
+    collections: exists
+      ? ws.collections.map((c) => (c.id === target.id ? withEndpoint : c))
+      : [...ws.collections, withEndpoint],
+    activeCollection: target.id,
+  };
+};
+
 /** Applies `fn` to every collection's endpoint list. */
 const mapEndpoints = (ws: Workspace, fn: (endpoints: Endpoint[]) => Endpoint[]): Workspace => ({
   ...ws,
@@ -66,6 +111,23 @@ const mapEndpoints = (ws: Workspace, fn: (endpoints: Endpoint[]) => Endpoint[]):
 });
 
 export const useWorkspaceStore = create<WorkspaceState>()((set, get) => {
+  const select = (id: string | null) =>
+    set((s) => ({ selectedId: id, openIds: withTab(s.openIds, id) }));
+
+  /** Drops tabs whose endpoint no longer exists, then keeps the selection valid. */
+  const pruneTabs = () => {
+    const ids = new Set([
+      ...(get().workspace?.collections.flatMap((c) => c.endpoints.map((e) => e.id)) ?? []),
+      ...Object.keys(get().drafts),
+    ]);
+    const openIds = get().openIds.filter((id) => ids.has(id));
+    set({ openIds });
+    const { selectedId } = get();
+    if (selectedId !== null && !ids.has(selectedId)) {
+      select(openIds.at(-1) ?? activeCollectionOf(get().workspace)?.endpoints[0]?.id ?? null);
+    }
+  };
+
   /** Applies an edit and schedules a save. */
   const edit = (fn: (ws: Workspace) => Workspace) => {
     const ws = get().workspace;
@@ -86,6 +148,8 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => {
     workspace: null,
     secretKeys: {},
     selectedId: null,
+    openIds: [],
+    drafts: {},
     saveState: "idle",
     saveError: null,
     loadError: null,
@@ -93,10 +157,12 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => {
     load: async () => {
       try {
         const { workspace, secretKeys } = await getWorkspace();
+        const first = activeCollectionOf(workspace)?.endpoints[0]?.id ?? null;
         set({
           workspace,
           secretKeys,
-          selectedId: activeCollectionOf(workspace)?.endpoints[0]?.id ?? null,
+          selectedId: first,
+          openIds: first ? [first] : [],
           loadError: null,
         });
       } catch (err) {
@@ -104,13 +170,48 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => {
       }
     },
 
-    select: (selectedId) => set({ selectedId }),
+    select,
+
+    closeTab: (id) => {
+      const { openIds, selectedId } = get();
+      const index = openIds.indexOf(id);
+      if (index === -1) return;
+      const rest = openIds.filter((t) => t !== id);
+      const drafts = { ...get().drafts };
+      delete drafts[id];
+      set({
+        openIds: rest,
+        drafts,
+        selectedId: selectedId === id ? (rest[index] ?? rest[index - 1] ?? null) : selectedId,
+      });
+    },
+
+    reorderTabs: (openIds) => set({ openIds }),
+
+    newTab: () => {
+      const draft = newEndpoint("Untitled request");
+      set((s) => ({ drafts: { ...s.drafts, [draft.id]: draft } }));
+      select(draft.id);
+    },
+
+    saveDraft: (id) => {
+      const draft = get().drafts[id];
+      if (!draft) return;
+      edit((ws) => insertEndpoint(ws, draft));
+      set((s) => {
+        const drafts = { ...s.drafts };
+        delete drafts[id];
+        return { drafts };
+      });
+    },
 
     setActiveCollection: (id) => {
       edit((ws) => ({ ...ws, activeCollection: id }));
       const collection = get().workspace?.collections.find((c) => c.id === id);
+      const { selectedId, drafts } = get();
+      if (selectedId !== null && selectedId in drafts) return;
       if (!collection?.endpoints.some((e) => e.id === get().selectedId)) {
-        set({ selectedId: collection?.endpoints[0]?.id ?? null });
+        select(collection?.endpoints[0]?.id ?? null);
       }
     },
 
@@ -130,7 +231,7 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => {
         collections: [...ws.collections, collection],
         activeCollection: collection.id,
       }));
-      set({ selectedId: collection.endpoints[0]?.id ?? null });
+      select(collection.endpoints[0]?.id ?? null);
     },
 
     renameCollection: (id, name) =>
@@ -146,10 +247,7 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => {
           ws.activeCollection === id ? (collections[0]?.id ?? null) : ws.activeCollection;
         return { ...ws, collections, activeCollection };
       });
-      const active = activeCollectionOf(get().workspace);
-      if (!active?.endpoints.some((e) => e.id === get().selectedId)) {
-        set({ selectedId: active?.endpoints[0]?.id ?? null });
-      }
+      pruneTabs();
     },
 
     setCollectionVar: (id, key, value) =>
@@ -165,44 +263,26 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => {
       })),
 
     addEndpoint: () => {
-      const endpoint: Endpoint = {
-        id: crypto.randomUUID(),
-        name: "New endpoint",
-        group: null,
-        method: "GET",
-        url: "{{base}}/",
-        headers: [],
-        query: [],
-        body: { type: "none" },
-        auth: { type: "none" },
-        expect: null,
-        extract: [],
-      };
-      edit((ws) => {
-        const target = activeCollectionOf(ws) ?? newCollection("Default");
-        const exists = ws.collections.some((c) => c.id === target.id);
-        const withEndpoint = { ...target, endpoints: [...target.endpoints, endpoint] };
-        return {
-          ...ws,
-          collections: exists
-            ? ws.collections.map((c) => (c.id === target.id ? withEndpoint : c))
-            : [...ws.collections, withEndpoint],
-          activeCollection: target.id,
-        };
-      });
-      set({ selectedId: endpoint.id });
+      const endpoint = newEndpoint("New endpoint");
+      edit((ws) => insertEndpoint(ws, endpoint));
+      select(endpoint.id);
     },
 
-    updateEndpoint: (id, patch) =>
+    updateEndpoint: (id, patch) => {
+      const draft = get().drafts[id];
+      if (draft) {
+        set((s) => ({ drafts: { ...s.drafts, [id]: { ...draft, ...patch } } }));
+        return;
+      }
       edit((ws) =>
         mapEndpoints(ws, (eps) => eps.map((e) => (e.id === id ? { ...e, ...patch } : e))),
-      ),
+      );
+    },
 
     removeEndpoint: (id) => {
       edit((ws) => mapEndpoints(ws, (eps) => eps.filter((e) => e.id !== id)));
-      if (get().selectedId === id) {
-        set({ selectedId: activeCollectionOf(get().workspace)?.endpoints[0]?.id ?? null });
-      }
+      get().closeTab(id);
+      pruneTabs();
     },
 
     setActiveEnvironment: (name) => edit((ws) => ({ ...ws, activeEnvironment: name })),
@@ -280,11 +360,18 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => {
   };
 });
 
+/** The selected endpoint, saved or draft. */
 export const useSelectedEndpoint = () =>
-  useWorkspaceStore(
-    (s) =>
-      s.workspace?.collections.flatMap((c) => c.endpoints).find((e) => e.id === s.selectedId) ??
-      null,
+  useWorkspaceStore((s) =>
+    s.selectedId === null
+      ? null
+      : (s.drafts[s.selectedId] ??
+        s.workspace?.collections.flatMap((c) => c.endpoints).find((e) => e.id === s.selectedId) ??
+        null),
   );
+
+/** Whether the selected endpoint is an unsaved draft. */
+export const useSelectedIsDraft = () =>
+  useWorkspaceStore((s) => s.selectedId !== null && s.selectedId in s.drafts);
 
 export const useActiveCollection = () => useWorkspaceStore((s) => activeCollectionOf(s.workspace));

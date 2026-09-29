@@ -6,7 +6,8 @@ import { toast } from "sonner";
 
 import { SaveValueDialog, type SaveValueSeed } from "./save-value-dialog";
 import { StatusBadge } from "@/components/shared/method-badge";
-import { useSendStore } from "@/stores/send-store";
+import { useWorkspaceStore } from "@/stores/workspace-store";
+import { useSendEntry } from "@/stores/send-store";
 import type { Saved } from "@/types/engine/Saved";
 import { BarLoader } from "../shared";
 import { cn } from "@/lib/utils";
@@ -26,7 +27,8 @@ const formatBytes = (n: number) => (n < 1024 ? `${n} B` : `${(n / 1024).toFixed(
 
 /** Result of the last "Send". Secrets are already redacted by the engine. */
 export const ResponseView = () => {
-  const { result, error, pending } = useSendStore();
+  const endpointId = useWorkspaceStore((s) => s.selectedId);
+  const { result, error, pending } = useSendEntry(endpointId);
   const [tab, setTab] = useState<Tab>("body");
   const [seed, setSeed] = useState<SaveValueSeed | null>(null);
 

@@ -123,11 +123,16 @@ impl Run {
     }
 
     pub fn summary(&self) -> RunSummary {
-        RunSummary {
-            run_id: self.id,
-            kind: self.config.kind(),
-            status: self.status(),
-            started_at_ms: self.started_at_ms,
+        match self.report() {
+            Some(report) => RunSummary::of_report(&report),
+            None => RunSummary {
+                run_id: self.id,
+                kind: self.config.kind(),
+                status: self.status(),
+                started_at_ms: self.started_at_ms,
+                endpoint_id: self.config.endpoint_id(),
+                result: None,
+            },
         }
     }
 }

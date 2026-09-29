@@ -26,7 +26,7 @@ primary_region = "iad"
   KESTREL_PORT = "7070"
   KESTREL_WORKSPACE_DIR = "/data"
 
-# kestrel.json and kestrel.secrets.json survive deploys and restarts.
+# kestrel.db (workspace, secrets, run history) survives deploys and restarts.
 [mounts]
   source = "kestrel_data"
   destination = "/data"

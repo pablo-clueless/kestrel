@@ -42,7 +42,7 @@ async fn main() -> anyhow::Result<()> {
     }
     let addr = SocketAddr::new(config.bind, config.port);
     let store = model::store::WorkspaceStore::open(&config.workspace_dir)?;
-    tracing::info!("workspace: {}", config.workspace_dir.join(model::store::WORKSPACE_FILE).display());
+    tracing::info!("data: {}", config.workspace_dir.join(model::store::DB_FILE).display());
     let app = api::router(api::AppState::new(config, store));
     let listener = listen(addr)?;
     tracing::info!("engine listening on http://{addr} (UI at /, API at /api)");

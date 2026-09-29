@@ -8,6 +8,8 @@ kestrel/out
 .env
 .env.*
 kestrel.json
+kestrel.db*
+**/kestrel.db*
 kestrel.secrets.json
 **/kestrel.secrets.json
 kestrel-files
