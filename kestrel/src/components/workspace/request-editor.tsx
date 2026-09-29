@@ -7,13 +7,13 @@ import { Send } from "lucide-react";
 import { useSelectedEndpoint, useWorkspaceStore } from "@/stores/workspace-store";
 import type { HttpMethod } from "@/types/engine/HttpMethod";
 import { errorMessage, renderRequest } from "@/lib/client";
+import type { FormField } from "@/types/engine/FormField";
 import type { Endpoint } from "@/types/engine/Endpoint";
+import { FormFieldEditor } from "./form-field-editor";
 import { Textarea } from "@/components/ui/textarea";
 import { KeyValueEditor } from "./key-value-editor";
-import { FormFieldEditor } from "./form-field-editor";
-import type { FormField } from "@/types/engine/FormField";
-import { ExtractEditor } from "./extract-editor";
 import { useSendStore } from "@/stores/send-store";
+import { ExtractEditor } from "./extract-editor";
 import type { Auth } from "@/types/engine/Auth";
 import { Button } from "@/components/ui/button";
 import type { Body } from "@/types/engine/Body";
@@ -59,12 +59,14 @@ export const RequestEditor = () => {
 
   return (
     <div className="flex flex-col gap-3 text-xs">
-      <Input
-        className={cn("max-w-100 border-none px-2 font-medium", XS)}
-        value={endpoint.name}
-        placeholder="Endpoint name"
-        onChange={(e) => patch({ name: e.target.value })}
-      />
+      <div className="flex items-center justify-between">
+        <Input
+          className={cn("max-w-100 border-none px-2 font-medium", XS)}
+          value={endpoint.name}
+          placeholder="Endpoint name"
+          onChange={(e) => patch({ name: e.target.value })}
+        />
+      </div>
       <div className="flex gap-2">
         <Select value={endpoint.method} onValueChange={(v) => patch({ method: v as HttpMethod })}>
           <SelectTrigger className={cn("w-25 font-mono", XS)}>

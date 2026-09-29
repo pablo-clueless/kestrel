@@ -85,7 +85,7 @@
           "query": [],
           "body": {
             "type": "json",
-            "content": "{\n  \"email\": {{n:string}},\n  \"password\": {{n:string}}\n}"
+            "content": "{\n  \"email\": \"ada@example.com\",\n  \"password\": \"correct-horse-battery\"\n}"
           },
           "auth": {
             "type": "none"
@@ -529,7 +529,7 @@
           "query": [],
           "body": {
             "type": "json",
-            "content": "{\n  \"contentLength\": 843201,\n  \"contentType\": \"image/jpeg\",\n  \"purpose\": \"avatar\"\n}"
+            "content": "{\n  \"contentLength\": 1031066,\n  \"contentType\": \"image/png\",\n  \"purpose\": \"post\"\n}"
           },
           "auth": {
             "type": "bearer",
