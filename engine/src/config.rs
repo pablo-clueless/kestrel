@@ -83,12 +83,11 @@ impl Config {
         {
             config.bind = bind.trim().parse().context("KESTREL_BIND must be an IP address, e.g. 127.0.0.1 or ::")?;
         }
-        // Extra `Host` values to accept, e.g. `localhost:8000` behind `fly proxy 8000:7070`. Their http
-        // origins are allowed too, since the engine serves the UI on them.
+        // Extra `Host` values to accept, e.g. `localhost:8000` behind `fly proxy 8000:7070`, or the
+        // hostname a platform serves the app on.
         if let Ok(hosts) = std::env::var("KESTREL_ALLOWED_HOSTS") {
             for host in hosts.split(',').map(str::trim).filter(|h| !h.is_empty()) {
-                config.allowed_hosts.push(host.to_owned());
-                config.allowed_origins.push(format!("http://{host}"));
+                config.allow_host(host);
             }
         }
         config.workspace_dir = match std::env::var("KESTREL_WORKSPACE_DIR") {
@@ -96,6 +95,14 @@ impl Config {
             _ => std::env::current_dir().context("reading the working directory")?,
         };
         Ok(config)
+    }
+
+    /// Accepts `host` in the `Host` header, and its origins: the engine serves the UI on it, over
+    /// plain http locally or https behind a platform's TLS proxy.
+    pub fn allow_host(&mut self, host: &str) {
+        self.allowed_hosts.push(host.to_owned());
+        self.allowed_origins.push(format!("http://{host}"));
+        self.allowed_origins.push(format!("https://{host}"));
     }
 
     pub fn new(port: u16, token: String, token_generated: bool, ui_origins: Vec<String>) -> Self {

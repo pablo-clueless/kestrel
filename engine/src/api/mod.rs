@@ -182,6 +182,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn accepts_an_allowed_deployment_host_over_https() {
+        let mut config = Config::new(7070, TOKEN.into(), false, vec![]);
+        config.allow_host("kestrel.example.com");
+        let app = router(AppState::new(config, WorkspaceStore::in_memory(Workspace::default(), Secrets::default())));
+        let req = |host: &str, origin: &str| {
+            Request::put("/api/workspace")
+                .header(header::HOST, host)
+                .header(header::ORIGIN, origin)
+                .header(TOKEN_HEADER, TOKEN)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from("{}"))
+                .unwrap()
+        };
+        assert_eq!(
+            status(&app, req("kestrel.example.com", "https://kestrel.example.com")).await,
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(status(&app, req("other.example.com", "https://other.example.com")).await, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
     async fn rejects_non_json_body() {
         let req = Request::post("/api/runs")
             .header(header::HOST, HOST)

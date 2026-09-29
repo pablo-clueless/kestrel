@@ -30,7 +30,10 @@ fn check(cfg: &Config, req: &Request) -> Result<(), ApiError> {
 
     let host = header_str(headers, header::HOST).ok_or(ApiError::Forbidden("missing Host header"))?;
     if !cfg.allowed_hosts.iter().any(|h| h.eq_ignore_ascii_case(host)) {
-        return Err(ApiError::Forbidden("Host not allowed"));
+        tracing::warn!(
+            "Host `{host}` is not allowed. If that's this deployment's own hostname, add it to KESTREL_ALLOWED_HOSTS."
+        );
+        return Err(ApiError::Forbidden("Host not allowed (see KESTREL_ALLOWED_HOSTS)"));
     }
 
     if let Some(origin) = headers.get(header::ORIGIN) {

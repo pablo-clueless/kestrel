@@ -213,7 +213,7 @@ fly proxy 7070:7070                                # then open http://localhost:
 |---|---|---|
 | `KESTREL_BIND` | `::` | Any address, IPv4 and IPv6 (Fly's private network is IPv6). Defaults to `127.0.0.1` outside the container |
 | `KESTREL_WORKSPACE_DIR` | `/data` | Mount a volume here |
-| `KESTREL_ALLOWED_HOSTS` | – | Extra `Host` values to accept, comma-separated |
+| `KESTREL_ALLOWED_HOSTS` | – | Extra `Host` values to accept, comma-separated, e.g. the hostname your platform serves the app on (`kestrel.example.com`, no scheme). Their `http://` and `https://` origins are allowed too |
 
 `GET /healthz` answers `ok` without a token, for health checks.
 
