@@ -2,6 +2,7 @@ mod guard;
 mod hosts;
 mod import;
 mod runs;
+mod scope;
 mod ui;
 mod workspace;
 
@@ -17,9 +18,10 @@ use axum::{
 use serde_json::{Value, json};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
-use crate::{config::Config, engine::registry::RunRegistry, model::store::WorkspaceStore};
+use crate::{config::Config, engine::registry::RunRegistry, model::workspaces::Workspaces};
 
 pub use guard::TOKEN_HEADER;
+pub use scope::{Scope, WORKSPACE_HEADER};
 
 /// Largest file accepted for multipart file fields.
 const MAX_UPLOAD_BYTES: usize = 50 * 1024 * 1024;
@@ -28,12 +30,12 @@ const MAX_UPLOAD_BYTES: usize = 50 * 1024 * 1024;
 pub struct AppState {
     pub config: Arc<Config>,
     pub runs: Arc<RunRegistry>,
-    pub store: Arc<WorkspaceStore>,
+    pub workspaces: Arc<Workspaces>,
 }
 
 impl AppState {
-    pub fn new(config: Config, store: WorkspaceStore) -> Self {
-        Self { config: Arc::new(config), runs: Arc::default(), store: Arc::new(store) }
+    pub fn new(config: Config, workspaces: Workspaces) -> Self {
+        Self { config: Arc::new(config), runs: Arc::default(), workspaces: Arc::new(workspaces) }
     }
 }
 
@@ -75,6 +77,7 @@ fn cors(config: &Config) -> CorsLayer {
         .allow_headers([
             header::CONTENT_TYPE,
             HeaderName::from_static(TOKEN_HEADER),
+            HeaderName::from_static(WORKSPACE_HEADER),
             HeaderName::from_static("last-event-id"),
         ])
 }
@@ -94,12 +97,14 @@ mod tests {
 
     use super::*;
     use crate::{
-        engine::types::{RunEvent, RunReport, RunStatus, StartRunResponse},
-        model::{Secrets, Workspace},
+        engine::types::{RunEvent, RunReport, RunStatus, RunSummary, StartRunResponse},
+        model::{Secrets, Workspace, store::WorkspaceStore},
     };
 
     const TOKEN: &str = "test-token";
     const HOST: &str = "127.0.0.1:7070";
+    /// The workspace test requests act on; `app_with` seeds it.
+    const WS: &str = "00000000-0000-4000-8000-000000000001";
 
     fn app() -> Router {
         app_with(Workspace::default(), Secrets::default())
@@ -107,11 +112,13 @@ mod tests {
 
     fn app_with(workspace: Workspace, secrets: Secrets) -> Router {
         let config = Config::new(7070, TOKEN.into(), false, vec!["http://localhost:3000".into()]);
-        router(AppState::new(config, WorkspaceStore::in_memory(workspace, secrets)))
+        let workspaces = Workspaces::in_memory();
+        workspaces.insert(WS.parse().unwrap(), WorkspaceStore::in_memory(workspace, secrets));
+        router(AppState::new(config, workspaces))
     }
 
     fn get(uri: &str) -> axum::http::request::Builder {
-        Request::get(uri).header(header::HOST, HOST).header(TOKEN_HEADER, TOKEN)
+        Request::get(uri).header(header::HOST, HOST).header(TOKEN_HEADER, TOKEN).header(WORKSPACE_HEADER, WS)
     }
 
     async fn status(app: &Router, req: Request<Body>) -> StatusCode {
@@ -166,7 +173,7 @@ mod tests {
     async fn rejects_foreign_host_even_with_token() {
         let req = Request::get("/api/health")
             .header(header::HOST, "evil.example:7070")
-            .header(TOKEN_HEADER, TOKEN)
+            .header(TOKEN_HEADER, TOKEN).header(WORKSPACE_HEADER, WS)
             .body(Body::empty())
             .unwrap();
         assert_eq!(status(&app(), req).await, StatusCode::FORBIDDEN);
@@ -185,12 +192,12 @@ mod tests {
     async fn accepts_an_allowed_deployment_host_over_https() {
         let mut config = Config::new(7070, TOKEN.into(), false, vec![]);
         config.allow_host("kestrel.example.com");
-        let app = router(AppState::new(config, WorkspaceStore::in_memory(Workspace::default(), Secrets::default())));
+        let app = router(AppState::new(config, Workspaces::in_memory()));
         let req = |host: &str, origin: &str| {
             Request::put("/api/workspace")
                 .header(header::HOST, host)
                 .header(header::ORIGIN, origin)
-                .header(TOKEN_HEADER, TOKEN)
+                .header(TOKEN_HEADER, TOKEN).header(WORKSPACE_HEADER, WS)
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from("{}"))
                 .unwrap()
@@ -206,7 +213,7 @@ mod tests {
     async fn rejects_non_json_body() {
         let req = Request::post("/api/runs")
             .header(header::HOST, HOST)
-            .header(TOKEN_HEADER, TOKEN)
+            .header(TOKEN_HEADER, TOKEN).header(WORKSPACE_HEADER, WS)
             .header(header::CONTENT_TYPE, "text/plain")
             .body(Body::from(r#"{"kind":"fake","durationMs":1000}"#))
             .unwrap();
@@ -221,7 +228,7 @@ mod tests {
 
         // Passes the guard, then 404s because the run doesn't exist.
         let id = uuid::Uuid::new_v4();
-        let req = Request::get(format!("/api/runs/{id}/events?token={TOKEN}"))
+        let req = Request::get(format!("/api/runs/{id}/events?token={TOKEN}&workspace={WS}"))
             .header(header::HOST, HOST)
             .body(Body::empty())
             .unwrap();
@@ -246,7 +253,7 @@ mod tests {
     async fn rejects_duration_above_cap() {
         let req = Request::post("/api/runs")
             .header(header::HOST, HOST)
-            .header(TOKEN_HEADER, TOKEN)
+            .header(TOKEN_HEADER, TOKEN).header(WORKSPACE_HEADER, WS)
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(r#"{"kind":"fake","durationMs":600000}"#))
             .unwrap();
@@ -309,7 +316,7 @@ mod tests {
     fn post_json(uri: &str, body: String) -> Request<Body> {
         Request::post(uri)
             .header(header::HOST, HOST)
-            .header(TOKEN_HEADER, TOKEN)
+            .header(TOKEN_HEADER, TOKEN).header(WORKSPACE_HEADER, WS)
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(body))
             .unwrap()
@@ -363,7 +370,7 @@ mod tests {
         let upload = |name: &str| {
             Request::post(format!("/api/files?name={name}"))
                 .header(header::HOST, HOST)
-                .header(TOKEN_HEADER, TOKEN)
+                .header(TOKEN_HEADER, TOKEN).header(WORKSPACE_HEADER, WS)
                 .header(header::CONTENT_TYPE, "image/png")
                 .body(Body::from(vec![0x89, b'P', b'N', b'G']))
                 .unwrap()
@@ -467,7 +474,7 @@ mod tests {
         let StartRunResponse { run_id } = json_body(res).await;
         let stop = Request::delete(format!("/api/runs/{run_id}"))
             .header(header::HOST, HOST)
-            .header(TOKEN_HEADER, TOKEN)
+            .header(TOKEN_HEADER, TOKEN).header(WORKSPACE_HEADER, WS)
             .body(Body::empty())
             .unwrap();
         assert_eq!(status(&app, stop).await, StatusCode::ACCEPTED);
@@ -626,7 +633,7 @@ mod tests {
         let app = app();
         let req = Request::post("/api/runs")
             .header(header::HOST, HOST)
-            .header(TOKEN_HEADER, TOKEN)
+            .header(TOKEN_HEADER, TOKEN).header(WORKSPACE_HEADER, WS)
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(r#"{"kind":"fake","durationMs":600}"#))
             .unwrap();
@@ -667,5 +674,56 @@ mod tests {
         let report: RunReport = json_body(res).await;
         assert_eq!(report.status, RunStatus::Completed);
         assert!(report.total_requests > 0);
+    }
+
+    #[tokio::test]
+    async fn requires_a_workspace_id() {
+        let app = app();
+        let req = |ws: Option<&str>| {
+            let req = Request::get("/api/workspace").header(header::HOST, HOST).header(TOKEN_HEADER, TOKEN);
+            ws.map_or(req, |ws| req.header(WORKSPACE_HEADER, ws)).body(Body::empty()).unwrap()
+        };
+        assert_eq!(status(&app, req(None)).await, StatusCode::BAD_REQUEST);
+        assert_eq!(status(&app, req(Some("../../etc"))).await, StatusCode::BAD_REQUEST);
+        assert_eq!(status(&app, req(Some(WS))).await, StatusCode::OK);
+        // Health doesn't touch a workspace.
+        let health = Request::get("/api/health").header(header::HOST, HOST).header(TOKEN_HEADER, TOKEN);
+        assert_eq!(status(&app, health.body(Body::empty()).unwrap()).await, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn workspaces_dont_see_each_others_data_or_runs() {
+        let app = app();
+        let other = uuid::Uuid::new_v4().to_string();
+        let as_other = |req: axum::http::request::Builder| {
+            req.header(header::HOST, HOST).header(TOKEN_HEADER, TOKEN).header(WORKSPACE_HEADER, other.as_str())
+        };
+
+        let saved = r#"{"environments":[{"name":"mine","vars":{}}]}"#;
+        let put = Request::put("/api/workspace")
+            .header(header::HOST, HOST)
+            .header(TOKEN_HEADER, TOKEN)
+            .header(WORKSPACE_HEADER, WS)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(saved))
+            .unwrap();
+        assert_eq!(status(&app, put).await, StatusCode::NO_CONTENT);
+        let res = app.clone().oneshot(as_other(Request::get("/api/workspace")).body(Body::empty()).unwrap()).await;
+        let ws: serde_json::Value = json_body(res.unwrap()).await;
+        assert_eq!(ws["workspace"]["environments"], serde_json::json!([]));
+
+        let StartRunResponse { run_id } = json_body(
+            app.clone().oneshot(post_json("/api/runs", r#"{"kind":"fake","durationMs":60000}"#.into())).await.unwrap(),
+        )
+        .await;
+        let res = app.clone().oneshot(as_other(Request::get("/api/runs")).body(Body::empty()).unwrap()).await;
+        let runs: Vec<RunSummary> = json_body(res.unwrap()).await;
+        assert!(runs.is_empty(), "{runs:?}");
+        let stop = |req: axum::http::request::Builder| req.body(Body::empty()).unwrap();
+        let path = format!("/api/runs/{run_id}");
+        assert_eq!(status(&app, stop(as_other(Request::delete(&path)))).await, StatusCode::NOT_FOUND);
+        let events = format!("/api/runs/{run_id}/events");
+        assert_eq!(status(&app, stop(as_other(Request::get(&events)))).await, StatusCode::NOT_FOUND);
+        assert_eq!(status(&app, get(&path).method("DELETE").body(Body::empty()).unwrap()).await, StatusCode::ACCEPTED);
     }
 }
