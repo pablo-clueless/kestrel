@@ -5,11 +5,6 @@ import { useEffect, useRef, useState } from "react";
 import { Play, Square } from "lucide-react";
 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
-import {
-  useSelectedEndpoint,
-  useSelectedIsDraft,
-  useWorkspaceStore,
-} from "@/stores/workspace-store";
 import { MethodBadge } from "@/components/shared/method-badge";
 import type { RunConfig } from "@/types/engine/RunConfig";
 import type { Endpoint } from "@/types/engine/Endpoint";
@@ -23,6 +18,11 @@ import { useValues } from "@/hooks/use-values";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import {
+  useSelectedEndpoint,
+  useSelectedIsDraft,
+  useWorkspaceStore,
+} from "@/stores/workspace-store";
+import {
   errorMessage,
   getHealth,
   listRuns,
@@ -35,8 +35,8 @@ type TestKind = RunConfig["kind"];
 type LoadModeType = "closed" | "open";
 
 const TESTS: { kind: TestKind; label: string }[] = [
-  { kind: "latency", label: "Latency probe" },
-  { kind: "load", label: "Load test" },
+  { kind: "latency", label: "Latency Probe" },
+  { kind: "load", label: "Load Test" },
   { kind: "complexity", label: "Big-O (complexity)" },
   { kind: "fake", label: "Fake (no traffic)" },
 ];
@@ -66,6 +66,9 @@ const bodyTexts = ({ body }: Endpoint): string[] => {
       return body.fields.filter((f) => f.enabled && f.kind === "text").map((f) => f.value);
   }
 };
+
+/** Methods that don't send a body, so there's no input to grow for a Big-O sweep. */
+const BODYLESS_METHODS: Endpoint["method"][] = ["GET", "HEAD", "OPTIONS", "DELETE"];
 
 /** "404, 409" → [404, 409] */
 const parseStatuses = (s: string) =>
@@ -229,6 +232,15 @@ export const RunControls = () => {
   const num = (key: NumberSetting) => (e: React.ChangeEvent<HTMLInputElement>) =>
     set(key, Number(e.target.value));
   const needsEndpoint = kind !== "fake";
+  const bodyless = !!endpoint && BODYLESS_METHODS.includes(endpoint.method);
+
+  // Big-O needs a body; switching to a bodyless request drops back to the default test.
+  useEffect(() => {
+    if (bodyless && kind === "complexity" && !running) {
+      set("kind", DEFAULTS.kind);
+      clear();
+    }
+  }, [bodyless, kind, running, set, clear]);
 
   return (
     <div className="flex h-full flex-col">
@@ -266,8 +278,17 @@ export const RunControls = () => {
             </SelectTrigger>
             <SelectContent>
               {TESTS.map((t) => (
-                <SelectItem key={t.kind} value={t.kind}>
+                <SelectItem
+                  key={t.kind}
+                  value={t.kind}
+                  disabled={t.kind === "complexity" && bodyless}
+                >
                   {t.label}
+                  {t.kind === "complexity" && bodyless && (
+                    <span className="text-muted-foreground normal-case">
+                      (needs a request body)
+                    </span>
+                  )}
                 </SelectItem>
               ))}
             </SelectContent>
