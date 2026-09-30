@@ -2,6 +2,7 @@
 //! `kestrel.db` and is exported to TypeScript. String fields marked "template" may contain `{{…}}`.
 
 pub mod store;
+pub mod workspaces;
 
 use std::collections::BTreeMap;
 
