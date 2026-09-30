@@ -28,11 +28,31 @@ const injectedToken = () =>
 const engineUrl = () => (injectedToken() === null ? BUILD_ENGINE_URL : "");
 const token = () => injectedToken() ?? BUILD_TOKEN;
 
+const WORKSPACE_KEY = "kestrel-workspace";
+let memoryWorkspaceId: string | null = null;
+
+/** This browser's workspace: a random id made on first use and kept in localStorage. The engine keeps
+ * each id's data apart, and whoever knows the id can open that workspace. */
+export const workspaceId = () => {
+  try {
+    const saved = localStorage.getItem(WORKSPACE_KEY);
+    if (saved) return saved;
+    const id = crypto.randomUUID();
+    localStorage.setItem(WORKSPACE_KEY, id);
+    return id;
+  } catch {
+    // Storage blocked (e.g. some private windows): a workspace for this tab only.
+    memoryWorkspaceId ??= crypto.randomUUID();
+    return memoryWorkspaceId;
+  }
+};
+
 /** REST client for the engine. Every request carries the session token (see HANDOFF → Safety rails). */
 export const engine = axios.create();
 engine.interceptors.request.use((config) => {
   config.baseURL = `${engineUrl()}/api`;
   config.headers.set("X-Kestrel-Token", token());
+  config.headers.set("X-Kestrel-Workspace", workspaceId());
   return config;
 });
 
@@ -98,9 +118,9 @@ export const unconfirmedHost = (err: unknown): string | null => {
   return body?.code === "hostNotConfirmed" && body.host ? body.host : null;
 };
 
-/** `EventSource` can't send headers, so the SSE endpoint alone takes the token as a query param. */
+/** `EventSource` can't send headers, so the SSE endpoint takes the token and workspace as query params. */
 export const runEventsUrl = (runId: string) =>
-  `${engineUrl()}/api/runs/${runId}/events?token=${encodeURIComponent(token())}`;
+  `${engineUrl()}/api/runs/${runId}/events?token=${encodeURIComponent(token())}&workspace=${encodeURIComponent(workspaceId())}`;
 
 export const errorMessage = (err: unknown) => {
   if (axios.isAxiosError(err)) {

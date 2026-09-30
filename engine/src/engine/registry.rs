@@ -26,6 +26,8 @@ pub struct Envelope {
 
 pub struct Run {
     pub id: Uuid,
+    /// The workspace that started it. Only that workspace can see or stop it.
+    pub workspace: Uuid,
     pub config: RunConfig,
     pub started_at_ms: u64,
     pub cancel: CancellationToken,
@@ -50,10 +52,11 @@ pub struct Subscription {
 }
 
 impl Run {
-    fn new(config: RunConfig) -> Self {
+    fn new(workspace: Uuid, config: RunConfig) -> Self {
         let (tx, _) = broadcast::channel(BROADCAST_CAP);
         Self {
             id: Uuid::new_v4(),
+            workspace,
             config,
             started_at_ms: now_ms(),
             cancel: CancellationToken::new(),
@@ -143,19 +146,21 @@ pub struct RunRegistry {
 }
 
 impl RunRegistry {
-    pub fn create(&self, config: RunConfig) -> Arc<Run> {
-        let run = Arc::new(Run::new(config));
+    pub fn create(&self, workspace: Uuid, config: RunConfig) -> Arc<Run> {
+        let run = Arc::new(Run::new(workspace, config));
         self.runs.write().unwrap().insert(run.id, run.clone());
         run
     }
 
-    pub fn get(&self, id: Uuid) -> Option<Arc<Run>> {
-        self.runs.read().unwrap().get(&id).cloned()
+    /// Run `id`, if it belongs to `workspace`.
+    pub fn get(&self, workspace: Uuid, id: Uuid) -> Option<Arc<Run>> {
+        self.runs.read().unwrap().get(&id).filter(|r| r.workspace == workspace).cloned()
     }
 
-    /// Newest first.
-    pub fn list(&self) -> Vec<RunSummary> {
-        let mut runs: Vec<_> = self.runs.read().unwrap().values().map(|r| r.summary()).collect();
+    /// `workspace`'s runs, newest first.
+    pub fn list(&self, workspace: Uuid) -> Vec<RunSummary> {
+        let runs = self.runs.read().unwrap();
+        let mut runs: Vec<_> = runs.values().filter(|r| r.workspace == workspace).map(|r| r.summary()).collect();
         runs.sort_by_key(|r| std::cmp::Reverse(r.started_at_ms));
         runs
     }
@@ -179,7 +184,7 @@ mod tests {
     use crate::engine::types::{Bucket, FakeConfig};
 
     fn run() -> Run {
-        Run::new(RunConfig::Fake(FakeConfig { duration_ms: 1000 }))
+        Run::new(Uuid::new_v4(), RunConfig::Fake(FakeConfig { duration_ms: 1000 }))
     }
 
     fn bucket(t_ms: u32) -> RunEvent {

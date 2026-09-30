@@ -96,15 +96,22 @@ export const ResponseView = () => {
         )}
       </div>
       {tab === "body" && (
-        <pre className="bg-muted relative max-h-80 overflow-auto rounded-xs p-3 font-mono text-xs whitespace-pre-wrap select-text">
-          {result && result.body !== "" && (
-            <button className="fixed top-2 right-2" onClick={() => handleCopy(result.body)}>
+        // The copy button sits outside the scrolling <pre>, so it stays in the corner while the body scrolls.
+        <div className="relative">
+          <pre className="bg-muted max-h-80 overflow-auto rounded-xs p-3 pr-9 font-mono text-xs whitespace-pre-wrap select-text">
+            {formatBody(result.body)}
+            {result.bodyTruncated && <span className="text-muted-foreground">{"\n"}… truncated</span>}
+          </pre>
+          {result.body !== "" && (
+            <button
+              className="text-muted-foreground hover:text-primary absolute top-2 right-2"
+              aria-label="Copy body"
+              onClick={() => handleCopy(result.body)}
+            >
               <Copy className="size-4" />
             </button>
           )}
-          {formatBody(result.body)}
-          {result.bodyTruncated && <span className="text-muted-foreground">{"\n"}… truncated</span>}
-        </pre>
+        </div>
       )}
       {tab === "headers" && (
         <HeaderTable

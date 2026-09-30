@@ -41,9 +41,10 @@ async fn main() -> anyhow::Result<()> {
         );
     }
     let addr = SocketAddr::new(config.bind, config.port);
-    let store = model::store::WorkspaceStore::open(&config.workspace_dir)?;
-    tracing::info!("data: {}", config.workspace_dir.join(model::store::DB_FILE).display());
-    let app = api::router(api::AppState::new(config, store));
+    // One database per browser workspace, under `workspaces/`.
+    let data = config.workspace_dir.join("workspaces");
+    tracing::info!("data: {}", data.display());
+    let app = api::router(api::AppState::new(config, model::workspaces::Workspaces::new(data)));
     let listener = listen(addr)?;
     tracing::info!("engine listening on http://{addr} (UI at /, API at /api)");
 

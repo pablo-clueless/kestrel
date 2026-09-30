@@ -11,7 +11,7 @@ use serde::Deserialize;
 use tokio::sync::broadcast::error::RecvError;
 use uuid::Uuid;
 
-use super::AppState;
+use super::{AppState, Scope};
 use crate::{
     contract::{self, Contract},
     engine::{
@@ -25,18 +25,19 @@ use crate::{
 
 pub async fn start(
     State(state): State<AppState>,
+    scope: Scope,
     Json(config): Json<RunConfig>,
 ) -> Result<(StatusCode, Json<StartRunResponse>), ApiError> {
-    let prepared = prepare(&state, &config).await?;
-    let run = state.runs.create(config);
+    let prepared = prepare(&state, &scope, &config).await?;
+    let run = state.runs.create(scope.id, config);
     let run_id = run.id;
-    engine::spawn(&state.runs, &state.store, run, prepared);
+    engine::spawn(&state.runs, &scope.store, run, prepared);
     Ok((StatusCode::CREATED, Json(StartRunResponse { run_id })))
 }
 
 /// Validates the config against the caps and does everything that can fail before the run exists,
 /// so mistakes come back as a 400 with a message rather than as a failed run.
-async fn prepare(state: &AppState, config: &RunConfig) -> Result<Prepared, ApiError> {
+async fn prepare(state: &AppState, scope: &Scope, config: &RunConfig) -> Result<Prepared, ApiError> {
     let caps = &state.config.caps;
     let in_range = |name: &str, value: u32, lo: u32, hi: u32| {
         if (lo..=hi).contains(&value) {
@@ -59,10 +60,10 @@ async fn prepare(state: &AppState, config: &RunConfig) -> Result<Prepared, ApiEr
             in_range("samples", cfg.samples, 1, caps.max_samples)?;
             in_range("warmup", cfg.warmup, 0, caps.max_warmup)?;
             in_range("timeoutMs", cfg.timeout_ms, 1, max_timeout_ms)?;
-            let (request, contract) = compile_endpoint(state, cfg.endpoint_id, cfg.environment.as_deref())?;
+            let (request, contract) = compile_endpoint(scope, cfg.endpoint_id, cfg.environment.as_deref())?;
             let mut cfg = cfg.clone();
             cfg.ok_statuses.extend(contract::ok_statuses_from(contract.as_ref()));
-            let mut prepared = latency::prepare(cfg, request, caps.max_duration, state.store.confirmed_hosts())
+            let mut prepared = latency::prepare(cfg, request, caps.max_duration, scope.store.confirmed_hosts())
                 .await
                 .map_err(ApiError::BadRequest)?;
             prepared.contract = contract.map(Arc::new);
@@ -79,11 +80,11 @@ async fn prepare(state: &AppState, config: &RunConfig) -> Result<Prepared, ApiEr
             if let Some(n) = cfg.max_in_flight {
                 in_range("maxInFlight", n, 1, caps.max_in_flight)?;
             }
-            let (request, contract) = compile_endpoint(state, cfg.endpoint_id, cfg.environment.as_deref())?;
+            let (request, contract) = compile_endpoint(scope, cfg.endpoint_id, cfg.environment.as_deref())?;
             let mut cfg = cfg.clone();
             cfg.ok_statuses.extend(contract::ok_statuses_from(contract.as_ref()));
             let mut prepared =
-                load::prepare(cfg, request, &state.store.confirmed_hosts(), caps.max_in_flight, caps.max_rps)
+                load::prepare(cfg, request, &scope.store.confirmed_hosts(), caps.max_in_flight, caps.max_rps)
                     .await
                     .map_err(|e| match e {
                         load::PrepareError::Invalid(msg) => ApiError::BadRequest(msg),
@@ -101,9 +102,9 @@ async fn prepare(state: &AppState, config: &RunConfig) -> Result<Prepared, ApiEr
             in_range("timeoutMs", cfg.timeout_ms, 1, max_timeout_ms)?;
             in_range("slowMs", cfg.slow_ms, 1, max_timeout_ms)?;
             in_range("budgetMs", cfg.budget_ms, 1_000, caps.max_sweep_duration.as_millis() as u32)?;
-            let (request, _) = compile_endpoint(state, cfg.endpoint_id, cfg.environment.as_deref())?;
+            let (request, _) = compile_endpoint(scope, cfg.endpoint_id, cfg.environment.as_deref())?;
             let prepared =
-                complexity::prepare(cfg.clone(), request, caps.max_sweep_duration, state.store.confirmed_hosts())
+                complexity::prepare(cfg.clone(), request, caps.max_sweep_duration, scope.store.confirmed_hosts())
                     .await
                     .map_err(ApiError::BadRequest)?;
             Ok(Prepared::Complexity(Box::new(prepared)))
@@ -113,41 +114,46 @@ async fn prepare(state: &AppState, config: &RunConfig) -> Result<Prepared, ApiEr
 
 /// The request to send, and the contract to check responses against (for imported endpoints).
 fn compile_endpoint(
-    state: &AppState,
+    scope: &Scope,
     id: Uuid,
     environment: Option<&str>,
 ) -> Result<(CompiledRequest, Option<Contract>), ApiError> {
-    let workspace = state.store.workspace();
+    let store = &scope.store;
+    let workspace = store.workspace();
     let endpoint = workspace
         .endpoint(id)
         .ok_or_else(|| ApiError::BadRequest("endpoint not found; save the workspace first".into()))?;
     let request =
-        CompiledRequest::compile_with(endpoint, &workspace, &state.store.secrets(), &*state.store, environment, false)
+        CompiledRequest::compile_with(endpoint, &workspace, &store.secrets(), &**store, environment, false)
             .map_err(|e| ApiError::BadRequest(e.to_string()))?;
     let contract = contract::for_endpoint(&workspace, endpoint).map_err(ApiError::BadRequest)?;
     Ok((request, contract))
 }
 
 /// Runs in memory (in progress or recently finished) and saved ones, newest first.
-pub async fn list(State(state): State<AppState>) -> Result<Json<Vec<RunSummary>>, ApiError> {
-    let mut runs = state.runs.list();
+pub async fn list(State(state): State<AppState>, scope: Scope) -> Result<Json<Vec<RunSummary>>, ApiError> {
+    let mut runs = state.runs.list(scope.id);
     let live: HashSet<Uuid> = runs.iter().map(|r| r.run_id).collect();
-    let saved = state.store.runs().map_err(|e| ApiError::Internal(format!("{e:#}")))?;
+    let saved = scope.store.runs().map_err(|e| ApiError::Internal(format!("{e:#}")))?;
     runs.extend(saved.into_iter().filter(|r| !live.contains(&r.run_id)));
     runs.sort_by_key(|r| std::cmp::Reverse(r.started_at_ms));
     Ok(Json(runs))
 }
 
-pub async fn stop(State(state): State<AppState>, Path(id): Path<Uuid>) -> Result<StatusCode, ApiError> {
-    let run = state.runs.get(id).ok_or(ApiError::RunNotFound)?;
+pub async fn stop(State(state): State<AppState>, scope: Scope, Path(id): Path<Uuid>) -> Result<StatusCode, ApiError> {
+    let run = state.runs.get(scope.id, id).ok_or(ApiError::RunNotFound)?;
     run.cancel.cancel();
     Ok(StatusCode::ACCEPTED)
 }
 
-pub async fn report(State(state): State<AppState>, Path(id): Path<Uuid>) -> Result<Json<RunReport>, ApiError> {
-    let Some(run) = state.runs.get(id) else {
+pub async fn report(
+    State(state): State<AppState>,
+    scope: Scope,
+    Path(id): Path<Uuid>,
+) -> Result<Json<RunReport>, ApiError> {
+    let Some(run) = state.runs.get(scope.id, id) else {
         // Evicted from memory (or from before a restart): serve the saved report.
-        let saved = state.store.run_report(id).map_err(|e| ApiError::Internal(format!("{e:#}")))?;
+        let saved = scope.store.run_report(id).map_err(|e| ApiError::Internal(format!("{e:#}")))?;
         return saved.map(Json).ok_or(ApiError::RunNotFound);
     };
     if run.status() == RunStatus::Running {
@@ -167,11 +173,12 @@ pub struct EventsQuery {
 /// The stream ends after `Finished`.
 pub async fn events(
     State(state): State<AppState>,
+    scope: Scope,
     Path(id): Path<Uuid>,
     Query(query): Query<EventsQuery>,
     headers: HeaderMap,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiError> {
-    let run = state.runs.get(id).ok_or(ApiError::RunNotFound)?;
+    let run = state.runs.get(scope.id, id).ok_or(ApiError::RunNotFound)?;
     let after = headers.get("last-event-id").and_then(|v| v.to_str().ok()?.parse().ok()).or(query.last_event_id);
 
     let stream = async_stream::stream! {

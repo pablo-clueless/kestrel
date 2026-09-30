@@ -90,12 +90,17 @@ set an endpoint's body to `{{n:int_array}}`, for example on `/sort` or `/linear`
 | `KESTREL_TOKEN` | random per start | Required by every API call. The UI reads it at build time, so set it in `.env` |
 | `KESTREL_PORT` | `7070` | |
 | `KESTREL_BIND` | `127.0.0.1` | Loopback by default. Only change it on a private network (see Deploying) |
-| `KESTREL_WORKSPACE_DIR` | working directory | Where `kestrel.db` lives |
+| `KESTREL_WORKSPACE_DIR` | working directory | Where the `workspaces/` directory of databases lives |
 | `KESTREL_UI_ORIGINS` | `http://localhost:3000,http://127.0.0.1:3000` | Origins allowed to call the engine |
 | `TARGET_PORT` | `8089` | Reference server port |
 
-**Storage:** everything lives in one SQLite database, `kestrel.db` (plus its `-wal`/`-shm` files
-while the engine runs):
+**Workspaces:** each browser gets its own workspace. The UI makes up a random id on first load,
+keeps it in `localStorage` and sends it as `X-Kestrel-Workspace` with every call, so people sharing
+one engine don't see each other's requests, secrets or runs. There's no login: clearing site data
+starts a new, empty workspace, and anyone who learns an id can open that workspace.
+
+**Storage:** each workspace is one SQLite database, `workspaces/<id>/kestrel.db` (plus its
+`-wal`/`-shm` files while the engine runs):
 - collections, endpoints and environments;
 - secret values, which are never sent to the UI or included in reports;
 - files uploaded for multipart bodies;
@@ -107,7 +112,8 @@ A new database imports an existing `kestrel.json`, `kestrel.secrets.json` and `k
 once; after that those files aren't read and can be deleted.
 
 To back it up while the engine runs, copy it with SQLite rather than `cp`, so the copy is
-consistent: `sqlite3 kestrel.db ".backup kestrel-backup.db"`.
+consistent: `sqlite3 workspaces/<id>/kestrel.db ".backup kestrel-backup.db"`. A `kestrel.db` from
+before workspaces, directly in `KESTREL_WORKSPACE_DIR`, is no longer read.
 
 ## Safety
 
