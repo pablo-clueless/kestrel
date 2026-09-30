@@ -86,7 +86,13 @@ impl Config {
         // Extra `Host` values to accept, e.g. `localhost:8000` behind `fly proxy 8000:7070`, or the
         // hostname a platform serves the app on.
         if let Ok(hosts) = std::env::var("KESTREL_ALLOWED_HOSTS") {
-            for host in hosts.split(',').map(str::trim).filter(|h| !h.is_empty()) {
+            // Tolerate pasted URLs (`https://host/`): the `Host` header never carries a scheme.
+            let hosts = hosts.split(',').map(|h| {
+                let h = h.trim();
+                let h = h.strip_prefix("https://").or_else(|| h.strip_prefix("http://")).unwrap_or(h);
+                h.trim_end_matches('/')
+            });
+            for host in hosts.filter(|h| !h.is_empty()) {
                 config.allow_host(host);
             }
         }

@@ -98,7 +98,7 @@ export const ResponseView = () => {
       {tab === "body" && (
         <pre className="bg-muted relative max-h-80 overflow-auto rounded-xs p-3 font-mono text-xs whitespace-pre-wrap select-text">
           {result && result.body !== "" && (
-            <button className="absolute top-2 right-2" onClick={() => handleCopy(result.body)}>
+            <button className="fixed top-2 right-2" onClick={() => handleCopy(result.body)}>
               <Copy className="size-4" />
             </button>
           )}
