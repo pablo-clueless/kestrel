@@ -5,6 +5,7 @@ mod contract;
 mod db;
 mod engine;
 mod error;
+mod export;
 mod extract;
 mod import;
 mod model;

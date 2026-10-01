@@ -3,8 +3,11 @@ use std::{collections::HashSet, convert::Infallible, sync::Arc};
 use axum::{
     Json,
     extract::{Path, Query, State},
-    http::{HeaderMap, StatusCode},
-    response::sse::{Event, KeepAlive, Sse},
+    http::{HeaderMap, StatusCode, header},
+    response::{
+        IntoResponse, Response,
+        sse::{Event, KeepAlive, Sse},
+    },
 };
 use futures::Stream;
 use serde::Deserialize;
@@ -17,9 +20,10 @@ use crate::{
     engine::{
         self, Prepared, complexity, latency, load,
         registry::Envelope,
-        types::{LoadMode, RunConfig, RunEvent, RunReport, RunStatus, RunSummary, StartRunResponse},
+        types::{LoadMode, RunConfig, RunEvent, RunStatus, RunSummary, StartRunResponse},
     },
     error::ApiError,
+    export,
     template::request::CompiledRequest,
 };
 
@@ -146,20 +150,41 @@ pub async fn stop(State(state): State<AppState>, scope: Scope, Path(id): Path<Uu
     Ok(StatusCode::ACCEPTED)
 }
 
+#[derive(Deserialize)]
+pub struct ReportQuery {
+    /// `json` (default) or `csv` (see `export`).
+    format: Option<String>,
+}
+
 pub async fn report(
     State(state): State<AppState>,
     scope: Scope,
     Path(id): Path<Uuid>,
-) -> Result<Json<RunReport>, ApiError> {
-    let Some(run) = state.runs.get(scope.id, id) else {
+    Query(query): Query<ReportQuery>,
+) -> Result<Response, ApiError> {
+    let report = match state.runs.get(scope.id, id) {
+        Some(run) if run.status() == RunStatus::Running => return Err(ApiError::Conflict("run is still in progress")),
+        Some(run) => run.report().ok_or(ApiError::Conflict("report not available yet"))?,
         // Evicted from memory (or from before a restart): serve the saved report.
-        let saved = scope.store.run_report(id).await.map_err(|e| ApiError::Internal(format!("{e:#}")))?;
-        return saved.map(Json).ok_or(ApiError::RunNotFound);
+        None => scope
+            .store
+            .run_report(id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("{e:#}")))?
+            .ok_or(ApiError::RunNotFound)?,
     };
-    if run.status() == RunStatus::Running {
-        return Err(ApiError::Conflict("run is still in progress"));
+    match query.format.as_deref() {
+        None | Some("json") => Ok(Json(report).into_response()),
+        Some("csv") => {
+            let disposition = format!("attachment; filename=\"{}\"", export::file_name(&report, "csv"));
+            let headers = [
+                (header::CONTENT_TYPE, "text/csv; charset=utf-8".to_owned()),
+                (header::CONTENT_DISPOSITION, disposition),
+            ];
+            Ok((headers, export::csv(&report)).into_response())
+        }
+        Some(_) => Err(ApiError::BadRequest("format must be json or csv".into())),
     }
-    run.report().map(Json).ok_or(ApiError::Conflict("report not available yet"))
 }
 
 #[derive(Deserialize)]

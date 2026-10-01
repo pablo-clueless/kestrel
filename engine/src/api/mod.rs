@@ -731,11 +731,26 @@ mod tests {
         let tail = String::from_utf8(body.to_bytes().to_vec()).unwrap();
         assert_eq!(tail.lines().filter(|l| l.starts_with("data: ")).count(), 1);
 
-        let res = app.oneshot(get(&format!("/api/runs/{run_id}/report")).body(Body::empty()).unwrap()).await.unwrap();
+        let res =
+            app.clone().oneshot(get(&format!("/api/runs/{run_id}/report")).body(Body::empty()).unwrap()).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
         let report: RunReport = json_body(res).await;
         assert_eq!(report.status, RunStatus::Completed);
         assert!(report.total_requests > 0);
+
+        // M5: the same report as a CSV download.
+        let csv =
+            app.clone().oneshot(get(&format!("/api/runs/{run_id}/report?format=csv")).body(Body::empty()).unwrap());
+        let csv = csv.await.unwrap();
+        assert_eq!(csv.status(), StatusCode::OK);
+        assert_eq!(csv.headers()[header::CONTENT_TYPE], "text/csv; charset=utf-8");
+        let disposition = csv.headers()[header::CONTENT_DISPOSITION].to_str().unwrap().to_owned();
+        assert!(disposition.starts_with("attachment; filename=\"kestrel-fake-"), "{disposition}");
+        let body = String::from_utf8(csv.into_body().collect().await.unwrap().to_bytes().to_vec()).unwrap();
+        assert!(body.starts_with("t_ms,requests,errors,rps,"), "{body}");
+        assert_eq!(body.lines().count(), report.timeline.len() + 1, "a header and one row per window");
+        let bad = get(&format!("/api/runs/{run_id}/report?format=xml")).body(Body::empty()).unwrap();
+        assert_eq!(status(&app, bad).await, StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
