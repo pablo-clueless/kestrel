@@ -12,6 +12,10 @@ No version has been tagged yet (engine and UI are both `0.1.0`), so the entries 
 
 ### Added
 
+- **Configurable caps:** `KESTREL_MAX_RPS`, `KESTREL_MAX_DURATION_S`, `KESTREL_MAX_IN_FLIGHT`,
+  `KESTREL_MAX_TIMEOUT_S`, `KESTREL_MAX_SWEEP_S` and more raise or lower the safety limits (e.g.
+  for soak tests). Out-of-range values stop the engine at startup; the API still can't change them.
+
 - **Report export:** the Results card has **JSON** (the full report, secrets already redacted) and
   **CSV** buttons. The CSV holds one row per 250 ms window (requests, errors, rps, p50/p99, dropped,
   in flight, scheduler lag), or one row per input size for Big-O runs. The API is
