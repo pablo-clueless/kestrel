@@ -223,7 +223,7 @@ const ContractSection = ({ contract }: { contract: ContractSummary }) => {
 
 const Notes = ({ notes }: { notes: string[] }) =>
   notes.length > 0 ? (
-    <ul className="bg-muted text-muted-foreground flex flex-col gap-1.5 rounded-lg p-3 text-xs">
+    <ul className="bg-muted text-muted-foreground flex flex-col gap-1.5 p-3 text-xs">
       {notes.map((n) => (
         <li key={n}>{n}</li>
       ))}

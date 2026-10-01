@@ -1,19 +1,26 @@
 "use client";
 
+import { useMemo, useState } from "react";
 import { Settings } from "lucide-react";
-import { useState } from "react";
 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "../ui/sheet";
 import { useWorkspaceStore } from "@/stores/workspace-store";
 import { EnvironmentEditor } from "./environment-editor";
+import { Environment } from "@/types/engine/Environment";
 import { Button } from "@/components/ui/button";
+
+const DEFAULT_ENVS: Environment[] = [{ name: "No Environment", vars: {} }];
 
 /** Header: active environment picker, plus a slide-over to edit environments and secrets. */
 export const EnvironmentBar = () => {
   const { workspace, setActiveEnvironment } = useWorkspaceStore();
   const [open, setOpen] = useState(false);
-  const envs = workspace?.environments ?? [];
+  const envs = useMemo(() => {
+    if (!workspace) return [...DEFAULT_ENVS];
+    if (!workspace.environments) return [...DEFAULT_ENVS];
+    return [...DEFAULT_ENVS, ...workspace.environments];
+  }, [workspace]);
 
   return (
     <div className="flex items-center gap-2">

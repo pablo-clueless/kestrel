@@ -20,6 +20,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { KeyValueEditor } from "./key-value-editor";
 import { useSendEntry, useSendStore } from "@/stores/send-store";
 import { ExtractEditor } from "./extract-editor";
+import { JsonEditor } from "./json-editor";
 import { GroupPicker } from "./group-picker";
 import type { Auth } from "@/types/engine/Auth";
 import { Button } from "@/components/ui/button";
@@ -251,11 +252,18 @@ const BodyEditor = ({ body, onChange }: { body: Body; onChange: (b: Body) => voi
         </Select>
       )}
     </div>
-    {(body.type === "json" || body.type === "raw") && (
+    {body.type === "json" && (
+      <JsonEditor
+        className={XS}
+        value={body.content}
+        placeholder='{ "id": {{seq}} }'
+        onChange={(content) => onChange({ ...body, content })}
+      />
+    )}
+    {body.type === "raw" && (
       <Textarea
         className={cn("font-mono", XS)}
         value={body.content}
-        placeholder={body.type === "json" ? '{ "id": {{seq}} }' : ""}
         onChange={(e) => onChange({ ...body, content: e.target.value })}
       />
     )}

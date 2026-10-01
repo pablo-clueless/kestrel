@@ -97,6 +97,12 @@ set an endpoint's body to `{{n:int_array}}`, for example on `/sort` or `/linear`
 | `KESTREL_AUTH` | `off` | `on` requires signing in, and each account gets its own workspace. See Accounts below |
 | `KESTREL_SIGNUP` | `open` | `closed` hides sign-up; create accounts with `engine user add <email>` |
 | `KESTREL_TRUSTED_PROXY` | `0` | `1` only behind a proxy that sets `Fly-Client-IP` / `X-Forwarded-For` / `X-Forwarded-Proto`: used for per-IP sign-in limits and `Secure` cookies |
+| `KESTREL_SMTP_HOST` | – (email off) | SMTP server for verification and password-reset emails. Unset turns both off |
+| `KESTREL_SMTP_PORT` | `587` | `465` means TLS from the start; other ports upgrade with STARTTLS |
+| `KESTREL_SMTP_TLS` | by port | `tls`, `starttls`, or `none` (only for a local catcher like Mailpit) |
+| `KESTREL_SMTP_USERNAME`, `KESTREL_SMTP_PASSWORD` | – | Set both or neither |
+| `KESTREL_SMTP_FROM` | – (required with a host) | Sender, e.g. `Kestrel <no-reply@example.com>` |
+| `KESTREL_PUBLIC_URL` | the page that asked | Where links in emails point, e.g. `https://kestrel.example.com` |
 | `KESTREL_TOKEN` | random per start | Required by every API call. The UI reads it at build time, so set it in `.env` |
 | `KESTREL_PORT` | `7070` | |
 | `KESTREL_BIND` | `127.0.0.1` | Loopback by default. Only change it on a private network (see Deploying) |
@@ -128,7 +134,10 @@ signing up isn't lost.
   could create an account and use your engine to send load.
 - **Profile → Security** changes the password (which signs out every other device) and lists where
   the account is signed in, with a Sign out for each. Expired sessions are cleaned up daily.
-  Email verification and password reset by email arrive later (see `HANDOFF.md` → Accounts).
+- **Email** (`KESTREL_SMTP_*`): new accounts get a link to confirm their address (Profile → Account
+  can send it again), and the sign-in page gets **Forgot password?**. Reset links work once, for 30
+  minutes, and setting the new password signs the account out everywhere. Asking for a reset says
+  the same thing whether or not the address has an account. Without SMTP both features are hidden.
 - In `pnpm dev`, open the UI on `localhost:3000`, not `127.0.0.1:3000`: the cookie only crosses
   between the UI and the engine when both are on the same hostname.
 

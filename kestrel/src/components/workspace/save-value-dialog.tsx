@@ -3,14 +3,14 @@
 import { useId, useMemo } from "react";
 import { toast } from "sonner";
 
-import { leafPaths, previewPick, REDACTED, suggestName } from "@/lib/extract";
 import { useSelectedEndpoint, useWorkspaceStore } from "@/stores/workspace-store";
+import { leafPaths, previewPick, REDACTED, suggestName } from "@/lib/extract";
 import type { ExtractSource } from "@/types/engine/ExtractSource";
 import type { ExtractTarget } from "@/types/engine/ExtractTarget";
 import type { Sample } from "@/types/engine/Sample";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { useValues } from "@/hooks/use-values";
+import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { Label } from "./fields";
 import {
@@ -45,7 +45,7 @@ export const SaveValueDialog = ({
   onClose: () => void;
 }) => (
   <Dialog open={seed !== null} onOpenChange={(open) => !open && onClose()}>
-    <DialogContent>
+    <DialogContent className="sm:max-w-150">
       <DialogHeader>
         <DialogTitle>Save value from response</DialogTitle>
         <DialogDescription>
@@ -167,6 +167,9 @@ const SaveValueForm = ({
                   list={source === "body" ? listId : `${listId}-h`}
                   onChange={(e) => setPath(e.target.value)}
                   autoFocus
+                  autoComplete="off"
+                  autoCorrect="off"
+                  spellCheck="false"
                 />
                 <datalist id={listId}>
                   {paths.map((p) => (
@@ -181,19 +184,17 @@ const SaveValueForm = ({
               </>
             )}
           </div>
-
           <Label>Value</Label>
-          <p
+          <pre
             className={cn(
-              "bg-muted max-h-24 overflow-auto rounded-xs px-2 py-1.5 font-mono text-xs break-all",
+              "bg-muted max-h-40 min-h-0 overflow-auto overflow-y-auto rounded-xs px-2 py-1.5 font-mono text-xs break-all",
               value === null && "text-destructive",
             )}
           >
             {"error" in picked
               ? picked.error
               : value || <span className="text-muted-foreground">(empty)</span>}
-          </p>
-
+          </pre>
           <Label>Save as</Label>
           <div className="flex gap-1.5">
             <Select value={target} onValueChange={(v) => set("target", v as ExtractTarget)}>
