@@ -13,8 +13,8 @@
   -webkit-text-size-adjust: 100%;
 
   /* typefaces */
-  --font-space: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
-  --font-fira: "Fira Code", monospace;
+  --font-dm-sans: "DM Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-jetbrains-mono: "JetBrains Mono", monospace;
   --font-bricolage: "Bricolage Grotesque", sans-serif;
 
   /* colors */
@@ -38,7 +38,7 @@
 
   /* Semantic tokens (the shadcn contract used by components/ui). Light canvas, white cards,
      hairline borders, orange primary. */
-  --background: #f6f6f7;
+  --background: var(--color-muted);
   --foreground: var(--text-black);
   --card: #ffffff;
   --card-foreground: var(--text-black);
@@ -105,13 +105,13 @@
   --container-center: true;
 
   /* Typefaces - Overriding Tailwind defaults */
-  --font-sans: var(--font-space-grotesk);
-  --font-mono: var(--font-space-mono);
+  --font-sans: var(--font-dm-sans);
+  --font-mono: var(--font-jetbrains-mono);
 
   /* Custom Font Aliases for backward compatibility */
-  --font-heading: var(--font-space-grotesk);
-  --font-body: var(--font-space-grotesk);
-  --font-monospace: var(--font-space-mono);
+  --font-heading: var(--font-dm-sans);
+  --font-body: var(--font-dm-sans);
+  --font-monospace: var(--font-jetbrains-mono);
 
   /* Colors */
   --color-background: var(--background);
