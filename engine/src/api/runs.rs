@@ -123,9 +123,8 @@ fn compile_endpoint(
     let endpoint = workspace
         .endpoint(id)
         .ok_or_else(|| ApiError::BadRequest("endpoint not found; save the workspace first".into()))?;
-    let request =
-        CompiledRequest::compile_with(endpoint, &workspace, &store.secrets(), &**store, environment, false)
-            .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    let request = CompiledRequest::compile_with(endpoint, &workspace, &store.secrets(), &**store, environment, false)
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
     let contract = contract::for_endpoint(&workspace, endpoint).map_err(ApiError::BadRequest)?;
     Ok((request, contract))
 }
