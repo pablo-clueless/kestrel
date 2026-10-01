@@ -429,11 +429,11 @@ mod tests {
 
     #[test]
     fn multipart_file_parts() {
-        use crate::model::{FileRef, store::WorkspaceStore};
+        use crate::model::{FileRef, store::Files};
         let (ws, secrets) = workspace();
-        let store = WorkspaceStore::in_memory(Workspace::default(), Secrets::default());
         let png = Bytes::from_static(b"\x89PNG\r\n\x00\xff");
-        let id = store.save_file(png.clone()).unwrap();
+        let id = uuid::Uuid::new_v4();
+        let store: Files = [(id, png.clone())].into_iter().collect();
         let file = FileRef { id, name: "cat \"1\".png".into(), content_type: "image/png".into(), size: 8 };
 
         let mut ep = endpoint("{{base}}/", Auth::None);
@@ -479,6 +479,7 @@ mod tests {
             id: uuid::Uuid::new_v4(),
             name: "api".into(),
             source: None,
+            groups: Vec::new(),
             schema_defs: None,
             vars: BTreeMap::from([
                 ("base".into(), "http://collection-default".into()),

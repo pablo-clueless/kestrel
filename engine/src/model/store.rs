@@ -1,80 +1,44 @@
-//! Everything the engine keeps lives in one SQLite database, `kestrel.db`: the workspace, secrets,
-//! uploaded files, finished run reports and confirmed hosts. One file on one volume, so a container
-//! only needs `/data` mounted.
+//! One workspace's data: the workspace itself, secrets, uploaded files, finished run reports and
+//! confirmed hosts. It lives in the workspace's own Postgres schema (see `db`), and every query
+//! here runs in a transaction pinned to that schema.
 //!
-//! The workspace and secrets are also cached in memory: requests compile against them on every
-//! send, and reads never touch the database. Writes go to the database first and update the cache
-//! only once committed, so a failed write leaves both as they were.
-//!
-//! A fresh database imports the older file layout (`kestrel.json`, `kestrel.secrets.json`,
-//! `kestrel-files/`) once. Those files are left in place but no longer read.
+//! The workspace, secrets and confirmed hosts are also cached in memory: requests compile against
+//! them on every send, so reads never touch the database. Writes are serialised per workspace, go
+//! to the database first, and update the cache only once committed, so a failed write leaves both
+//! as they were.
 
 use std::{
-    collections::{BTreeMap, BTreeSet, HashSet},
-    fs,
-    path::{Path, PathBuf},
-    sync::{Mutex, RwLock},
-    time::Duration,
+    collections::{BTreeMap, BTreeSet, HashMap},
+    sync::{Arc, RwLock},
 };
 
 use anyhow::Context;
 use bytes::Bytes;
-use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
-use super::{Secrets, Workspace};
-use crate::engine::{
-    registry::now_ms,
-    types::{RunReport, RunSummary},
+use super::{Body, Endpoint, Environment, FieldKind, Secrets, Workspace};
+use crate::{
+    db::Db,
+    engine::types::{RunReport, RunSummary},
 };
-
-pub const DB_FILE: &str = "kestrel.db";
-/// Legacy files, imported into a fresh database.
-pub const WORKSPACE_FILE: &str = "kestrel.json";
-pub const SECRETS_FILE: &str = "kestrel.secrets.json";
-pub const FILES_DIR: &str = "kestrel-files";
 
 /// Finished runs kept; older ones are pruned as new ones are saved.
 const RUN_HISTORY: i64 = 500;
 
-/// Bump with a new entry in [`MIGRATIONS`]; never edit a shipped one.
-const MIGRATIONS: &[&str] = &[
-    // 1: initial schema.
-    r#"
-    -- Workspace fields other than collections and environments, as one JSON object.
-    CREATE TABLE workspace_meta (id INTEGER PRIMARY KEY CHECK (id = 1), doc TEXT NOT NULL);
-    CREATE TABLE collections (id TEXT PRIMARY KEY, position INTEGER NOT NULL, doc TEXT NOT NULL);
-    CREATE TABLE environments (name TEXT PRIMARY KEY, position INTEGER NOT NULL, vars TEXT NOT NULL);
-    CREATE TABLE secrets (
-        environment TEXT NOT NULL,
-        key TEXT NOT NULL,
-        value TEXT NOT NULL,
-        PRIMARY KEY (environment, key)
-    );
-    CREATE TABLE files (id TEXT PRIMARY KEY, bytes BLOB NOT NULL, created_at_ms INTEGER NOT NULL);
-    CREATE TABLE runs (
-        id TEXT PRIMARY KEY,
-        kind TEXT NOT NULL,
-        status TEXT NOT NULL,
-        started_at_ms INTEGER NOT NULL,
-        finished_at_ms INTEGER NOT NULL,
-        report TEXT NOT NULL
-    );
-    CREATE INDEX runs_by_start ON runs (started_at_ms DESC);
-    CREATE TABLE confirmed_hosts (host TEXT PRIMARY KEY, confirmed_at_ms INTEGER NOT NULL);
-    "#,
-    // 2: a list-sized summary per run, so listing doesn't parse every report. Backfilled in Rust.
-    "ALTER TABLE runs ADD COLUMN summary TEXT;",
-];
-
 pub struct WorkspaceStore {
-    db: Mutex<Connection>,
+    id: Uuid,
+    schema: String,
+    db: Arc<Db>,
+    /// Held across a write's database round trip, which a `std` lock can't be.
+    write: tokio::sync::Mutex<()>,
     workspace: RwLock<Workspace>,
     secrets: RwLock<Secrets>,
     hosts: RwLock<BTreeSet<String>>,
 }
 
-/// Where compiled requests read uploaded files from.
+/// Where compiled requests read uploaded files from. Compiling is synchronous, so files are
+/// fetched beforehand ([`WorkspaceStore::files_for`]) and handed over as [`Files`].
 pub trait FileSource {
     fn read_file(&self, id: Uuid) -> anyhow::Result<Bytes>;
 }
@@ -90,76 +54,66 @@ impl FileSource for NoFiles {
     }
 }
 
-impl FileSource for WorkspaceStore {
+/// An endpoint's uploaded files, fetched ahead of compiling it.
+#[derive(Default)]
+pub struct Files(HashMap<Uuid, Bytes>);
+
+impl FileSource for Files {
     fn read_file(&self, id: Uuid) -> anyhow::Result<Bytes> {
-        let db = self.db.lock().unwrap();
-        let bytes: Option<Vec<u8>> =
-            db.query_row("SELECT bytes FROM files WHERE id = ?1", [id.to_string()], |r| r.get(0)).optional()?;
-        bytes.map(Bytes::from).with_context(|| format!("file {id} not found"))
+        self.0.get(&id).cloned().with_context(|| format!("file {id} not found"))
+    }
+}
+
+impl FromIterator<(Uuid, Bytes)> for Files {
+    fn from_iter<I: IntoIterator<Item = (Uuid, Bytes)>>(iter: I) -> Self {
+        Self(iter.into_iter().collect())
     }
 }
 
 impl WorkspaceStore {
-    /// Opens (or creates) `kestrel.db` in `dir`, migrating it to the current schema.
-    pub fn open(dir: impl Into<PathBuf>) -> anyhow::Result<Self> {
-        let dir = dir.into();
-        fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-        let path = dir.join(DB_FILE);
-        let mut conn = Connection::open(&path).with_context(|| format!("opening {}", path.display()))?;
-        // WAL: reads don't block the writer. NORMAL is durable across app crashes, and loses at most
-        // the last commit on power loss.
-        conn.pragma_update(None, "journal_mode", "WAL")?;
-        conn.pragma_update(None, "synchronous", "NORMAL")?;
-        conn.busy_timeout(Duration::from_secs(5))?;
-        migrate(&mut conn, Some(&dir))?;
-        ensure_ignored(&dir);
-        Self::load(conn)
-    }
+    /// Opens workspace `id`, creating and migrating its schema if needed, and loads the cache.
+    pub async fn open(db: Arc<Db>, id: Uuid) -> anyhow::Result<Self> {
+        let schema = db.ensure_workspace(id).await?;
+        let mut tx = db.pinned(&schema).await?;
+        let workspace = read_workspace(&mut tx).await?;
 
-    /// A store in an in-memory database, for tests.
-    #[cfg(test)]
-    pub fn in_memory(workspace: Workspace, secrets: Secrets) -> Self {
-        let mut conn = Connection::open_in_memory().unwrap();
-        migrate(&mut conn, None).unwrap();
-        let store = Self::load(conn).unwrap();
-        store.save_workspace(workspace).unwrap();
-        for (env, kv) in secrets {
-            for (key, value) in kv {
-                store.set_secret(&env, &key, Some(value)).unwrap();
-            }
-        }
-        store
-    }
-
-    fn load(conn: Connection) -> anyhow::Result<Self> {
-        let workspace = read_workspace(&conn)?;
         let mut secrets = Secrets::new();
-        {
-            let mut stmt = conn.prepare("SELECT environment, key, value FROM secrets")?;
-            let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get(2)?)))?;
-            for row in rows {
-                let (env, key, value) = row?;
-                secrets.entry(env).or_default().insert(key, value);
-            }
+        let rows: Vec<(String, String, Vec<u8>)> =
+            sqlx::query_as("SELECT environment, key, value FROM secrets").fetch_all(&mut *tx).await?;
+        for (env, key, sealed) in rows {
+            let value = db.cipher.decrypt(id, &env, &key, &sealed)?;
+            secrets.entry(env).or_default().insert(key, value);
         }
-        let hosts =
-            conn.prepare("SELECT host FROM confirmed_hosts")?.query_map([], |r| r.get(0))?.collect::<Result<_, _>>()?;
+
+        let hosts: Vec<String> = sqlx::query_scalar("SELECT host FROM confirmed_hosts").fetch_all(&mut *tx).await?;
+        tx.commit().await?;
         Ok(Self {
-            db: Mutex::new(conn),
+            id,
+            schema,
+            db,
+            write: tokio::sync::Mutex::new(()),
             workspace: RwLock::new(workspace),
             secrets: RwLock::new(secrets),
-            hosts: RwLock::new(hosts),
+            hosts: RwLock::new(hosts.into_iter().collect()),
         })
     }
 
-    /// Stores an uploaded file and returns its id.
-    pub fn save_file(&self, bytes: Bytes) -> anyhow::Result<Uuid> {
-        let id = Uuid::new_v4();
-        self.db.lock().unwrap().execute(
-            "INSERT INTO files (id, bytes, created_at_ms) VALUES (?1, ?2, ?3)",
-            params![id.to_string(), &bytes[..], now_ms() as i64],
-        )?;
-        Ok(id)
+    /// A store that was never loaded, for tests that only need the type.
+    #[cfg(test)]
+    pub fn empty_for_tests(db: Arc<Db>) -> Self {
+        Self {
+            id: Uuid::nil(),
+            schema: String::new(),
+            db,
+            write: tokio::sync::Mutex::new(()),
+            workspace: RwLock::default(),
+            secrets: RwLock::default(),
+            hosts: RwLock::default(),
+        }
+    }
+
+    async fn tx(&self) -> anyhow::Result<Transaction<'static, Postgres>> {
+        self.db.pinned(&self.schema).await
     }
 
     pub fn workspace(&self) -> Workspace {
@@ -175,244 +129,212 @@ impl WorkspaceStore {
         secrets.iter().map(|(env, kv)| (env.clone(), kv.keys().cloned().collect())).collect()
     }
 
-    /// Replaces the workspace. Only collections and environments whose content changed are
-    /// rewritten; removed ones are deleted.
-    pub fn save_workspace(&self, workspace: Workspace) -> anyhow::Result<()> {
-        let mut guard = self.workspace.write().unwrap();
-        let mut db = self.db.lock().unwrap();
-        let tx = db.transaction()?;
-        write_workspace(&tx, &workspace)?;
-        tx.commit()?;
-        *guard = workspace;
-        Ok(())
-    }
-
-    pub fn set_secret(&self, environment: &str, key: &str, value: Option<String>) -> anyhow::Result<()> {
-        let mut guard = self.secrets.write().unwrap();
-        let db = self.db.lock().unwrap();
-        match &value {
-            Some(v) => db.execute(
-                "INSERT INTO secrets (environment, key, value) VALUES (?1, ?2, ?3)
-                 ON CONFLICT (environment, key) DO UPDATE SET value = excluded.value",
-                params![environment, key, v],
-            )?,
-            None => db.execute("DELETE FROM secrets WHERE environment = ?1 AND key = ?2", params![environment, key])?,
-        };
-        match value {
-            Some(v) => {
-                guard.entry(environment.to_owned()).or_default().insert(key.to_owned(), v);
-            }
-            None => {
-                if let Some(env) = guard.get_mut(environment) {
-                    env.remove(key);
-                }
-                guard.retain(|_, kv| !kv.is_empty());
-            }
-        }
-        Ok(())
-    }
-
     /// Hosts the user confirmed they may load test.
     pub fn confirmed_hosts(&self) -> Vec<String> {
         self.hosts.read().unwrap().iter().cloned().collect()
     }
 
-    pub fn confirm_host(&self, host: &str) -> anyhow::Result<()> {
-        let mut guard = self.hosts.write().unwrap();
-        self.db.lock().unwrap().execute(
-            "INSERT INTO confirmed_hosts (host, confirmed_at_ms) VALUES (?1, ?2) ON CONFLICT (host) DO NOTHING",
-            params![host, now_ms() as i64],
-        )?;
-        guard.insert(host.to_owned());
+    /// Replaces the workspace. Only collections and environments whose content changed are
+    /// rewritten; removed ones are deleted.
+    pub async fn save_workspace(&self, workspace: Workspace) -> anyhow::Result<()> {
+        let _write = self.write.lock().await;
+        let mut tx = self.tx().await?;
+        write_workspace(&mut tx, &workspace).await?;
+        tx.commit().await?;
+        *self.workspace.write().unwrap() = workspace;
         Ok(())
     }
 
+    pub async fn set_secret(&self, environment: &str, key: &str, value: Option<String>) -> anyhow::Result<()> {
+        let _write = self.write.lock().await;
+        let mut tx = self.tx().await?;
+        match &value {
+            Some(v) => {
+                let sealed = self.db.cipher.encrypt(self.id, environment, key, v)?;
+                sqlx::query(
+                    "INSERT INTO secrets (environment, key, value) VALUES ($1, $2, $3)
+                     ON CONFLICT (environment, key) DO UPDATE SET value = excluded.value",
+                )
+                .bind(environment)
+                .bind(key)
+                .bind(sealed)
+                .execute(&mut *tx)
+                .await?;
+            }
+            None => {
+                sqlx::query("DELETE FROM secrets WHERE environment = $1 AND key = $2")
+                    .bind(environment)
+                    .bind(key)
+                    .execute(&mut *tx)
+                    .await?;
+            }
+        }
+        tx.commit().await?;
+
+        let mut cache = self.secrets.write().unwrap();
+        match value {
+            Some(v) => {
+                cache.entry(environment.to_owned()).or_default().insert(key.to_owned(), v);
+            }
+            None => {
+                if let Some(env) = cache.get_mut(environment) {
+                    env.remove(key);
+                }
+                cache.retain(|_, kv| !kv.is_empty());
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn confirm_host(&self, host: &str) -> anyhow::Result<()> {
+        let _write = self.write.lock().await;
+        let mut tx = self.tx().await?;
+        sqlx::query("INSERT INTO confirmed_hosts (host) VALUES ($1) ON CONFLICT (host) DO NOTHING")
+            .bind(host)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        self.hosts.write().unwrap().insert(host.to_owned());
+        Ok(())
+    }
+
+    /// Stores an uploaded file and returns its id.
+    pub async fn save_file(&self, bytes: Bytes) -> anyhow::Result<Uuid> {
+        let id = Uuid::new_v4();
+        let mut tx = self.tx().await?;
+        sqlx::query("INSERT INTO files (id, bytes) VALUES ($1, $2)")
+            .bind(id)
+            .bind(&bytes[..])
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(id)
+    }
+
+    /// The uploaded files `endpoint`'s multipart body references. Missing ones are left out, so
+    /// compiling reports them by name.
+    pub async fn files_for(&self, endpoint: &Endpoint) -> anyhow::Result<Files> {
+        let Body::Multipart { fields } = &endpoint.body else { return Ok(Files::default()) };
+        let ids: Vec<Uuid> = fields
+            .iter()
+            .filter(|f| f.enabled && f.kind == FieldKind::File)
+            .filter_map(|f| f.file.as_ref().map(|file| file.id))
+            .collect();
+        if ids.is_empty() {
+            return Ok(Files::default());
+        }
+        let mut tx = self.tx().await?;
+        let rows: Vec<(Uuid, Vec<u8>)> =
+            sqlx::query_as("SELECT id, bytes FROM files WHERE id = ANY($1)").bind(&ids).fetch_all(&mut *tx).await?;
+        tx.commit().await?;
+        Ok(Files(rows.into_iter().map(|(id, bytes)| (id, Bytes::from(bytes))).collect()))
+    }
+
     /// Keeps a finished run's report, pruning the oldest beyond the history limit.
-    pub fn save_run(&self, report: &RunReport) -> anyhow::Result<()> {
-        let mut db = self.db.lock().unwrap();
-        let tx = db.transaction()?;
-        tx.execute(
-            "INSERT OR REPLACE INTO runs (id, kind, status, started_at_ms, finished_at_ms, report, summary)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![
-                report.run_id.to_string(),
-                enum_str(&report.config.kind())?,
-                enum_str(&report.status)?,
-                report.started_at_ms as i64,
-                report.finished_at_ms as i64,
-                serde_json::to_string(report)?,
-                serde_json::to_string(&RunSummary::of_report(report))?,
-            ],
-        )?;
-        tx.execute(
-            "DELETE FROM runs WHERE id NOT IN (SELECT id FROM runs ORDER BY started_at_ms DESC LIMIT ?1)",
-            [RUN_HISTORY],
-        )?;
-        tx.commit()?;
+    pub async fn save_run(&self, report: &RunReport) -> anyhow::Result<()> {
+        let mut tx = self.tx().await?;
+        sqlx::query(
+            "INSERT INTO runs (id, kind, status, started_at_ms, finished_at_ms, report, summary)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
+             ON CONFLICT (id) DO UPDATE SET kind = excluded.kind, status = excluded.status,
+                 started_at_ms = excluded.started_at_ms, finished_at_ms = excluded.finished_at_ms,
+                 report = excluded.report, summary = excluded.summary",
+        )
+        .bind(report.run_id)
+        .bind(enum_str(&report.config.kind())?)
+        .bind(enum_str(&report.status)?)
+        .bind(report.started_at_ms as i64)
+        .bind(report.finished_at_ms as i64)
+        .bind(serde_json::to_string(report)?)
+        .bind(serde_json::to_string(&RunSummary::of_report(report))?)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("DELETE FROM runs WHERE id NOT IN (SELECT id FROM runs ORDER BY started_at_ms DESC LIMIT $1)")
+            .bind(RUN_HISTORY)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
         Ok(())
     }
 
     /// Saved runs, newest first.
-    pub fn runs(&self) -> anyhow::Result<Vec<RunSummary>> {
-        let db = self.db.lock().unwrap();
-        let mut stmt = db.prepare("SELECT summary FROM runs ORDER BY started_at_ms DESC")?;
-        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
-        rows.map(|doc| serde_json::from_str(&doc?).context("a stored run summary is invalid")).collect()
+    pub async fn runs(&self) -> anyhow::Result<Vec<RunSummary>> {
+        let mut tx = self.tx().await?;
+        let docs: Vec<String> =
+            sqlx::query_scalar("SELECT summary FROM runs ORDER BY started_at_ms DESC").fetch_all(&mut *tx).await?;
+        tx.commit().await?;
+        docs.iter().map(|doc| serde_json::from_str(doc).context("a stored run summary is invalid")).collect()
     }
 
-    pub fn run_report(&self, id: Uuid) -> anyhow::Result<Option<RunReport>> {
-        let db = self.db.lock().unwrap();
+    pub async fn run_report(&self, id: Uuid) -> anyhow::Result<Option<RunReport>> {
+        let mut tx = self.tx().await?;
         let doc: Option<String> =
-            db.query_row("SELECT report FROM runs WHERE id = ?1", [id.to_string()], |r| r.get(0)).optional()?;
+            sqlx::query_scalar("SELECT report FROM runs WHERE id = $1").bind(id).fetch_optional(&mut *tx).await?;
+        tx.commit().await?;
         doc.map(|d| serde_json::from_str(&d).context("stored run report is invalid")).transpose()
     }
 }
 
-/// Applies pending migrations. The first one also imports the legacy files from `legacy_dir`.
-fn migrate(conn: &mut Connection, legacy_dir: Option<&Path>) -> anyhow::Result<()> {
-    let version = conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))? as usize;
-    if version > MIGRATIONS.len() {
-        anyhow::bail!(
-            "{DB_FILE} is schema v{version}, newer than this engine understands (v{}); upgrade the engine",
-            MIGRATIONS.len()
-        );
-    }
-    for (i, sql) in MIGRATIONS.iter().enumerate().skip(version) {
-        let tx = conn.transaction()?;
-        tx.execute_batch(sql).with_context(|| format!("migrating {DB_FILE} to v{}", i + 1))?;
-        if i == 0
-            && let Some(dir) = legacy_dir
-        {
-            import_legacy(&tx, dir)?;
-        }
-        if i == 1 {
-            backfill_run_summaries(&tx)?;
-        }
-        tx.pragma_update(None, "user_version", (i + 1) as i64)?;
-        tx.commit()?;
-    }
-    Ok(())
-}
-
-fn backfill_run_summaries(tx: &Transaction) -> anyhow::Result<()> {
-    let reports: Vec<(String, String)> = tx
-        .prepare("SELECT id, report FROM runs")?
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-        .collect::<Result<_, _>>()?;
-    let mut update = tx.prepare("UPDATE runs SET summary = ?2 WHERE id = ?1")?;
-    for (id, report) in reports {
-        let report: RunReport = serde_json::from_str(&report).context("stored run report is invalid")?;
-        update.execute(params![id, serde_json::to_string(&RunSummary::of_report(&report))?])?;
-    }
-    Ok(())
-}
-
-/// Copies `kestrel.json`, `kestrel.secrets.json` and `kestrel-files/` into a new database.
-fn import_legacy(tx: &Transaction, dir: &Path) -> anyhow::Result<()> {
-    let workspace_path = dir.join(WORKSPACE_FILE);
-    if let Some(raw) = read_json::<serde_json::Value>(&workspace_path)? {
-        let workspace: Workspace = serde_json::from_value(migrate_legacy_workspace(raw))
-            .with_context(|| format!("{} is not a valid workspace file", workspace_path.display()))?;
-        write_workspace(tx, &workspace)?;
-        tracing::info!("imported {} into {DB_FILE}; it is no longer read", workspace_path.display());
-    }
-
-    let secrets_path = dir.join(SECRETS_FILE);
-    if let Some(secrets) = read_json::<Secrets>(&secrets_path)? {
-        for (env, kv) in &secrets {
-            for (key, value) in kv {
-                tx.execute(
-                    "INSERT INTO secrets (environment, key, value) VALUES (?1, ?2, ?3)",
-                    params![env, key, value],
-                )?;
-            }
-        }
-        tracing::info!("imported {} into {DB_FILE}; it can be deleted", secrets_path.display());
-    }
-
-    let files_dir = dir.join(FILES_DIR);
-    if let Ok(entries) = fs::read_dir(&files_dir) {
-        let mut count = 0;
-        for entry in entries {
-            let path = entry?.path();
-            // Files are named by id; anything else (e.g. a leftover temp file) isn't referenced.
-            let Some(id) = path.file_name().and_then(|n| n.to_str()).and_then(|n| n.parse::<Uuid>().ok()) else {
-                continue;
-            };
-            let bytes = fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
-            tx.execute(
-                "INSERT INTO files (id, bytes, created_at_ms) VALUES (?1, ?2, ?3)",
-                params![id.to_string(), bytes, now_ms() as i64],
-            )?;
-            count += 1;
-        }
-        if count > 0 {
-            tracing::info!("imported {count} file(s) from {} into {DB_FILE}", files_dir.display());
-        }
-    }
-    Ok(())
-}
-
-fn read_workspace(conn: &Connection) -> anyhow::Result<Workspace> {
-    let meta: Option<String> = conn.query_row("SELECT doc FROM workspace_meta", [], |r| r.get(0)).optional()?;
+async fn read_workspace(tx: &mut Transaction<'static, Postgres>) -> anyhow::Result<Workspace> {
+    let meta: Option<String> = sqlx::query_scalar("SELECT doc FROM workspace_meta").fetch_optional(&mut **tx).await?;
     let mut workspace: Workspace = match meta {
         Some(doc) => serde_json::from_str(&doc).context("stored workspace settings are invalid")?,
         None => Workspace::default(),
     };
-    let mut stmt = conn.prepare("SELECT doc FROM collections ORDER BY position")?;
-    for doc in stmt.query_map([], |r| r.get::<_, String>(0))? {
-        workspace.collections.push(serde_json::from_str(&doc?).context("a stored collection is invalid")?);
+    let docs: Vec<String> =
+        sqlx::query_scalar("SELECT doc FROM collections ORDER BY position").fetch_all(&mut **tx).await?;
+    for doc in docs {
+        workspace.collections.push(serde_json::from_str(&doc).context("a stored collection is invalid")?);
     }
-    let mut stmt = conn.prepare("SELECT name, vars FROM environments ORDER BY position")?;
-    for row in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
-        let (name, vars) = row?;
+    let rows: Vec<(String, String)> =
+        sqlx::query_as("SELECT name, vars FROM environments ORDER BY position").fetch_all(&mut **tx).await?;
+    for (name, vars) in rows {
         let vars = serde_json::from_str(&vars).context("stored environment variables are invalid")?;
-        workspace.environments.push(super::Environment { name, vars });
+        workspace.environments.push(Environment { name, vars });
     }
     Ok(workspace)
 }
 
-/// Upserts each collection and environment (SQLite skips rows whose values are unchanged) and
-/// deletes the ones no longer present.
-fn write_workspace(tx: &Transaction, workspace: &Workspace) -> anyhow::Result<()> {
+/// Upserts each collection and environment (skipping rows whose values are unchanged) and deletes
+/// the ones no longer present.
+async fn write_workspace(tx: &mut Transaction<'static, Postgres>, workspace: &Workspace) -> anyhow::Result<()> {
     let meta = Workspace { collections: vec![], environments: vec![], ..workspace.clone() };
-    tx.execute(
-        "INSERT INTO workspace_meta (id, doc) VALUES (1, ?1) ON CONFLICT (id) DO UPDATE SET doc = excluded.doc",
-        [serde_json::to_string(&meta)?],
-    )?;
+    sqlx::query(
+        "INSERT INTO workspace_meta (id, doc) VALUES (1, $1) ON CONFLICT (id) DO UPDATE SET doc = excluded.doc",
+    )
+    .bind(serde_json::to_string(&meta)?)
+    .execute(&mut **tx)
+    .await?;
 
-    let mut upsert = tx.prepare_cached(
-        "INSERT INTO collections (id, position, doc) VALUES (?1, ?2, ?3)
-         ON CONFLICT (id) DO UPDATE SET position = excluded.position, doc = excluded.doc
-         WHERE position != excluded.position OR doc != excluded.doc",
-    )?;
     for (i, c) in workspace.collections.iter().enumerate() {
-        upsert.execute(params![c.id.to_string(), i as i64, serde_json::to_string(c)?])?;
+        sqlx::query(
+            "INSERT INTO collections (id, position, doc) VALUES ($1, $2, $3)
+             ON CONFLICT (id) DO UPDATE SET position = excluded.position, doc = excluded.doc
+             WHERE collections.position <> excluded.position OR collections.doc <> excluded.doc",
+        )
+        .bind(c.id)
+        .bind(i as i32)
+        .bind(serde_json::to_string(c)?)
+        .execute(&mut **tx)
+        .await?;
     }
-    let keep: HashSet<String> = workspace.collections.iter().map(|c| c.id.to_string()).collect();
-    delete_missing(tx, "collections", "id", &keep)?;
+    let keep: Vec<Uuid> = workspace.collections.iter().map(|c| c.id).collect();
+    sqlx::query("DELETE FROM collections WHERE id <> ALL($1)").bind(&keep).execute(&mut **tx).await?;
 
-    let mut upsert = tx.prepare_cached(
-        "INSERT INTO environments (name, position, vars) VALUES (?1, ?2, ?3)
-         ON CONFLICT (name) DO UPDATE SET position = excluded.position, vars = excluded.vars
-         WHERE position != excluded.position OR vars != excluded.vars",
-    )?;
     for (i, e) in workspace.environments.iter().enumerate() {
-        upsert.execute(params![e.name, i as i64, serde_json::to_string(&e.vars)?])?;
+        sqlx::query(
+            "INSERT INTO environments (name, position, vars) VALUES ($1, $2, $3)
+             ON CONFLICT (name) DO UPDATE SET position = excluded.position, vars = excluded.vars
+             WHERE environments.position <> excluded.position OR environments.vars <> excluded.vars",
+        )
+        .bind(&e.name)
+        .bind(i as i32)
+        .bind(serde_json::to_string(&e.vars)?)
+        .execute(&mut **tx)
+        .await?;
     }
-    let keep: HashSet<String> = workspace.environments.iter().map(|e| e.name.clone()).collect();
-    delete_missing(tx, "environments", "name", &keep)?;
-    Ok(())
-}
-
-/// Deletes rows of `table` whose `key` column isn't in `keep`. Table and column are constants.
-fn delete_missing(tx: &Transaction, table: &str, key: &str, keep: &HashSet<String>) -> anyhow::Result<()> {
-    let existing: Vec<String> =
-        tx.prepare(&format!("SELECT {key} FROM {table}"))?.query_map([], |r| r.get(0))?.collect::<Result<_, _>>()?;
-    let mut delete = tx.prepare(&format!("DELETE FROM {table} WHERE {key} = ?1"))?;
-    for gone in existing.iter().filter(|k| !keep.contains(*k)) {
-        delete.execute([gone])?;
-    }
+    let keep: Vec<String> = workspace.environments.iter().map(|e| e.name.clone()).collect();
+    sqlx::query("DELETE FROM environments WHERE name <> ALL($1)").bind(&keep).execute(&mut **tx).await?;
     Ok(())
 }
 
@@ -424,61 +346,14 @@ fn enum_str<T: serde::Serialize>(value: &T) -> anyhow::Result<String> {
     }
 }
 
-/// Keeps the database (which holds secrets) out of git when the workspace dir is in a repo.
-fn ensure_ignored(dir: &Path) {
-    const PATTERN: &str = "kestrel.db*";
-    let path = dir.join(".gitignore");
-    let Ok(contents) = fs::read_to_string(&path) else { return };
-    if contents.lines().any(|l| l.trim().trim_start_matches('/') == PATTERN) {
-        return;
-    }
-    let sep = if contents.ends_with('\n') || contents.is_empty() { "" } else { "\n" };
-    if let Err(err) = fs::write(&path, format!("{contents}{sep}{PATTERN}\n")) {
-        tracing::warn!("couldn't add {PATTERN} to .gitignore: {err}");
-    }
-}
-
-/// Pre-collections files kept endpoints at the top level; move them into a "Default" collection.
-fn migrate_legacy_workspace(mut raw: serde_json::Value) -> serde_json::Value {
-    let Some(obj) = raw.as_object_mut() else { return raw };
-    if obj.contains_key("collections") {
-        return raw;
-    }
-    let endpoints = obj.remove("endpoints").unwrap_or_else(|| serde_json::json!([]));
-    if endpoints.as_array().is_some_and(|a| !a.is_empty()) {
-        let id = uuid::Uuid::new_v4();
-        obj.insert(
-            "collections".into(),
-            serde_json::json!([{ "id": id, "name": "Default", "vars": {}, "endpoints": endpoints }]),
-        );
-        obj.insert("activeCollection".into(), serde_json::json!(id));
-    }
-    raw
-}
-
-fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> anyhow::Result<Option<T>> {
-    match fs::read(path) {
-        Ok(bytes) => {
-            serde_json::from_slice(&bytes).map(Some).with_context(|| format!("{} is not valid JSON", path.display()))
-        }
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(err) => Err(err).with_context(|| format!("reading {}", path.display())),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{
+        db::test::require_db,
         engine::types::{FakeConfig, RunConfig, RunStatus},
         model::{Collection, Environment},
     };
-
-    fn temp_dir() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("kestrel-store-{}", uuid::Uuid::new_v4()));
-        fs::create_dir_all(&dir).unwrap();
-        dir
-    }
 
     fn collection(name: &str) -> Collection {
         Collection {
@@ -487,16 +362,16 @@ mod tests {
             vars: Default::default(),
             endpoints: vec![],
             source: None,
+            groups: Vec::new(),
             schema_defs: None,
         }
     }
 
-    #[test]
-    fn round_trips_everything_and_gitignores_the_db() {
-        let dir = temp_dir();
-        fs::write(dir.join(".gitignore"), "/target").unwrap();
-
-        let store = WorkspaceStore::open(&dir).unwrap();
+    #[tokio::test]
+    async fn round_trips_everything() {
+        let db = require_db!();
+        let id = Uuid::new_v4();
+        let store = WorkspaceStore::open(Arc::clone(&db), id).await.unwrap();
         let (a, b) = (collection("a"), collection("b"));
         store
             .save_workspace(Workspace {
@@ -505,65 +380,43 @@ mod tests {
                 active_environment: Some("local".into()),
                 active_collection: Some(b.id),
             })
+            .await
             .unwrap();
-        store.set_secret("local", "token", Some("s3cret".into())).unwrap();
-        store.confirm_host("api.example.com").unwrap();
-        let file = store.save_file(Bytes::from_static(b"png")).unwrap();
+        store.set_secret("local", "token", Some("s3cret".into())).await.unwrap();
+        store.confirm_host("api.example.com").await.unwrap();
+        let file = store.save_file(Bytes::from_static(b"png")).await.unwrap();
         drop(store);
 
-        let reopened = WorkspaceStore::open(&dir).unwrap();
+        let reopened = WorkspaceStore::open(Arc::clone(&db), id).await.unwrap();
         let ws = reopened.workspace();
         assert_eq!(ws.collections.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["a", "b"]);
         assert_eq!(ws.active_collection, Some(b.id));
         assert_eq!(ws.environments[0].vars["k"], "v");
         assert_eq!(reopened.secrets()["local"]["token"], "s3cret");
         assert_eq!(reopened.confirmed_hosts(), ["api.example.com"]);
-        assert_eq!(&reopened.read_file(file).unwrap()[..], b"png");
-        assert!(fs::read_to_string(dir.join(".gitignore")).unwrap().contains("kestrel.db*"));
+
+        let endpoint: Endpoint = serde_json::from_value(serde_json::json!({
+            "id": Uuid::new_v4(), "method": "POST", "url": "http://x",
+            "body": { "type": "multipart", "fields": [
+                { "key": "f", "kind": "file", "file": { "id": file, "name": "a.png", "contentType": "image/png", "size": 3 } }
+            ]}
+        }))
+        .unwrap();
+        assert_eq!(&reopened.files_for(&endpoint).await.unwrap().read_file(file).unwrap()[..], b"png");
 
         // Reordering and removal are saved too.
-        reopened.save_workspace(Workspace { collections: vec![b.clone()], ..ws }).unwrap();
-        reopened.set_secret("local", "token", None).unwrap();
+        reopened.save_workspace(Workspace { collections: vec![b.clone()], ..ws }).await.unwrap();
+        reopened.set_secret("local", "token", None).await.unwrap();
         drop(reopened);
-        let again = WorkspaceStore::open(&dir).unwrap();
+        let again = WorkspaceStore::open(Arc::clone(&db), id).await.unwrap();
         assert_eq!(again.workspace().collections.len(), 1);
         assert!(again.secret_keys().is_empty());
-        drop(again);
-        fs::remove_dir_all(dir).unwrap();
     }
 
-    #[test]
-    fn imports_legacy_files_once() {
-        let dir = temp_dir();
-        let id = uuid::Uuid::new_v4();
-        fs::write(
-            dir.join(WORKSPACE_FILE),
-            format!(r#"{{"endpoints":[{{"id":"{id}","method":"GET","url":"{{{{base}}}}/x"}}],"environments":[]}}"#),
-        )
-        .unwrap();
-        fs::write(dir.join(SECRETS_FILE), r#"{"local":{"token":"s3cret"}}"#).unwrap();
-        let file = Uuid::new_v4();
-        fs::create_dir_all(dir.join(FILES_DIR)).unwrap();
-        fs::write(dir.join(FILES_DIR).join(file.to_string()), b"data").unwrap();
-
-        let store = WorkspaceStore::open(&dir).unwrap();
-        let ws = store.workspace();
-        assert_eq!(ws.collections[0].name, "Default", "top-level endpoints move into a collection");
-        assert_eq!(ws.active_collection, Some(ws.collections[0].id));
-        assert!(ws.endpoint(id).is_some());
-        assert_eq!(store.secrets()["local"]["token"], "s3cret");
-        assert_eq!(&store.read_file(file).unwrap()[..], b"data");
-
-        // Later edits win: the legacy file isn't imported again.
-        store.save_workspace(Workspace::default()).unwrap();
-        drop(store);
-        assert!(WorkspaceStore::open(&dir).unwrap().workspace().collections.is_empty());
-        fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn keeps_run_reports_newest_first() {
-        let store = WorkspaceStore::in_memory(Workspace::default(), Secrets::default());
+    #[tokio::test]
+    async fn keeps_run_reports_newest_first() {
+        let db = require_db!();
+        let store = WorkspaceStore::open(Arc::clone(&db), Uuid::new_v4()).await.unwrap();
         let report = |started| {
             RunReport::base(
                 Uuid::new_v4(),
@@ -574,25 +427,68 @@ mod tests {
             )
         };
         let (old, new) = (report(1_000), report(2_000));
-        store.save_run(&old).unwrap();
-        store.save_run(&new).unwrap();
+        store.save_run(&old).await.unwrap();
+        store.save_run(&new).await.unwrap();
 
-        let runs = store.runs().unwrap();
+        let runs = store.runs().await.unwrap();
         assert_eq!(runs.iter().map(|r| r.run_id).collect::<Vec<_>>(), [new.run_id, old.run_id]);
         assert_eq!(runs[0].status, RunStatus::Completed);
         assert_eq!(runs[0].result.as_ref().unwrap().finished_at_ms, 2_010, "headline numbers come along");
         assert_eq!(runs[0].endpoint_id, None, "synthetic runs have no endpoint");
-        assert_eq!(store.run_report(old.run_id).unwrap().unwrap().finished_at_ms, 1_010);
-        assert!(store.run_report(Uuid::new_v4()).unwrap().is_none());
+        assert_eq!(store.run_report(old.run_id).await.unwrap().unwrap().finished_at_ms, 1_010);
+        assert!(store.run_report(Uuid::new_v4()).await.unwrap().is_none());
     }
 
-    #[test]
-    fn refuses_a_newer_schema() {
-        let dir = temp_dir();
-        drop(WorkspaceStore::open(&dir).unwrap());
-        Connection::open(dir.join(DB_FILE)).unwrap().pragma_update(None, "user_version", 99).unwrap();
-        let err = WorkspaceStore::open(&dir).err().unwrap();
-        assert!(err.to_string().contains("newer"), "{err}");
-        fs::remove_dir_all(dir).unwrap();
+    #[tokio::test]
+    async fn secrets_are_encrypted_at_rest() {
+        let db = require_db!();
+        let id = Uuid::new_v4();
+        let store = WorkspaceStore::open(Arc::clone(&db), id).await.unwrap();
+        store.set_secret("local", "token", Some("hunter2-plaintext".into())).await.unwrap();
+        let mut tx = db.pinned(&db.schema_of(id)).await.unwrap();
+        let stored: Vec<u8> = sqlx::query_scalar("SELECT value FROM secrets").fetch_one(&mut *tx).await.unwrap();
+        assert!(!stored.windows(7).any(|w| w == b"hunter2"), "secret stored in plaintext");
+        tx.rollback().await.unwrap();
+    }
+
+    /// Two workspaces with identical ids, names and keys, written and read concurrently over a
+    /// single pooled connection: a `search_path` leaking from one transaction into the next would
+    /// show up here as one workspace reading the other's rows.
+    #[tokio::test]
+    async fn workspaces_sharing_one_connection_never_see_each_other() {
+        let shared = require_db!();
+        // Same database and schema names, but a pool of one connection.
+        let db = Arc::new(shared.with_pool_size(1));
+        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+        let (sa, sb) = (
+            Arc::new(WorkspaceStore::open(Arc::clone(&db), a).await.unwrap()),
+            Arc::new(WorkspaceStore::open(Arc::clone(&db), b).await.unwrap()),
+        );
+        let same_collection = collection("same");
+        let write = |store: Arc<WorkspaceStore>, tag: &'static str| {
+            let mut c = same_collection.clone();
+            c.name = tag.into();
+            async move {
+                for round in 0..20 {
+                    let env = Environment { name: "local".into(), vars: [("who".into(), tag.into())].into() };
+                    let ws = Workspace { collections: vec![c.clone()], environments: vec![env], ..Default::default() };
+                    store.save_workspace(ws).await.unwrap();
+                    store.set_secret("local", "token", Some(format!("{tag}-{round}"))).await.unwrap();
+                    store.confirm_host(&format!("{tag}.example")).await.unwrap();
+                }
+            }
+        };
+        tokio::join!(write(Arc::clone(&sa), "a"), write(Arc::clone(&sb), "b"));
+        drop((sa, sb));
+
+        for (id, tag) in [(a, "a"), (b, "b")] {
+            let store = WorkspaceStore::open(Arc::clone(&db), id).await.unwrap();
+            let ws = store.workspace();
+            assert_eq!(ws.collections.len(), 1);
+            assert_eq!(ws.collections[0].name, tag);
+            assert_eq!(ws.environments[0].vars["who"], tag);
+            assert_eq!(store.secrets()["local"]["token"], format!("{tag}-19"));
+            assert_eq!(store.confirmed_hosts(), [format!("{tag}.example")]);
+        }
     }
 }
