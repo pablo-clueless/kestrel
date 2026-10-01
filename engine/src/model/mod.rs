@@ -53,6 +53,10 @@ pub struct Collection {
     pub vars: BTreeMap<String, String>,
     #[serde(default)]
     pub endpoints: Vec<Endpoint>,
+    /// Groups made by hand, kept even while empty. The sidebar shows these and every endpoint's
+    /// `group`, so a group that only exists on endpoints (e.g. imported tags) needn't be listed.
+    #[serde(default)]
+    pub groups: Vec<String>,
     /// Where the collection came from, e.g. "OpenAPI 3.0.3 · Petstore 1.0.0". None if made by hand.
     #[serde(default)]
     pub source: Option<String>,
