@@ -130,6 +130,10 @@ async fn serve() -> anyhow::Result<()> {
             (true, false) => "on, sign-up closed (create accounts with `engine user add`)",
         }
     );
+    let changed = config.caps.changed();
+    if !changed.is_empty() {
+        tracing::info!("caps changed from the defaults: {}", changed.join(", "));
+    }
     let addr = SocketAddr::new(config.bind, config.port);
     let db = connect(&config).await?;
     tracing::info!("connected to Postgres; one schema per workspace");

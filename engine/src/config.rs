@@ -72,6 +72,79 @@ impl Default for Caps {
     }
 }
 
+/// The variable for each cap, and the most it may be set to. The ceilings keep a typo (an extra
+/// zero) from making the engine accept something absurd, and keep durations within the `u32`
+/// milliseconds that run configs use (7 days).
+const CAP_VARS: &[(&str, u64)] = &[
+    ("KESTREL_MAX_DURATION_S", 7 * 24 * 3600),
+    ("KESTREL_MAX_TIMEOUT_S", 3600),
+    ("KESTREL_MAX_SAMPLES", 10_000_000),
+    ("KESTREL_MAX_WARMUP", 1_000_000),
+    ("KESTREL_MAX_RPS", 1_000_000),
+    ("KESTREL_MAX_IN_FLIGHT", 1_000_000),
+    ("KESTREL_MAX_SWEEP_S", 7 * 24 * 3600),
+    ("KESTREL_MAX_N", 100_000_000),
+    ("KESTREL_MAX_POINTS", 200),
+];
+
+impl Caps {
+    /// The defaults, with any `KESTREL_MAX_*` variable applied. Raised or lowered only here, by
+    /// whoever runs the engine; never through the API (HANDOFF → Safety rails → Caps).
+    pub fn from_env() -> anyhow::Result<Self> {
+        Self::from_lookup(|var| std::env::var(var).ok())
+    }
+
+    fn from_lookup(lookup: impl Fn(&str) -> Option<String>) -> anyhow::Result<Self> {
+        let mut caps = Self::default();
+        for &(var, ceiling) in CAP_VARS {
+            let Some(raw) = lookup(var).filter(|v| !v.trim().is_empty()) else { continue };
+            let value: u64 = raw
+                .trim()
+                .parse()
+                .ok()
+                .filter(|v| (1..=ceiling).contains(v))
+                .with_context(|| format!("{var} must be a whole number from 1 to {ceiling}"))?;
+            let n = value as u32;
+            match var {
+                "KESTREL_MAX_DURATION_S" => caps.max_duration = Duration::from_secs(value),
+                "KESTREL_MAX_TIMEOUT_S" => caps.max_timeout = Duration::from_secs(value),
+                "KESTREL_MAX_SAMPLES" => caps.max_samples = n,
+                "KESTREL_MAX_WARMUP" => caps.max_warmup = n,
+                "KESTREL_MAX_RPS" => caps.max_rps = n,
+                "KESTREL_MAX_IN_FLIGHT" => caps.max_in_flight = n,
+                "KESTREL_MAX_SWEEP_S" => caps.max_sweep_duration = Duration::from_secs(value),
+                "KESTREL_MAX_N" => caps.max_n = n,
+                "KESTREL_MAX_POINTS" => caps.max_points = n,
+                _ => unreachable!("every CAP_VARS entry is handled"),
+            }
+        }
+        // Big-O needs at least 3 sizes to fit a curve (runs require points ≥ 3).
+        anyhow::ensure!(caps.max_points >= 3, "KESTREL_MAX_POINTS must be at least 3");
+        Ok(caps)
+    }
+
+    /// The caps that differ from the defaults, for the startup log.
+    pub fn changed(&self) -> Vec<String> {
+        let d = Self::default();
+        let mut out = Vec::new();
+        let mut note = |name: &str, now: String, default: String| {
+            if now != default {
+                out.push(format!("{name} {now} (default {default})"));
+            }
+        };
+        note("duration", format!("{:?}", self.max_duration), format!("{:?}", d.max_duration));
+        note("timeout", format!("{:?}", self.max_timeout), format!("{:?}", d.max_timeout));
+        note("samples", self.max_samples.to_string(), d.max_samples.to_string());
+        note("warmup", self.max_warmup.to_string(), d.max_warmup.to_string());
+        note("rps", self.max_rps.to_string(), d.max_rps.to_string());
+        note("in-flight", self.max_in_flight.to_string(), d.max_in_flight.to_string());
+        note("Big-O sweep", format!("{:?}", self.max_sweep_duration), format!("{:?}", d.max_sweep_duration));
+        note("n", self.max_n.to_string(), d.max_n.to_string());
+        note("Big-O points", self.max_points.to_string(), d.max_points.to_string());
+        out
+    }
+}
+
 impl Config {
     pub fn from_env() -> anyhow::Result<Self> {
         let port = match std::env::var("KESTREL_PORT") {
@@ -132,6 +205,7 @@ impl Config {
         config.auth_enabled = choice("KESTREL_AUTH", &["off", "on"], "off")? == "on";
         config.signup_open = choice("KESTREL_SIGNUP", &["open", "closed"], "open")? == "open";
         config.trusted_proxy = choice("KESTREL_TRUSTED_PROXY", &["0", "1"], "0")? == "1";
+        config.caps = Caps::from_env()?;
         Ok(config)
     }
 
@@ -183,4 +257,45 @@ fn choice(var: &str, allowed: &[&str], default: &str) -> anyhow::Result<String> 
 fn random_token() -> String {
     // Two v4 UUIDs = 244 bits from the OS CSPRNG, hex encoded.
     format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::*;
+
+    fn caps(vars: &[(&str, &str)]) -> anyhow::Result<Caps> {
+        let vars: HashMap<String, String> = vars.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect();
+        Caps::from_lookup(|var| vars.get(var).cloned())
+    }
+
+    #[test]
+    fn caps_default_and_can_be_raised_or_lowered_by_the_operator() {
+        let defaults = caps(&[]).unwrap();
+        assert_eq!(defaults.max_rps, 1_000);
+        assert!(defaults.changed().is_empty());
+
+        let soak =
+            caps(&[("KESTREL_MAX_DURATION_S", "7200"), ("KESTREL_MAX_RPS", "50"), ("KESTREL_MAX_TIMEOUT_S", " ")])
+                .unwrap();
+        assert_eq!(soak.max_duration, Duration::from_secs(7200));
+        assert_eq!(soak.max_rps, 50, "lowering works too, e.g. on a shared deployment");
+        assert_eq!(soak.max_timeout, Duration::from_secs(60), "blank means default");
+        assert_eq!(soak.changed().len(), 2, "{:?}", soak.changed());
+    }
+
+    #[test]
+    fn caps_reject_nonsense_with_the_variable_named() {
+        for (var, value) in [
+            ("KESTREL_MAX_RPS", "0"),
+            ("KESTREL_MAX_RPS", "10k"),
+            ("KESTREL_MAX_RPS", "10000000"),
+            ("KESTREL_MAX_DURATION_S", "99999999"),
+            ("KESTREL_MAX_POINTS", "2"),
+        ] {
+            let err = caps(&[(var, value)]).unwrap_err().to_string();
+            assert!(err.contains(var), "{var}={value}: {err}");
+        }
+    }
 }

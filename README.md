@@ -103,6 +103,12 @@ set an endpoint's body to `{{n:int_array}}`, for example on `/sort` or `/linear`
 | `KESTREL_WORKSPACE_DIR` | working directory | Only read by `engine import-sqlite`, which looks for old SQLite workspaces under `workspaces/` |
 | `KESTREL_UI_ORIGINS` | `http://localhost:3000,http://127.0.0.1:3000` | Origins allowed to call the engine |
 | `TARGET_PORT` | `8089` | Reference server port |
+| `KESTREL_MAX_RPS` | `1000` | Highest request rate (open model), and the pace for closed-model users |
+| `KESTREL_MAX_DURATION_S` | `60` | Longest load or latency run, in seconds (up to 7 days; raise it for soak tests) |
+| `KESTREL_MAX_IN_FLIGHT` | `10000` | Most requests in flight, and most closed-model users |
+| `KESTREL_MAX_TIMEOUT_S` | `60` | Longest per-request timeout, in seconds |
+| `KESTREL_MAX_SWEEP_S` | `300` | Longest Big-O sweep, in seconds |
+| `KESTREL_MAX_SAMPLES`, `KESTREL_MAX_WARMUP`, `KESTREL_MAX_N`, `KESTREL_MAX_POINTS` | `10000`, `1000`, `1000000`, `40` | Latency/Big-O sample counts, the largest Big-O `n`, and the most Big-O sizes |
 
 **Workspaces, accounts off** (`KESTREL_AUTH=off`, the default): each browser gets its own
 workspace. The UI makes up a random id on first load, keeps it in `localStorage` and sends it as
@@ -153,7 +159,8 @@ browser.
   header (which blocks DNS rebinding), an allowlisted `Origin`, and a JSON content type (which forces
   a CORS preflight).
 - **Caps** default to 1,000 req/s, a 60 s duration, 10,000 in flight and a 5 min Big-O sweep. They
-  apply to both load models, and can be raised only in local config, never through the API.
+  apply to both load models. Whoever runs the engine can raise or lower them with `KESTREL_MAX_*`
+  variables (see Configuration); the API never can.
 - **Load tests against anything that isn't this machine** need an explicit per-host "I own or am
   authorised to test this" confirmation. Target DNS is resolved once and pinned for the run, and
   redirects are never followed under load.
