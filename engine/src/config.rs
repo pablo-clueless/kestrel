@@ -24,8 +24,13 @@ pub struct Config {
     /// Values accepted in the `Origin` header, when one is present.
     pub allowed_origins: Vec<String>,
     pub caps: Caps,
-    /// Where `kestrel.db` lives. `KESTREL_WORKSPACE_DIR`, else the working directory.
+    /// `KESTREL_WORKSPACE_DIR`, else the working directory. Only `import-sqlite` reads it now (the
+    /// old per-workspace SQLite files are under `workspaces/`).
     pub workspace_dir: PathBuf,
+    /// `KESTREL_DATABASE_URL`. Required by everything except the tests that build a `Config` directly.
+    pub database_url: String,
+    /// `KESTREL_DB_MAX_CONNECTIONS`, default 10.
+    pub db_max_connections: u32,
 }
 
 /// Limits the API can't raise (HANDOFF → Safety rails → Caps).
@@ -100,6 +105,23 @@ impl Config {
             Ok(dir) if !dir.trim().is_empty() => PathBuf::from(dir.trim()),
             _ => std::env::current_dir().context("reading the working directory")?,
         };
+        config.database_url = match std::env::var("KESTREL_DATABASE_URL") {
+            Ok(url) if !url.trim().is_empty() => url.trim().to_owned(),
+            _ => anyhow::bail!(
+                "KESTREL_DATABASE_URL is not set. For development, run `docker compose up -d db` and use \
+                 postgres://kestrel:kestrel@localhost:5433/kestrel (see .env.example)."
+            ),
+        };
+        if let Ok(n) = std::env::var("KESTREL_DB_MAX_CONNECTIONS")
+            && !n.trim().is_empty()
+        {
+            config.db_max_connections = n
+                .trim()
+                .parse()
+                .ok()
+                .filter(|&n| n > 0)
+                .context("KESTREL_DB_MAX_CONNECTIONS must be a positive number")?;
+        }
         Ok(config)
     }
 
@@ -126,6 +148,8 @@ impl Config {
             allowed_origins,
             caps: Caps::default(),
             workspace_dir: PathBuf::new(),
+            database_url: String::new(),
+            db_max_connections: 10,
         }
     }
 }

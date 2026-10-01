@@ -18,8 +18,25 @@ jobs:
   engine:
     name: Engine (Rust)
     runs-on: ubuntu-latest
+    # Store and API tests run against Postgres; each test uses its own schemas, so they share one
+    # database in parallel. Without KESTREL_TEST_DATABASE_URL they'd skip, which CI refuses.
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: kestrel
+          POSTGRES_PASSWORD: kestrel
+          POSTGRES_DB: kestrel
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U kestrel -d kestrel"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
     env:
       CARGO_TERM_COLOR: always
+      KESTREL_TEST_DATABASE_URL: postgres://kestrel:kestrel@localhost:5432/kestrel
     steps:
       - uses: actions/checkout@v4
 
