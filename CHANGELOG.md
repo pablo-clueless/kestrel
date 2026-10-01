@@ -24,6 +24,10 @@ No version has been tagged yet (engine and UI are both `0.1.0`), so the entries 
   - `KESTREL_SIGNUP=closed` hides sign-up; `engine user add <email>` creates an account and prints a
     generated password. `KESTREL_TRUSTED_PROXY=1` trusts proxy headers for client IPs and `Secure`
     cookies.
+  - **Profile → Security:** change your password (every other device is signed out), and see where
+    you're signed in, with a Sign out for each device. **Profile → Account** shows your email.
+  - Passwords hashed with older parameters are upgraded at the next sign-in, and expired sessions
+    are deleted daily.
 
 - **Dashboard route group** `(dashboard)` with a shared layout (sidebar + header) for
   `/workspace`, `/profile` and `/settings`.

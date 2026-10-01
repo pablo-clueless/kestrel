@@ -22,6 +22,15 @@ pub struct SessionUser {
     pub stale: bool,
 }
 
+pub struct SessionRow {
+    pub id_hash: Vec<u8>,
+    pub created_at_ms: i64,
+    pub last_seen_at_ms: i64,
+    pub expires_at_ms: i64,
+    pub user_agent: Option<String>,
+    pub ip: Option<String>,
+}
+
 /// What signing up can run into, besides a database error.
 pub enum CreateUser {
     Created(Uuid),
@@ -213,6 +222,89 @@ impl Db {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+
+    pub async fn password_hash(&self, user: Uuid) -> anyhow::Result<Option<String>> {
+        Ok(sqlx::query_scalar(self.auth_sql("SELECT password_hash FROM auth.users WHERE id = $1"))
+            .bind(user)
+            .fetch_optional(&self.pool)
+            .await?)
+    }
+
+    pub async fn set_password_hash(&self, user: Uuid, hash: &str) -> anyhow::Result<()> {
+        sqlx::query(self.auth_sql("UPDATE auth.users SET password_hash = $2 WHERE id = $1"))
+            .bind(user)
+            .bind(hash)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Sets a new password and ends every session of `user` except `keep`, in one transaction: a
+    /// stolen session must not survive the password change meant to lock its thief out.
+    pub async fn change_password(&self, user: Uuid, hash: &str, keep: &[u8]) -> anyhow::Result<u64> {
+        let mut tx = self.begin().await?;
+        sqlx::query(self.auth_sql("UPDATE auth.users SET password_hash = $2 WHERE id = $1"))
+            .bind(user)
+            .bind(hash)
+            .execute(&mut *tx)
+            .await?;
+        let ended = sqlx::query(self.auth_sql("DELETE FROM auth.sessions WHERE user_id = $1 AND id_hash <> $2"))
+            .bind(user)
+            .bind(keep)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        tx.commit().await?;
+        Ok(ended)
+    }
+
+    /// `user`'s live sessions, most recently used first.
+    pub async fn sessions_of(&self, user: Uuid) -> anyhow::Result<Vec<SessionRow>> {
+        /// id_hash, created, last seen, expires (ms), user agent, ip.
+        type Row = (Vec<u8>, i64, i64, i64, Option<String>, Option<String>);
+        let rows: Vec<Row> = sqlx::query_as(self.auth_sql(
+            "SELECT id_hash,
+                    (extract(epoch FROM created_at) * 1000)::bigint,
+                    (extract(epoch FROM last_seen_at) * 1000)::bigint,
+                    (extract(epoch FROM expires_at) * 1000)::bigint,
+                    user_agent, ip
+             FROM auth.sessions WHERE user_id = $1 AND expires_at > now()
+             ORDER BY last_seen_at DESC",
+        ))
+        .bind(user)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(id_hash, created_at_ms, last_seen_at_ms, expires_at_ms, user_agent, ip)| SessionRow {
+                id_hash,
+                created_at_ms,
+                last_seen_at_ms,
+                expires_at_ms,
+                user_agent,
+                ip,
+            })
+            .collect())
+    }
+
+    /// Ends one of `user`'s sessions. `false` if they have no such session (someone else's counts
+    /// as none).
+    pub async fn delete_session_of(&self, user: Uuid, id_hash: &[u8]) -> anyhow::Result<bool> {
+        let deleted = sqlx::query(self.auth_sql("DELETE FROM auth.sessions WHERE user_id = $1 AND id_hash = $2"))
+            .bind(user)
+            .bind(id_hash)
+            .execute(&self.pool)
+            .await?;
+        Ok(deleted.rows_affected() == 1)
+    }
+
+    /// Deletes sessions that have expired. They're already refused; this only reclaims the rows.
+    pub async fn delete_expired_sessions(&self) -> anyhow::Result<u64> {
+        Ok(sqlx::query(self.auth_sql("DELETE FROM auth.sessions WHERE expires_at <= now()"))
+            .execute(&self.pool)
+            .await?
+            .rows_affected())
     }
 
     /// Ends a session as of now. Tests use it to simulate expiry.
