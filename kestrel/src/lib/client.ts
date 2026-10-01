@@ -15,6 +15,8 @@ import type { ImportRequest } from "@/types/engine/ImportRequest";
 import type { ImportResult } from "@/types/engine/ImportResult";
 import type { MeResponse } from "@/types/engine/MeResponse";
 import type { AuthRequest } from "@/types/engine/AuthRequest";
+import type { ChangePasswordRequest } from "@/types/engine/ChangePasswordRequest";
+import type { SessionInfo } from "@/types/engine/SessionInfo";
 
 // Build-time values, used by `pnpm dev` (the UI on :3000 talks to the engine on :7070).
 const BUILD_TOKEN = process.env.NEXT_PUBLIC_KESTREL_TOKEN ?? "";
@@ -111,6 +113,18 @@ export const authenticate = async (mode: "login" | "signup", email: string, pass
 
 export const signOut = async () => {
   await engine.post("/auth/logout");
+};
+
+/** Every other session is signed out; this one stays. */
+export const changePassword = async (req: ChangePasswordRequest) => {
+  await engine.post("/auth/password", req);
+};
+
+/** This account's signed-in devices, the current one marked. */
+export const listSessions = async () => (await engine.get<SessionInfo[]>("/auth/sessions")).data;
+
+export const revokeSession = async (id: string) => {
+  await engine.delete(`/auth/sessions/${id}`);
 };
 
 export const getHealth = async () =>
