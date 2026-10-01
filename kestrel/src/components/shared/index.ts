@@ -1,3 +1,4 @@
+export * from "./auth-gate";
 export * from "./card";
 export * from "./header";
 export * from "./loader";
@@ -5,3 +6,4 @@ export * from "./method-badge";
 export * from "./sidebar";
 export * from "./stat-tile";
 export * from "./status-bar";
+export * from "./tab-panel";

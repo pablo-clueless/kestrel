@@ -100,7 +100,9 @@ export const ResponseView = () => {
         <div className="relative">
           <pre className="bg-muted max-h-80 overflow-auto rounded-xs p-3 pr-9 font-mono text-xs whitespace-pre-wrap select-text">
             {formatBody(result.body)}
-            {result.bodyTruncated && <span className="text-muted-foreground">{"\n"}… truncated</span>}
+            {result.bodyTruncated && (
+              <span className="text-muted-foreground">{"\n"}… truncated</span>
+            )}
           </pre>
           {result.body !== "" && (
             <button

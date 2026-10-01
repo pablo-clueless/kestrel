@@ -1,23 +1,22 @@
 "use client";
 
-import { useLayoutStore } from "@/stores/layout-store";
-import { CollectionList } from "../workspace";
-import { Feather } from "lucide-react";
+import { Feather, Folder, RotateCcwClock, type LucideIcon } from "lucide-react";
+
+import { useLayoutStore, type SidebarTab } from "@/stores/layout-store";
+import { CollectionList, History } from "../workspace";
 import { cn } from "cn";
 
-/**
- * user can paste or import endpoints from the API spec here.  (M3: OpenAPI import)
- * user can paste or import multiple endpoints at once.        (M3)
- * user can import endpoints from the API spec file.           (M3)
- * user can import endpoints from the API spec file in JSON/YAML format. (M3)
- * endpoints are stored in the store.                          (done: workspace store → kestrel.db)
- * endpoints are displayed in the sidebar.                     (done: grouped into collections)
- * user can click on the endpoint to view the details.         (done: Request card)
- * user can click on the "Run" button to run the endpoint.     (done: Run panel)
- */
+const TABS: { id: SidebarTab; label: string; icon: LucideIcon }[] = [
+  { id: "collections", label: "Collections", icon: Folder },
+  { id: "history", label: "History", icon: RotateCcwClock },
+];
+
 export const Sidebar = () => {
   const open = useLayoutStore((s) => s.sidebarOpen);
-  // Stays mounted when collapsed so CollectionList keeps the workspace loaded.
+  const tab = useLayoutStore((s) => s.sidebarTab);
+  const setTab = useLayoutStore((s) => s.setSidebarTab);
+  // Stays mounted when collapsed (and CollectionList stays mounted on the History tab) so it keeps
+  // the workspace loaded.
   // Width animates on the outer shell; the inner panel keeps a fixed width so content doesn't reflow mid-slide.
   return (
     <aside
@@ -37,9 +36,39 @@ export const Sidebar = () => {
         <div className="flex h-14 shrink-0 items-center gap-2 border-b px-4 font-semibold">
           <Feather className="text-primary size-5" /> Kestrel
         </div>
-        <div className="min-h-0 flex-1 p-3">
-          <CollectionList />
+        <div role="tablist" aria-label="Sidebar" className="flex shrink-0">
+          {TABS.map(({ id, label, icon: Icon }) => (
+            <button
+              key={id}
+              role="tab"
+              id={`sidebar-tab-${id}`}
+              aria-selected={tab === id}
+              aria-controls={`sidebar-panel-${id}`}
+              onClick={() => setTab(id)}
+              className={cn(
+                "flex flex-1 items-center justify-center gap-1.5 px-2 py-2.5 text-xs transition-colors duration-150",
+                tab === id
+                  ? "bg-background text-foreground font-medium"
+                  : "text-muted-foreground hover:text-foreground hover:bg-muted/60",
+              )}
+            >
+              <Icon className="size-3.5" />
+              {label}
+            </button>
+          ))}
         </div>
+        {TABS.map(({ id }) => (
+          <div
+            key={id}
+            role="tabpanel"
+            id={`sidebar-panel-${id}`}
+            aria-labelledby={`sidebar-tab-${id}`}
+            hidden={tab !== id}
+            className="min-h-0 flex-1"
+          >
+            {id === "collections" ? <CollectionList /> : <History active={open && tab === id} />}
+          </div>
+        ))}
       </div>
     </aside>
   );

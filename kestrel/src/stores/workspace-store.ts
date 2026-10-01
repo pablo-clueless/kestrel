@@ -42,8 +42,12 @@ interface WorkspaceState {
   renameCollection: (id: string, name: string) => void;
   removeCollection: (id: string) => void;
   setCollectionVar: (id: string, key: string, value: string | null) => void;
-  /** Adds to the active collection (creating a "Default" one if there are none). */
-  addEndpoint: () => void;
+  /** Adds a group to a collection; it stays listed while empty. No-op if the name is taken. */
+  addGroup: (collectionId: string, name: string) => void;
+  /** Removes a group; its endpoints stay in the collection, ungrouped. */
+  removeGroup: (collectionId: string, name: string) => void;
+  /** Adds to the active collection (creating a "Default" one if there are none), in `group` if given. */
+  addEndpoint: (group?: string) => void;
   updateEndpoint: (id: string, patch: Partial<Endpoint>) => void;
   removeEndpoint: (id: string) => void;
   setActiveEnvironment: (name: string | null) => void;
@@ -86,8 +90,28 @@ const newCollection = (name: string): Collection => ({
   name,
   vars: {},
   endpoints: [],
+  groups: [],
   source: null,
   schemaDefs: null,
+});
+
+/** A collection's groups in sidebar order: those made by hand (empty ones included), then any
+ * others its endpoints use, e.g. imported tags. */
+export const groupsOf = (collection: Collection): string[] => [
+  ...new Set([
+    ...collection.groups,
+    ...collection.endpoints.flatMap((e) => (e.group ? [e.group] : [])),
+  ]),
+];
+
+/** Applies `fn` to one collection. */
+const mapCollection = (
+  ws: Workspace,
+  id: string,
+  fn: (c: Collection) => Collection,
+): Workspace => ({
+  ...ws,
+  collections: ws.collections.map((c) => (c.id === id ? fn(c) : c)),
 });
 
 /** Appends to the active collection (creating a "Default" one if there are none) and makes it active. */
@@ -262,8 +286,25 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => {
         }),
       })),
 
-    addEndpoint: () => {
-      const endpoint = newEndpoint("New endpoint");
+    addGroup: (collectionId, name) =>
+      edit((ws) =>
+        mapCollection(ws, collectionId, (c) => {
+          const taken = groupsOf(c).some((g) => g.toLowerCase() === name.toLowerCase());
+          return taken ? c : { ...c, groups: [...c.groups, name] };
+        }),
+      ),
+
+    removeGroup: (collectionId, name) =>
+      edit((ws) =>
+        mapCollection(ws, collectionId, (c) => ({
+          ...c,
+          groups: c.groups.filter((g) => g !== name),
+          endpoints: c.endpoints.map((e) => (e.group === name ? { ...e, group: null } : e)),
+        })),
+      ),
+
+    addEndpoint: (group) => {
+      const endpoint = { ...newEndpoint("New endpoint"), group: group ?? null };
       edit((ws) => insertEndpoint(ws, endpoint));
       select(endpoint.id);
     },

@@ -1,7 +1,6 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { RotateCcwClock } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 
@@ -13,18 +12,9 @@ import type { RunStatus } from "@/types/engine/RunStatus";
 import type { RunKind } from "@/types/engine/RunKind";
 import type { Endpoint } from "@/types/engine/Endpoint";
 import { useRunStore } from "@/stores/run-store";
-import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { int, ms } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetHeader,
-  SheetTitle,
-  SheetTrigger,
-} from "../ui/sheet";
 
 const KIND_LABEL: Record<RunKind, string> = {
   latency: "Latency",
@@ -63,10 +53,10 @@ const duration = (run: RunSummary) => {
   return s < 60 ? `${s.toFixed(1)} s` : `${Math.floor(s / 60)}m ${Math.round(s % 60)}s`;
 };
 
-/** Past runs, newest first: the ones in the engine's memory plus the last 500 saved. Opening one
- * selects its endpoint and shows its results in the Live and Results cards. */
-export const History = () => {
-  const [open, setOpen] = useState(false);
+/** Sidebar panel: past runs, newest first — the ones in the engine's memory plus the last 500
+ * saved. Opening one selects its endpoint and shows its results in the Live and Results cards.
+ * `active` is whether the panel is on screen; runs are only fetched while it is. */
+export const History = ({ active }: { active: boolean }) => {
   const [thisEndpoint, setThisEndpoint] = useState(false);
   const [opening, setOpening] = useState<string | null>(null);
   const workspace = useWorkspaceStore((s) => s.workspace);
@@ -76,8 +66,8 @@ export const History = () => {
   const runs = useQuery({
     queryKey: ["runs"],
     queryFn: listRuns,
-    enabled: open,
-    // Keep a live run's row current while the sheet is open.
+    enabled: active,
+    // Keep a live run's row current while the panel is shown.
     refetchInterval: (q) => (q.state.data?.some((r) => r.status === "running") ? 2000 : false),
   });
 
@@ -108,13 +98,11 @@ export const History = () => {
     if (run.endpointId && endpoints.has(run.endpointId)) select(run.endpointId);
     if (run.status === "running") {
       attach(run.runId);
-      setOpen(false);
       return;
     }
     setOpening(run.runId);
     try {
       showReport(await getReport(run.runId));
-      setOpen(false);
     } catch (err) {
       toast.error(errorMessage(err));
     } finally {
@@ -123,63 +111,60 @@ export const History = () => {
   };
 
   return (
-    <Sheet open={open} onOpenChange={setOpen}>
-      <SheetTrigger
-        render={
-          <Button variant="outline" size="icon" aria-label="Run history" title="Run history" />
-        }
-      >
-        <RotateCcwClock />
-      </SheetTrigger>
-      <SheetContent side="right" className="w-125 gap-0">
-        <SheetHeader className="border-b">
-          <SheetTitle>Run history</SheetTitle>
-          <SheetDescription>Finished runs are kept on the engine (the last 500).</SheetDescription>
-          <label className="text-muted-foreground mt-3 flex items-center gap-2 text-xs">
-            <Switch
-              size="sm"
-              checked={thisEndpoint}
-              onCheckedChange={setThisEndpoint}
-              disabled={!selected}
-            />
+    <div className="bg-background flex h-full flex-col gap-3 p-3">
+      <div className="flex flex-col gap-2">
+        <span
+          className="text-muted-foreground text-xs uppercase"
+          title="Finished runs are kept on the engine (the last 500)."
+        >
+          Run history
+        </span>
+        <label className="text-muted-foreground flex min-w-0 items-center gap-2 text-xs">
+          <Switch
+            size="sm"
+            checked={thisEndpoint}
+            onCheckedChange={setThisEndpoint}
+            disabled={!selected}
+          />
+          <span className="truncate">
             Only {selected ? selected.name || selected.url || "this endpoint" : "this endpoint"}
-          </label>
-        </SheetHeader>
+          </span>
+        </label>
+      </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-6">
-          {runs.isPending ? (
-            <p className="text-muted-foreground p-3 text-xs">Loading…</p>
-          ) : runs.isError ? (
-            <p className="text-destructive p-3 text-xs">{errorMessage(runs.error)}</p>
-          ) : groups.length === 0 ? (
-            <p className="text-muted-foreground p-3 text-xs">
-              {thisEndpoint ? "No runs of this endpoint yet." : "No runs yet."}
-            </p>
-          ) : (
-            groups.map(([day, dayRuns]) => (
-              <section key={day}>
-                <h3 className="text-muted-foreground bg-popover sticky top-0 z-10 px-2 pt-4 pb-1.5 text-[11px] font-medium tracking-wide uppercase">
-                  {day}
-                </h3>
-                <ul className="flex flex-col gap-0.5">
-                  {dayRuns.map((run) => (
-                    <li key={run.runId}>
-                      <RunRow
-                        run={run}
-                        endpoint={run.endpointId ? endpoints.get(run.endpointId) : undefined}
-                        active={run.runId === shownRunId}
-                        loading={opening === run.runId}
-                        onOpen={() => openRun(run)}
-                      />
-                    </li>
-                  ))}
-                </ul>
-              </section>
-            ))
-          )}
-        </div>
-      </SheetContent>
-    </Sheet>
+      <div className="-mx-2 min-h-0 flex-1 overflow-y-auto pb-3">
+        {runs.isPending ? (
+          <p className="text-muted-foreground px-2 text-xs">Loading…</p>
+        ) : runs.isError ? (
+          <p className="text-destructive px-2 text-xs">{errorMessage(runs.error)}</p>
+        ) : groups.length === 0 ? (
+          <p className="text-muted-foreground px-2 text-xs">
+            {thisEndpoint ? "No runs of this endpoint yet." : "No runs yet."}
+          </p>
+        ) : (
+          groups.map(([day, dayRuns]) => (
+            <section key={day}>
+              <h3 className="text-muted-foreground bg-card sticky top-0 z-10 px-2 pt-2 pb-1.5 text-[11px] font-medium tracking-wide uppercase">
+                {day}
+              </h3>
+              <ul className="flex flex-col gap-0.5">
+                {dayRuns.map((run) => (
+                  <li key={run.runId}>
+                    <RunRow
+                      run={run}
+                      endpoint={run.endpointId ? endpoints.get(run.endpointId) : undefined}
+                      active={run.runId === shownRunId}
+                      loading={opening === run.runId}
+                      onOpen={() => openRun(run)}
+                    />
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ))
+        )}
+      </div>
+    </div>
   );
 };
 
@@ -231,7 +216,7 @@ const RunRow = ({
           {time.format(run.startedAtMs)}
         </span>
       </div>
-      <div className="text-muted-foreground flex items-center gap-3 pl-3.5 font-mono text-[11px] tabular-nums">
+      <div className="text-muted-foreground flex flex-wrap items-center gap-x-2.5 gap-y-0.5 pl-3.5 font-mono text-[11px] tabular-nums">
         {r ? (
           <>
             <span>{int(r.totalRequests)} req</span>

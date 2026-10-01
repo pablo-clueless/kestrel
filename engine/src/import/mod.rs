@@ -104,6 +104,7 @@ pub fn import(text: &str, name: Option<&str>) -> Result<ImportResult, String> {
             Some(v) => format!("{format} · {title} {v}"),
             None => format!("{format} · {title}"),
         }),
+        groups: Vec::new(),
         schema_defs: ctx.schema_defs(),
     };
     let mut warnings = ctx.warnings;
