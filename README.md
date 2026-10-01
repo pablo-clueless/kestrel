@@ -94,6 +94,9 @@ set an endpoint's body to `{{n:int_array}}`, for example on `/sort` or `/linear`
 | `KESTREL_DATABASE_URL` | – (required) | Postgres. Development: `postgres://kestrel:kestrel@localhost:5433/kestrel` from `docker compose up -d db` |
 | `KESTREL_SECRETS_KEY` | – (required) | 64 hex characters (`openssl rand -hex 32`) that encrypt stored secrets. Keep it safe and stable: without it, stored secrets can't be read |
 | `KESTREL_DB_MAX_CONNECTIONS` | `10` | Database connection pool size |
+| `KESTREL_AUTH` | `off` | `on` requires signing in, and each account gets its own workspace. See Accounts below |
+| `KESTREL_SIGNUP` | `open` | `closed` hides sign-up; create accounts with `engine user add <email>` |
+| `KESTREL_TRUSTED_PROXY` | `0` | `1` only behind a proxy that sets `Fly-Client-IP` / `X-Forwarded-For` / `X-Forwarded-Proto`: used for per-IP sign-in limits and `Secure` cookies |
 | `KESTREL_TOKEN` | random per start | Required by every API call. The UI reads it at build time, so set it in `.env` |
 | `KESTREL_PORT` | `7070` | |
 | `KESTREL_BIND` | `127.0.0.1` | Loopback by default. Only change it on a private network (see Deploying) |
@@ -101,10 +104,25 @@ set an endpoint's body to `{{n:int_array}}`, for example on `/sort` or `/linear`
 | `KESTREL_UI_ORIGINS` | `http://localhost:3000,http://127.0.0.1:3000` | Origins allowed to call the engine |
 | `TARGET_PORT` | `8089` | Reference server port |
 
-**Workspaces:** each browser gets its own workspace. The UI makes up a random id on first load,
-keeps it in `localStorage` and sends it as `X-Kestrel-Workspace` with every call, so people sharing
-one engine don't see each other's requests, secrets or runs. There's no login yet: clearing site
-data starts a new, empty workspace, and anyone who learns an id can open that workspace.
+**Workspaces, accounts off** (`KESTREL_AUTH=off`, the default): each browser gets its own
+workspace. The UI makes up a random id on first load, keeps it in `localStorage` and sends it as
+`X-Kestrel-Workspace` with every call, so people sharing one engine don't see each other's requests,
+secrets or runs. Clearing site data starts a new, empty workspace, and anyone who learns an id can
+open that workspace. Fine on your own machine or a private network.
+
+**Accounts** (`KESTREL_AUTH=on`): the UI asks people to sign in or create an account (email and a
+password of 8–128 characters), and each account has its own workspace, on any device. A browser's
+existing workspace is adopted by the first account that signs in from it, so work done before
+signing up isn't lost.
+- Passwords are hashed with Argon2id. Sessions are an HttpOnly, `SameSite=Lax` cookie that lasts 30
+  days from last use; signing out ends the session at once.
+- Sign-in and sign-up are rate limited (5 attempts a minute per email, 20 per IP), with no lockout.
+- For a deployment reachable from the internet, also set `KESTREL_SIGNUP=closed` and create accounts
+  with `engine user add <email>` (it prints a generated password once). With open sign-up, anyone
+  could create an account and use your engine to send load. Password changes, session management
+  and email verification arrive in later phases (see `HANDOFF.md` → Accounts).
+- In `pnpm dev`, open the UI on `localhost:3000`, not `127.0.0.1:3000`: the cookie only crosses
+  between the UI and the engine when both are on the same hostname.
 
 **Storage:** Postgres, with **one schema per workspace** (`ws_<id>`), so one workspace's data can't
 show up in another's results even if a query forgot to filter. A shared `auth` schema holds the
@@ -143,7 +161,7 @@ browser.
 
 ```bash
 docker compose up -d db              # the store and API tests need Postgres (KESTREL_TEST_DATABASE_URL)
-cargo test -p engine                 # 146 tests: API guard, store isolation, runners, stats, import, …
+cargo test -p engine                 # 165 tests: API guard, accounts, store isolation, runners, stats, …
 cargo clippy -p engine --all-targets -- -D warnings
 cargo fmt --all                      # rustfmt.toml: max_width 120
 cargo test -p engine export_bindings # regenerate the TypeScript types in kestrel/src/types/engine
@@ -205,8 +223,9 @@ With compose, the data is on the `kestrel-db` volume; set `KESTREL_SECRETS_KEY` 
 Containers can be rebuilt and recreated freely. Only remove the volume if you mean to wipe every
 workspace. Back up with `docker compose exec db pg_dump -U kestrel kestrel > kestrel-backup.sql`.
 
-> **There is no login.** Anyone who can load the UI can drive the load generator. Publish the port on
-> `127.0.0.1` (as above) or keep it on a private network. Never expose it publicly.
+> **Accounts are off by default.** Then anyone who can load the UI can drive the load generator:
+> publish the port on `127.0.0.1` (as above) or keep it on a private network. To expose it, set
+> `KESTREL_AUTH=on` and `KESTREL_SIGNUP=closed` (see Accounts above).
 
 ### Fly.io (private)
 
@@ -251,20 +270,22 @@ fit, even though Vercel runs Rust functions:
   memory between requests, and functions stop after 300 s on Hobby or 800 s on Pro.
 - **Measurements would suffer.** Load generation needs steady CPU and sockets. A shared 1–2 vCPU
   function instance adds its own jitter, and the p99 lateness numbers above wouldn't hold.
-- **The security model is local.** The session token is built into the UI bundle, which is fine on
-  localhost. On a public URL, anyone who loads the page gets a token for a load generator.
+- **The deployment token alone is a local security model.** It's built into the UI bundle, which is
+  fine on localhost; on a public URL anyone who loads the page has it. Accounts
+  (`KESTREL_AUTH=on`) close that gap.
 - **The engine holds live runs in memory**, so it needs one long-lived process. (Storage is no
   longer the obstacle: it's Postgres.)
 - **Load-testing third parties from shared cloud infrastructure** risks the host's acceptable-use
   rules.
 
-The container above solves all of these except login. A **public** deployment needs real
-authentication before it's safe to expose.
+The container above solves all of these. A **public** deployment should run with
+`KESTREL_AUTH=on` and `KESTREL_SIGNUP=closed`.
 
 ## Status
 
-Built: M0–M4. That covers the engine and API guard, latency probe, load test (both models), OpenAPI
-import with contract checks, Big-O, and single-binary / container packaging (UI served by the engine,
-private Fly.io deploy). Next: JSON/CSV export and login for public deployments, then stress, spike,
-soak, rate-limit discovery, and Postman / curl import. See `HANDOFF.md` for the design
+Built: M0–M4, plus Postgres storage (one schema per workspace) and accounts (sign-up, sign-in,
+sessions). That covers the engine and API guard, latency probe, load test (both models), OpenAPI
+import with contract checks, Big-O, and single-binary / container packaging (UI served by the
+engine, private Fly.io deploy). Next: password changes and session management, JSON/CSV export, then
+stress, spike, soak, rate-limit discovery, and Postman / curl import. See `HANDOFF.md` for the design
 notes and full roadmap.

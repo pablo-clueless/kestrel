@@ -12,6 +12,19 @@ No version has been tagged yet (engine and UI are both `0.1.0`), so the entries 
 
 ### Added
 
+- **Accounts** (`KESTREL_AUTH=on`; off by default, which keeps today's behaviour).
+  - Sign-up and sign-in with email and password; the sign-in page now works, and the header shows
+    the signed-in user with a sign-out menu.
+  - Each account has its own workspace on any device. A browser's existing workspace is adopted by
+    the first account that signs in from it, so earlier work isn't lost.
+  - Passwords are hashed with Argon2id. Sessions are an HttpOnly, `SameSite=Lax` cookie lasting 30
+    days from last use, and signing out ends them at once. Every API route except health and
+    sign-in requires a session, including live run streams.
+  - Rate limits on sign-in and sign-up (5 a minute per email, 20 per IP), with no lockout.
+  - `KESTREL_SIGNUP=closed` hides sign-up; `engine user add <email>` creates an account and prints a
+    generated password. `KESTREL_TRUSTED_PROXY=1` trusts proxy headers for client IPs and `Secure`
+    cookies.
+
 - **Dashboard route group** `(dashboard)` with a shared layout (sidebar + header) for
   `/workspace`, `/profile` and `/settings`.
 - **Profile page** with Account, Security, Appearance and Notifications tabs (placeholders for
@@ -26,6 +39,10 @@ No version has been tagged yet (engine and UI are both `0.1.0`), so the entries 
 
 ### Changed
 
+- **Password rule:** 8–128 characters of anything, spaces and non-ASCII included (NIST 800-63B).
+  The sign-in form used to reject spaces and non-ASCII characters while saying it required a mix.
+- In `pnpm dev`, the UI calls the engine on the page's own hostname (port 7070) instead of always
+  `127.0.0.1`, so the session cookie works on `localhost`.
 - **Storage moved from SQLite to Postgres**, with one schema per workspace (`ws_<id>`), so one
   workspace's data can't appear in another's results even if a query forgot to filter. Every query
   runs in a transaction pinned to its workspace's schema, and an unpinned query finds no tables.
