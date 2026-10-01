@@ -9,6 +9,7 @@ import {
   useSelectedEndpoint,
   useSelectedIsDraft,
   useWorkspaceStore,
+  groupsOf,
 } from "@/stores/workspace-store";
 import type { HttpMethod } from "@/types/engine/HttpMethod";
 import { errorMessage, renderRequest } from "@/lib/client";
@@ -19,6 +20,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { KeyValueEditor } from "./key-value-editor";
 import { useSendEntry, useSendStore } from "@/stores/send-store";
 import { ExtractEditor } from "./extract-editor";
+import { GroupPicker } from "./group-picker";
 import type { Auth } from "@/types/engine/Auth";
 import { Button } from "@/components/ui/button";
 import type { Body } from "@/types/engine/Body";
@@ -54,6 +56,7 @@ export const RequestEditor = () => {
   const collection = useActiveCollection();
   const saveDraft = useWorkspaceStore((s) => s.saveDraft);
   const update = useWorkspaceStore((s) => s.updateEndpoint);
+  const addGroup = useWorkspaceStore((s) => s.addGroup);
   const environment = useWorkspaceStore((s) => s.workspace?.activeEnvironment ?? null);
   const send = useSendStore((s) => s.send);
   const { pending } = useSendEntry(endpoint?.id);
@@ -67,16 +70,28 @@ export const RequestEditor = () => {
     );
   }
   const patch = (p: Partial<Endpoint>) => update(endpoint.id, p);
+  const groups = collection ? groupsOf(collection) : [];
 
   return (
     <div className="flex flex-col gap-3 text-xs">
-      <div className="flex items-center justify-between">
-        <Input
-          className={cn("max-w-100 border-none px-2 font-medium", XS)}
-          value={endpoint.name}
-          placeholder="Endpoint name"
-          onChange={(e) => patch({ name: e.target.value })}
-        />
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex min-w-0 flex-1 items-center gap-1">
+          <GroupPicker
+            value={endpoint.group}
+            groups={groups}
+            onChange={(group) => {
+              // A group made here is kept like one made in the sidebar, so it survives emptying.
+              if (group && collection) addGroup(collection.id, group);
+              patch({ group });
+            }}
+          />
+          <Input
+            className={cn("max-w-100 border-none px-2 font-medium", XS)}
+            value={endpoint.name}
+            placeholder="Endpoint name"
+            onChange={(e) => patch({ name: e.target.value })}
+          />
+        </div>
         {isDraft && (
           <Button variant="outline" className={XS} onClick={() => saveDraft(endpoint.id)}>
             <Save /> Save to {collection?.name ?? "a new collection"}

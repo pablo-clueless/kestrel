@@ -479,6 +479,7 @@ mod tests {
             id: uuid::Uuid::new_v4(),
             name: "api".into(),
             source: None,
+            groups: Vec::new(),
             schema_defs: None,
             vars: BTreeMap::from([
                 ("base".into(), "http://collection-default".into()),

@@ -362,6 +362,7 @@ mod tests {
             vars: Default::default(),
             endpoints: vec![],
             source: None,
+            groups: Vec::new(),
             schema_defs: None,
         }
     }

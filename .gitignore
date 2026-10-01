@@ -3,3 +3,4 @@
 kestrel.secrets.json
 kestrel.db*
 HANDOFF.md
+Makefile
