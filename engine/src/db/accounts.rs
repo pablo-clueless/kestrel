@@ -11,6 +11,7 @@ use super::Db;
 pub struct UserRow {
     pub id: Uuid,
     pub password_hash: String,
+    pub email_verified: bool,
 }
 
 /// The user behind a valid session.
@@ -18,6 +19,7 @@ pub struct UserRow {
 pub struct SessionUser {
     pub user_id: Uuid,
     pub email: String,
+    pub email_verified: bool,
     /// Whether `last_seen_at` is old enough to be bumped (at most once a minute).
     pub stale: bool,
 }
@@ -31,6 +33,22 @@ pub struct SessionRow {
     pub ip: Option<String>,
 }
 
+/// What an emailed link is for. Each kind is only accepted by its own route.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmailPurpose {
+    Verify,
+    Reset,
+}
+
+impl EmailPurpose {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Verify => "verify",
+            Self::Reset => "reset",
+        }
+    }
+}
+
 /// What signing up can run into, besides a database error.
 pub enum CreateUser {
     Created(Uuid),
@@ -39,12 +57,13 @@ pub enum CreateUser {
 
 impl Db {
     pub async fn user_by_email(&self, email: &str) -> anyhow::Result<Option<UserRow>> {
-        let row: Option<(Uuid, String)> =
-            sqlx::query_as(self.auth_sql("SELECT id, password_hash FROM auth.users WHERE email = $1"))
-                .bind(email)
-                .fetch_optional(&self.pool)
-                .await?;
-        Ok(row.map(|(id, password_hash)| UserRow { id, password_hash }))
+        let row: Option<(Uuid, String, bool)> = sqlx::query_as(
+            self.auth_sql("SELECT id, password_hash, email_verified_at IS NOT NULL FROM auth.users WHERE email = $1"),
+        )
+        .bind(email)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|(id, password_hash, email_verified)| UserRow { id, password_hash, email_verified }))
     }
 
     /// Creates a user and gives them a workspace in one transaction: `claim` (a browser's existing
@@ -192,15 +211,16 @@ impl Db {
 
     /// The live session with this hash, if any. Expired sessions count as absent.
     pub async fn session(&self, id_hash: &[u8]) -> anyhow::Result<Option<SessionUser>> {
-        let row: Option<(Uuid, String, bool)> = sqlx::query_as(self.auth_sql(
-            "SELECT s.user_id, u.email, s.last_seen_at < now() - interval '1 minute'
+        let row: Option<(Uuid, String, bool, bool)> = sqlx::query_as(self.auth_sql(
+            "SELECT s.user_id, u.email, u.email_verified_at IS NOT NULL,
+                    s.last_seen_at < now() - interval '1 minute'
              FROM auth.sessions s JOIN auth.users u ON u.id = s.user_id
              WHERE s.id_hash = $1 AND s.expires_at > now()",
         ))
         .bind(id_hash)
         .fetch_optional(&self.pool)
         .await?;
-        Ok(row.map(|(user_id, email, stale)| SessionUser { user_id, email, stale }))
+        Ok(row.map(|(user_id, email, email_verified, stale)| SessionUser { user_id, email, email_verified, stale }))
     }
 
     /// Slides a session's expiry forward to `lifetime` from now.
@@ -305,6 +325,126 @@ impl Db {
             .execute(&self.pool)
             .await?
             .rows_affected())
+    }
+
+    /// Stores an emailed link's token (its hash) for `user`, valid for `lifetime`.
+    pub async fn create_email_token(
+        &self,
+        token_hash: &[u8],
+        user: Uuid,
+        purpose: EmailPurpose,
+        lifetime: Duration,
+    ) -> anyhow::Result<()> {
+        sqlx::query(self.auth_sql(
+            "INSERT INTO auth.email_tokens (token_hash, user_id, purpose, expires_at)
+             VALUES ($1, $2, $3, now() + make_interval(secs => $4))",
+        ))
+        .bind(token_hash)
+        .bind(user)
+        .bind(purpose.as_str())
+        .bind(lifetime.as_secs_f64())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Uses up a live token for `purpose`. Deleting it is what makes it single-use, so two clicks
+    /// racing can't both succeed. The user it belonged to, or `None` if it's unknown, expired,
+    /// already used, or for the other purpose.
+    async fn take_email_token(
+        &self,
+        tx: &mut Transaction<'static, Postgres>,
+        token_hash: &[u8],
+        purpose: EmailPurpose,
+    ) -> anyhow::Result<Option<Uuid>> {
+        Ok(sqlx::query_scalar(self.auth_sql(
+            "DELETE FROM auth.email_tokens WHERE token_hash = $1 AND purpose = $2 AND expires_at > now()
+             RETURNING user_id",
+        ))
+        .bind(token_hash)
+        .bind(purpose.as_str())
+        .fetch_optional(&mut **tx)
+        .await?)
+    }
+
+    /// Marks the email verified with a `verify` token, and drops the user's other verify links.
+    /// The user, or `None` if the token isn't valid.
+    pub async fn verify_email(&self, token_hash: &[u8]) -> anyhow::Result<Option<Uuid>> {
+        let mut tx = self.begin().await?;
+        let Some(user) = self.take_email_token(&mut tx, token_hash, EmailPurpose::Verify).await? else {
+            return Ok(None);
+        };
+        self.mark_verified(&mut tx, user).await?;
+        self.delete_email_tokens(&mut tx, user, EmailPurpose::Verify).await?;
+        tx.commit().await?;
+        Ok(Some(user))
+    }
+
+    /// Sets a new password with a `reset` token, in one transaction: the password changes, every
+    /// session ends (whoever is signed in may not be the owner), the user's other reset links stop
+    /// working, and the email counts as verified, since following the link proved the user reads
+    /// it. The user, or `None` if the token isn't valid.
+    pub async fn reset_password(&self, token_hash: &[u8], password_hash: &str) -> anyhow::Result<Option<Uuid>> {
+        let mut tx = self.begin().await?;
+        let Some(user) = self.take_email_token(&mut tx, token_hash, EmailPurpose::Reset).await? else {
+            return Ok(None);
+        };
+        sqlx::query(self.auth_sql("UPDATE auth.users SET password_hash = $2 WHERE id = $1"))
+            .bind(user)
+            .bind(password_hash)
+            .execute(&mut *tx)
+            .await?;
+        self.mark_verified(&mut tx, user).await?;
+        sqlx::query(self.auth_sql("DELETE FROM auth.sessions WHERE user_id = $1")).bind(user).execute(&mut *tx).await?;
+        self.delete_email_tokens(&mut tx, user, EmailPurpose::Reset).await?;
+        tx.commit().await?;
+        Ok(Some(user))
+    }
+
+    async fn mark_verified(&self, tx: &mut Transaction<'static, Postgres>, user: Uuid) -> anyhow::Result<()> {
+        sqlx::query(
+            self.auth_sql("UPDATE auth.users SET email_verified_at = coalesce(email_verified_at, now()) WHERE id = $1"),
+        )
+        .bind(user)
+        .execute(&mut **tx)
+        .await?;
+        Ok(())
+    }
+
+    async fn delete_email_tokens(
+        &self,
+        tx: &mut Transaction<'static, Postgres>,
+        user: Uuid,
+        purpose: EmailPurpose,
+    ) -> anyhow::Result<()> {
+        sqlx::query(self.auth_sql("DELETE FROM auth.email_tokens WHERE user_id = $1 AND purpose = $2"))
+            .bind(user)
+            .bind(purpose.as_str())
+            .execute(&mut **tx)
+            .await?;
+        Ok(())
+    }
+
+    /// Deletes email tokens that have expired, alongside the session sweep.
+    pub async fn delete_expired_email_tokens(&self) -> anyhow::Result<u64> {
+        Ok(sqlx::query(self.auth_sql("DELETE FROM auth.email_tokens WHERE expires_at <= now()"))
+            .execute(&self.pool)
+            .await?
+            .rows_affected())
+    }
+
+    /// Ends an emailed link's validity as of now. Tests use it to simulate expiry.
+    #[cfg(test)]
+    pub async fn expire_email_token(&self, token_hash: &[u8]) {
+        sqlx::query(
+            self.auth_sql(
+                "UPDATE auth.email_tokens SET expires_at = now() - interval '1 second' WHERE token_hash = $1",
+            ),
+        )
+        .bind(token_hash)
+        .execute(&self.pool)
+        .await
+        .unwrap();
     }
 
     /// Ends a session as of now. Tests use it to simulate expiry.

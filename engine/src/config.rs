@@ -38,6 +38,84 @@ pub struct Config {
     /// `KESTREL_TRUSTED_PROXY=1`: believe `Fly-Client-IP` / `X-Forwarded-For` / `X-Forwarded-Proto`.
     /// Only behind a proxy that sets them; otherwise any client could claim any IP.
     pub trusted_proxy: bool,
+    /// `KESTREL_SMTP_*`: how account emails (verification, password reset) are sent. `None` turns
+    /// those features off.
+    pub smtp: Option<SmtpConfig>,
+    /// `KESTREL_PUBLIC_URL`: where the UI is, for links in emails (e.g. `https://kestrel.fly.dev`).
+    /// Unset, links use the `Origin` of the request that sent the email.
+    pub public_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SmtpTls {
+    /// TLS from the first byte (usually port 465).
+    Tls,
+    /// Plain, then upgraded with STARTTLS (usually 587). Refuses servers that can't upgrade.
+    StartTls,
+    /// No encryption, for a local catcher like Mailpit. Never for a real server.
+    None,
+}
+
+#[derive(Clone)]
+pub struct SmtpConfig {
+    pub host: String,
+    pub port: u16,
+    pub tls: SmtpTls,
+    pub username: Option<String>,
+    pub password: Option<String>,
+    /// The sender, e.g. `Kestrel <no-reply@example.com>`.
+    pub from: String,
+}
+
+/// Leaves out the password, so a logged `Config` can't leak it.
+impl std::fmt::Debug for SmtpConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SmtpConfig")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("tls", &self.tls)
+            .field("username", &self.username)
+            .field("password", &self.password.as_ref().map(|_| "…"))
+            .field("from", &self.from)
+            .finish()
+    }
+}
+
+impl SmtpConfig {
+    /// `None` when `KESTREL_SMTP_HOST` is unset. Once it's set, `KESTREL_SMTP_FROM` is required, and
+    /// a username needs a password (and the other way round), so a half-done setup fails at startup.
+    pub fn from_lookup(lookup: impl Fn(&str) -> Option<String>) -> anyhow::Result<Option<Self>> {
+        let get = |var: &str| lookup(var).map(|v| v.trim().to_owned()).filter(|v| !v.is_empty());
+        let Some(host) = get("KESTREL_SMTP_HOST") else {
+            let stray = ["KESTREL_SMTP_PORT", "KESTREL_SMTP_USERNAME", "KESTREL_SMTP_PASSWORD", "KESTREL_SMTP_FROM"]
+                .into_iter()
+                .find(|var| get(var).is_some());
+            if let Some(var) = stray {
+                anyhow::bail!("{var} is set but KESTREL_SMTP_HOST isn't; set it too, or remove {var}");
+            }
+            return Ok(None);
+        };
+        let port: u16 = match get("KESTREL_SMTP_PORT") {
+            Some(p) => p.parse().ok().filter(|&p| p > 0).context("KESTREL_SMTP_PORT must be a port number")?,
+            None => 587,
+        };
+        let tls = match get("KESTREL_SMTP_TLS").map(|v| v.to_ascii_lowercase()).as_deref() {
+            Some("tls") => SmtpTls::Tls,
+            Some("starttls") => SmtpTls::StartTls,
+            Some("none") => SmtpTls::None,
+            Some(_) => anyhow::bail!("KESTREL_SMTP_TLS must be one of: tls, starttls, none"),
+            None if port == 465 => SmtpTls::Tls,
+            None => SmtpTls::StartTls,
+        };
+        let (username, password) = (get("KESTREL_SMTP_USERNAME"), get("KESTREL_SMTP_PASSWORD"));
+        anyhow::ensure!(
+            username.is_some() == password.is_some(),
+            "set both KESTREL_SMTP_USERNAME and KESTREL_SMTP_PASSWORD, or neither"
+        );
+        let from = get("KESTREL_SMTP_FROM")
+            .context("KESTREL_SMTP_FROM is required with KESTREL_SMTP_HOST, e.g. Kestrel <no-reply@example.com>")?;
+        Ok(Some(Self { host, port, tls, username, password, from }))
+    }
 }
 
 /// Limits the API can't raise (HANDOFF → Safety rails → Caps).
@@ -206,6 +284,18 @@ impl Config {
         config.signup_open = choice("KESTREL_SIGNUP", &["open", "closed"], "open")? == "open";
         config.trusted_proxy = choice("KESTREL_TRUSTED_PROXY", &["0", "1"], "0")? == "1";
         config.caps = Caps::from_env()?;
+        config.smtp = SmtpConfig::from_lookup(|var| std::env::var(var).ok())?;
+        config.public_url = match std::env::var("KESTREL_PUBLIC_URL") {
+            Ok(url) if !url.trim().is_empty() => {
+                let url = url.trim().trim_end_matches('/');
+                anyhow::ensure!(
+                    url.starts_with("https://") || url.starts_with("http://"),
+                    "KESTREL_PUBLIC_URL must start with https:// (or http:// for local use)"
+                );
+                Some(url.to_owned())
+            }
+            _ => None,
+        };
         Ok(config)
     }
 
@@ -237,6 +327,8 @@ impl Config {
             auth_enabled: false,
             signup_open: true,
             trusted_proxy: false,
+            smtp: None,
+            public_url: None,
         }
     }
 }
@@ -283,6 +375,41 @@ mod tests {
         assert_eq!(soak.max_rps, 50, "lowering works too, e.g. on a shared deployment");
         assert_eq!(soak.max_timeout, Duration::from_secs(60), "blank means default");
         assert_eq!(soak.changed().len(), 2, "{:?}", soak.changed());
+    }
+
+    fn smtp(vars: &[(&str, &str)]) -> anyhow::Result<Option<SmtpConfig>> {
+        let vars: HashMap<String, String> = vars.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect();
+        SmtpConfig::from_lookup(|var| vars.get(var).cloned())
+    }
+
+    #[test]
+    fn smtp_is_off_by_default_and_half_setups_fail() {
+        assert!(smtp(&[]).unwrap().is_none());
+        let full = smtp(&[
+            ("KESTREL_SMTP_HOST", "smtp.example.com"),
+            ("KESTREL_SMTP_USERNAME", "kestrel"),
+            ("KESTREL_SMTP_PASSWORD", "hunter2hunter2"),
+            ("KESTREL_SMTP_FROM", "Kestrel <no-reply@example.com>"),
+        ])
+        .unwrap()
+        .unwrap();
+        assert_eq!((full.port, full.tls), (587, SmtpTls::StartTls));
+        assert!(!format!("{full:?}").contains("hunter2"), "Debug hides the password");
+        let implicit = [("KESTREL_SMTP_HOST", "h"), ("KESTREL_SMTP_PORT", "465"), ("KESTREL_SMTP_FROM", "a@b.co")];
+        assert_eq!(smtp(&implicit).unwrap().unwrap().tls, SmtpTls::Tls, "465 means TLS");
+
+        for (vars, mentions) in [
+            (&[("KESTREL_SMTP_FROM", "a@b.co")][..], "KESTREL_SMTP_HOST"),
+            (&[("KESTREL_SMTP_HOST", "h")][..], "KESTREL_SMTP_FROM"),
+            (
+                &[("KESTREL_SMTP_HOST", "h"), ("KESTREL_SMTP_FROM", "a@b.co"), ("KESTREL_SMTP_USERNAME", "u")][..],
+                "PASSWORD",
+            ),
+            (&[("KESTREL_SMTP_HOST", "h"), ("KESTREL_SMTP_FROM", "a@b.co"), ("KESTREL_SMTP_TLS", "ssl")][..], "TLS"),
+        ] {
+            let err = smtp(vars).unwrap_err().to_string();
+            assert!(err.contains(mentions), "{vars:?}: {err}");
+        }
     }
 
     #[test]

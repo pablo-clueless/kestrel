@@ -1,12 +1,13 @@
-//! Accounts (HANDOFF → Accounts, A1): sign-up, sign-in, sessions. Off by default
-//! (`KESTREL_AUTH=off`), in which case nothing here runs and a browser's workspace id is its only
-//! credential, as before.
+//! Accounts (HANDOFF → Accounts, A1–A3): sign-up, sign-in, sessions, and the emailed links for
+//! verification and password reset. Off by default (`KESTREL_AUTH=off`), in which case nothing here
+//! runs and a browser's workspace id is its only credential, as before.
 
+pub mod mail;
 pub mod password;
 pub mod rate_limit;
 pub mod session;
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -14,16 +15,31 @@ use uuid::Uuid;
 
 use crate::{
     config::Config,
-    db::{Db, accounts::CreateUser},
+    db::{
+        Db,
+        accounts::{CreateUser, EmailPurpose},
+    },
     error::ApiError,
 };
+use mail::Mailer;
 use rate_limit::RateLimiter;
+
+/// How long an emailed link works.
+const VERIFY_LIFETIME: Duration = Duration::from_secs(24 * 60 * 60);
+const RESET_LIFETIME: Duration = Duration::from_secs(30 * 60);
+/// What the UI routes are called; links in emails point at them.
+const VERIFY_PATH: &str = "/verify-email";
+const RESET_PATH: &str = "/reset-password";
+/// The same answer for an unknown, used, expired or wrong-purpose token: which one it was doesn't
+/// help anyone.
+const BAD_LINK: &str = "this link is invalid or has expired";
 
 /// The user a request is acting as, put in the request's extensions by the session middleware.
 #[derive(Debug, Clone)]
 pub struct AuthedUser {
     pub id: Uuid,
     pub email: String,
+    pub email_verified: bool,
 }
 
 #[derive(Debug, Deserialize, TS)]
@@ -53,6 +69,8 @@ pub enum AuthMode {
 pub struct UserInfo {
     pub id: Uuid,
     pub email: String,
+    /// Whether the user has followed a verification (or password reset) link.
+    pub email_verified: bool,
 }
 
 /// `GET /api/auth/me`, and what signing in returns.
@@ -63,6 +81,9 @@ pub struct MeResponse {
     pub auth: AuthMode,
     /// Whether new accounts can be created from the UI.
     pub signup: bool,
+    /// Whether this engine can send email (`KESTREL_SMTP_HOST`), so verification and password
+    /// reset are available.
+    pub mail: bool,
     /// The signed-in user; `None` when signed out or when auth is off.
     pub user: Option<UserInfo>,
     /// The workspace the UI should use (it sends this as `X-Kestrel-Workspace`).
@@ -75,6 +96,31 @@ pub struct MeResponse {
 pub struct ChangePasswordRequest {
     pub current_password: String,
     pub new_password: String,
+}
+
+/// `POST /api/auth/password-reset`: email a reset link, if there's an account.
+#[derive(Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct PasswordResetRequest {
+    pub email: String,
+}
+
+/// `POST /api/auth/password-reset/confirm`: the token from the link, and the new password.
+#[derive(Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct PasswordResetConfirm {
+    pub token: String,
+    pub new_password: String,
+}
+
+/// `POST /api/auth/verify-email`: the token from the link.
+#[derive(Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct VerifyEmailRequest {
+    pub token: String,
 }
 
 /// One signed-in device or browser, for the Security tab.
@@ -101,6 +147,9 @@ pub struct SessionInfo {
 pub struct Client<'a> {
     pub ip: Option<&'a str>,
     pub user_agent: Option<&'a str>,
+    /// The page's `Origin` (already checked against the allowlist by the guard). Links in emails
+    /// point there unless `KESTREL_PUBLIC_URL` is set.
+    pub origin: Option<&'a str>,
 }
 
 pub struct Accounts {
@@ -110,6 +159,12 @@ pub struct Accounts {
     by_email: RateLimiter,
     by_ip: RateLimiter,
     password_changes: RateLimiter,
+    /// `None` when `KESTREL_SMTP_HOST` is unset: verification and reset are then unavailable.
+    mailer: Option<Arc<Mailer>>,
+    public_url: Option<String>,
+    /// Emails sent to one address, whoever asks: a few per quarter hour, so the reset form can't be
+    /// used to flood someone's inbox.
+    mail_per_address: RateLimiter,
 }
 
 /// Same message for a wrong password and an unknown email, so it doesn't reveal who has an account.
@@ -124,15 +179,39 @@ impl Accounts {
             by_email: RateLimiter::per_minute(5),
             by_ip: RateLimiter::per_minute(20),
             password_changes: RateLimiter::per_minute(5),
+            mailer: config.smtp.as_ref().and_then(|smtp| match Mailer::smtp(smtp) {
+                Ok(mailer) => Some(Arc::new(mailer)),
+                // `serve` builds the mailer first and refuses to start if it fails, so this is
+                // only reached by other commands, which don't send email.
+                Err(err) => {
+                    tracing::error!("email is off: {err:#}");
+                    None
+                }
+            }),
+            public_url: config.public_url.clone(),
+            mail_per_address: RateLimiter::new(3, Duration::from_secs(15 * 60)),
         }
     }
 
+    /// Sends through `mailer` instead of the configured one. Tests read what was sent.
+    #[cfg(test)]
+    pub fn with_mailer(mut self, mailer: Arc<Mailer>) -> Self {
+        self.mailer = Some(mailer);
+        self
+    }
+
     pub fn me_off(&self) -> MeResponse {
-        MeResponse { auth: AuthMode::Off, signup: false, user: None, workspace_id: None }
+        MeResponse { auth: AuthMode::Off, signup: false, mail: false, user: None, workspace_id: None }
     }
 
     pub fn me_signed_out(&self) -> MeResponse {
-        MeResponse { auth: AuthMode::On, signup: self.signup_open, user: None, workspace_id: None }
+        MeResponse {
+            auth: AuthMode::On,
+            signup: self.signup_open,
+            mail: self.mailer.is_some(),
+            user: None,
+            workspace_id: None,
+        }
     }
 
     /// Creates an account and signs it in. Returns the session token and who's signed in.
@@ -146,13 +225,28 @@ impl Accounts {
         let hash = password::hash(req.password).await.map_err(internal)?;
         let user = match self.db.create_user(&email, &hash, req.workspace).await.map_err(internal)? {
             CreateUser::Created(id) => id,
-            // Without email verification (A3) the sign-up form can't avoid saying this somehow;
-            // keep it vague and point at signing in.
+            // Sign-up signs you in straight away, so it can't hide that the address is taken the
+            // way the reset form does; keep it vague and point at signing in.
             CreateUser::EmailTaken => {
                 return Err(ApiError::BadRequest("can't create an account with that email; try signing in".into()));
             }
         };
-        self.start_session(user, email, client).await
+        // Best effort: the account works either way, and the Account tab can send it again.
+        if let Some(mailer) = &self.mailer {
+            match self.link_base(client.origin) {
+                Ok(base) => {
+                    let (db, mailer, email) = (Arc::clone(&self.db), Arc::clone(mailer), email.clone());
+                    tokio::spawn(async move {
+                        if let Err(err) = send_verification(&db, &mailer, user, &email, &base).await {
+                            tracing::warn!("couldn't send the verification email to {email}: {err:#}");
+                        }
+                    });
+                }
+                Err(err) => tracing::warn!("no verification email for {email}: {err}"),
+            }
+        }
+        let user = AuthedUser { id: user, email, email_verified: false };
+        self.start_session(user, client).await
     }
 
     pub async fn login(&self, req: AuthRequest, client: Client<'_>) -> Result<(String, MeResponse), ApiError> {
@@ -160,14 +254,14 @@ impl Accounts {
         self.rate_limit(&email, client.ip)?;
         let user = self.db.user_by_email(&email).await.map_err(internal)?;
         let (id, stored) = match user {
-            Some(u) => (Some(u.id), Some(u.password_hash)),
+            Some(u) => (Some((u.id, u.email_verified)), Some(u.password_hash)),
             None => (None, None),
         };
         let outdated = stored.as_deref().is_some_and(password::needs_rehash);
         if !password::verify(req.password.clone(), stored).await {
             return Err(ApiError::Unauthorized(BAD_CREDENTIALS));
         }
-        let id = id.expect("verify only succeeds for a known user");
+        let (id, email_verified) = id.expect("verify only succeeds for a known user");
         // The one moment the password is known: upgrade a hash made with older parameters.
         // Best effort, since the sign-in itself has succeeded either way.
         if outdated {
@@ -177,7 +271,94 @@ impl Accounts {
             }
         }
         self.db.ensure_user_workspace(id, req.workspace).await.map_err(internal)?;
-        self.start_session(id, email, client).await
+        self.start_session(AuthedUser { id, email, email_verified }, client).await
+    }
+
+    /// Emails a password reset link if `email` has an account. The answer is the same either way,
+    /// and the lookup and sending happen after it's sent, so neither the response nor its timing
+    /// says whether the account exists.
+    pub async fn request_password_reset(&self, req: PasswordResetRequest, client: Client<'_>) -> Result<(), ApiError> {
+        let mailer = Arc::clone(self.mailer()?);
+        let email = normalize_email(&req.email)?;
+        if let Some(ip) = client.ip {
+            self.by_ip.check(ip).map_err(ApiError::TooManyRequests)?;
+        }
+        self.mail_per_address.check(&email).map_err(ApiError::TooManyRequests)?;
+        let base = self.link_base(client.origin)?;
+        let db = Arc::clone(&self.db);
+        tokio::spawn(async move {
+            let sent = async {
+                let Some(user) = db.user_by_email(&email).await? else { return Ok(false) };
+                let token = session::new_token();
+                db.create_email_token(&session::hash(&token), user.id, EmailPurpose::Reset, RESET_LIFETIME).await?;
+                mailer.send(mail::password_reset(&email, &format!("{base}{RESET_PATH}?token={token}"))).await?;
+                anyhow::Ok(true)
+            };
+            match sent.await {
+                Ok(true) => tracing::info!("password reset link sent to {email}"),
+                Ok(false) => {}
+                Err(err) => tracing::warn!("couldn't send a password reset link to {email}: {err:#}"),
+            }
+        });
+        Ok(())
+    }
+
+    /// Sets a new password from a reset link. Every session ends, including any the person who
+    /// asked for the reset doesn't know about; they sign in again with the new password.
+    pub async fn confirm_password_reset(&self, req: PasswordResetConfirm, client: Client<'_>) -> Result<(), ApiError> {
+        if let Some(ip) = client.ip {
+            self.by_ip.check(ip).map_err(ApiError::TooManyRequests)?;
+        }
+        let token_hash = link_token(&req.token)?;
+        password::check_policy(&req.new_password).map_err(ApiError::BadRequest)?;
+        let hash = password::hash(req.new_password).await.map_err(internal)?;
+        match self.db.reset_password(&token_hash, &hash).await.map_err(internal)? {
+            Some(user) => {
+                tracing::info!("password reset for user {user}; all of their sessions ended");
+                Ok(())
+            }
+            None => Err(ApiError::BadRequest(BAD_LINK.into())),
+        }
+    }
+
+    /// Marks the email verified from a verification link. Works signed in or not, so the link can
+    /// be opened on another device.
+    pub async fn verify_email(&self, req: VerifyEmailRequest, client: Client<'_>) -> Result<(), ApiError> {
+        if let Some(ip) = client.ip {
+            self.by_ip.check(ip).map_err(ApiError::TooManyRequests)?;
+        }
+        let token_hash = link_token(&req.token)?;
+        match self.db.verify_email(&token_hash).await.map_err(internal)? {
+            Some(_) => Ok(()),
+            None => Err(ApiError::BadRequest(BAD_LINK.into())),
+        }
+    }
+
+    /// Sends the signed-in user a new verification link. Waits for the send, so the UI can say
+    /// whether it worked.
+    pub async fn resend_verification(&self, user: &AuthedUser, client: Client<'_>) -> Result<(), ApiError> {
+        let mailer = self.mailer()?;
+        if user.email_verified {
+            return Err(ApiError::BadRequest("your email is already verified".into()));
+        }
+        self.mail_per_address.check(&user.email).map_err(ApiError::TooManyRequests)?;
+        let base = self.link_base(client.origin)?;
+        send_verification(&self.db, mailer, user.id, &user.email, &base).await.map_err(|err| {
+            tracing::warn!("couldn't send the verification email to {}: {err:#}", user.email);
+            ApiError::Internal("couldn't send the email; try again in a few minutes".into())
+        })
+    }
+
+    fn mailer(&self) -> Result<&Arc<Mailer>, ApiError> {
+        self.mailer.as_ref().ok_or(ApiError::NotFound("email isn't set up on this engine (KESTREL_SMTP_HOST)"))
+    }
+
+    /// Where links in emails point: `KESTREL_PUBLIC_URL`, else the page that asked.
+    fn link_base(&self, origin: Option<&str>) -> Result<String, ApiError> {
+        self.public_url
+            .clone()
+            .or_else(|| origin.map(|o| o.trim_end_matches('/').to_owned()))
+            .ok_or_else(|| ApiError::Internal("can't tell where the UI is for the link; set KESTREL_PUBLIC_URL".into()))
     }
 
     /// Changes `user`'s password after checking the current one, and signs out every other session
@@ -231,8 +412,8 @@ impl Accounts {
         }
     }
 
-    /// Deletes expired sessions now, then once a day. They're already refused when used; this only
-    /// keeps the table from growing.
+    /// Deletes expired sessions and email links now, then once a day. They're already refused when
+    /// used; this only keeps the tables from growing.
     pub fn spawn_session_sweeper(self: &Arc<Self>) {
         let accounts = Arc::clone(self);
         tokio::spawn(async move {
@@ -244,22 +425,20 @@ impl Accounts {
                     Ok(n) => tracing::info!("deleted {n} expired session(s)"),
                     Err(err) => tracing::warn!("couldn't delete expired sessions: {err:#}"),
                 }
+                if let Err(err) = accounts.db.delete_expired_email_tokens().await {
+                    tracing::warn!("couldn't delete expired email links: {err:#}");
+                }
             }
         });
     }
 
-    async fn start_session(
-        &self,
-        user: Uuid,
-        email: String,
-        client: Client<'_>,
-    ) -> Result<(String, MeResponse), ApiError> {
+    async fn start_session(&self, user: AuthedUser, client: Client<'_>) -> Result<(String, MeResponse), ApiError> {
         let token = session::new_token();
         self.db
-            .create_session(&session::hash(&token), user, session::LIFETIME, client.user_agent, client.ip)
+            .create_session(&session::hash(&token), user.id, session::LIFETIME, client.user_agent, client.ip)
             .await
             .map_err(internal)?;
-        let me = self.me(&AuthedUser { id: user, email }).await?;
+        let me = self.me(&user).await?;
         Ok((token, me))
     }
 
@@ -274,7 +453,7 @@ impl Accounts {
         if found.stale {
             self.db.touch_session(&hash, session::LIFETIME).await.map_err(internal)?;
         }
-        Ok(Some(AuthedUser { id: found.user_id, email: found.email }))
+        Ok(Some(AuthedUser { id: found.user_id, email: found.email, email_verified: found.email_verified }))
     }
 
     pub async fn me(&self, user: &AuthedUser) -> Result<MeResponse, ApiError> {
@@ -282,7 +461,8 @@ impl Accounts {
         Ok(MeResponse {
             auth: AuthMode::On,
             signup: self.signup_open,
-            user: Some(UserInfo { id: user.id, email: user.email.clone() }),
+            mail: self.mailer.is_some(),
+            user: Some(UserInfo { id: user.id, email: user.email.clone(), email_verified: user.email_verified }),
             workspace_id: Some(workspace),
         })
     }
@@ -316,6 +496,23 @@ impl Accounts {
         }
         self.by_email.check(email).map_err(ApiError::TooManyRequests)
     }
+}
+
+/// Makes a verification link for `user` and emails it.
+async fn send_verification(db: &Db, mailer: &Mailer, user: Uuid, email: &str, base: &str) -> anyhow::Result<()> {
+    let token = session::new_token();
+    db.create_email_token(&session::hash(&token), user, EmailPurpose::Verify, VERIFY_LIFETIME).await?;
+    mailer.send(mail::verification(email, &format!("{base}{VERIFY_PATH}?token={token}"))).await
+}
+
+/// The stored hash for a token from a link. Tokens are 64 hex characters (like session tokens);
+/// anything else can't be one, so it's refused without a database lookup.
+fn link_token(token: &str) -> Result<Vec<u8>, ApiError> {
+    let token = token.trim();
+    if token.len() != 64 || !token.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(ApiError::BadRequest(BAD_LINK.into()));
+    }
+    Ok(session::hash(&token.to_ascii_lowercase()))
 }
 
 /// Trimmed and lowercased. A light shape check only: deliverability is what email verification

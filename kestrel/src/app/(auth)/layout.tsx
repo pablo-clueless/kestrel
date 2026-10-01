@@ -32,7 +32,6 @@ export default function AuthLayout({ children }: Props) {
           reports on any device.
         </p>
       </div>
-
       <div
         aria-hidden
         className="from-accent via-primary/25 to-primary/70 relative hidden overflow-hidden bg-linear-to-b lg:block"
@@ -44,7 +43,6 @@ export default function AuthLayout({ children }: Props) {
             style={{ left: `${left}%`, top: `${top}%`, height: `${height}%` }}
           />
         ))}
-
         <div className="absolute inset-0 grid place-items-center">
           <div className="relative">
             <div className="absolute -inset-16 rounded-full bg-white/50 blur-3xl dark:bg-white/10" />
@@ -54,7 +52,6 @@ export default function AuthLayout({ children }: Props) {
                 <Feather className="size-24 text-white drop-shadow-lg" strokeWidth={1.5} />
               </div>
             </div>
-
             <div className="bg-card/85 absolute -top-6 -right-28 rounded-2xl px-4 py-3 shadow-xl backdrop-blur">
               <p className="text-muted-foreground text-[11px]">Throughput</p>
               <p className="font-mono text-lg font-bold">1,240 rps</p>
@@ -69,7 +66,6 @@ export default function AuthLayout({ children }: Props) {
                 />
               </svg>
             </div>
-
             <div className="bg-card/85 absolute -bottom-8 -left-24 flex items-center gap-3 rounded-2xl px-4 py-3 shadow-xl backdrop-blur">
               <span className="bg-success size-2 rounded-full" />
               <div>

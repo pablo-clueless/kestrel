@@ -1,5 +1,5 @@
 //! In-memory token buckets for sign-in and sign-up: a burst of `capacity` attempts, refilled
-//! evenly over a minute. Every attempt costs a token, successful or not, so guessing gets nowhere
+//! evenly over a window (a minute, unless built with [`RateLimiter::new`]). Every attempt costs a token, successful or not, so guessing gets nowhere
 //! fast and nobody can be locked out of their account by someone else (it's rate limiting, not
 //! lockout). One engine instance, so memory is enough.
 
@@ -9,12 +9,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-const WINDOW: Duration = Duration::from_secs(60);
 /// Past this many keys, full (idle) buckets are dropped so the map can't grow without bound.
 const PRUNE_AT: usize = 10_000;
 
 pub struct RateLimiter {
     capacity: f64,
+    window: Duration,
     buckets: Mutex<HashMap<String, Bucket>>,
 }
 
@@ -26,7 +26,12 @@ struct Bucket {
 impl RateLimiter {
     /// `per_minute` attempts per key per minute.
     pub fn per_minute(per_minute: u32) -> Self {
-        Self { capacity: per_minute.into(), buckets: Mutex::default() }
+        Self::new(per_minute, Duration::from_secs(60))
+    }
+
+    /// `capacity` attempts per key per `window`, e.g. 3 emails per 15 minutes.
+    pub fn new(capacity: u32, window: Duration) -> Self {
+        Self { capacity: capacity.into(), window, buckets: Mutex::default() }
     }
 
     /// Takes a token for `key`. `Err` holds how long until the next one.
@@ -35,7 +40,7 @@ impl RateLimiter {
     }
 
     fn check_at(&self, key: &str, now: Instant) -> Result<(), Duration> {
-        let rate = self.capacity / WINDOW.as_secs_f64();
+        let rate = self.capacity / self.window.as_secs_f64();
         let mut buckets = self.buckets.lock().unwrap();
         if buckets.len() >= PRUNE_AT {
             let capacity = self.capacity;
