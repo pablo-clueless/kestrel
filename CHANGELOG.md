@@ -12,6 +12,11 @@ No version has been tagged yet (engine and UI are both `0.1.0`), so the entries 
 
 ### Added
 
+- **Report export:** the Results card has **JSON** (the full report, secrets already redacted) and
+  **CSV** buttons. The CSV holds one row per 250 ms window (requests, errors, rps, p50/p99, dropped,
+  in flight, scheduler lag), or one row per input size for Big-O runs. The API is
+  `GET /api/runs/:id/report?format=csv`.
+
 - **Accounts** (`KESTREL_AUTH=on`; off by default, which keeps today's behaviour).
   - Sign-up and sign-in with email and password; the sign-in page now works, and the header shows
     the signed-in user with a sign-out menu.

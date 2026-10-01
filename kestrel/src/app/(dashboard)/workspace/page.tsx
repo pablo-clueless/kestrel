@@ -1,5 +1,5 @@
 import { RequestEditor, RequestTabs, ResponseView } from "@/components/workspace";
-import { LiveSummary, ResultsSummary, RunControls } from "@/components/run";
+import { ExportButtons, LiveSummary, ResultsSummary, RunControls } from "@/components/run";
 import { Card, StatusBar } from "@/components/shared";
 
 /**
@@ -25,7 +25,11 @@ const Page = () => {
             <Card title="Live" info="Updated every 250 ms while a run is in progress.">
               <LiveSummary />
             </Card>
-            <Card title="Results" info="From the final report, fetched when the run finishes.">
+            <Card
+              title="Results"
+              info="From the final report, fetched when the run finishes."
+              actions={<ExportButtons />}
+            >
               <ResultsSummary />
             </Card>
           </div>
