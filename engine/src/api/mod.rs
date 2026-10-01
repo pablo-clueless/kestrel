@@ -64,6 +64,10 @@ pub fn router(state: AppState) -> Router {
         .route("/auth/password", post(auth::change_password))
         .route("/auth/sessions", get(auth::sessions))
         .route("/auth/sessions/{id}", axum::routing::delete(auth::revoke_session))
+        .route("/auth/password-reset", post(auth::request_password_reset))
+        .route("/auth/password-reset/confirm", post(auth::confirm_password_reset))
+        .route("/auth/verify-email", post(auth::verify_email))
+        .route("/auth/verify-email/resend", post(auth::resend_verification))
         // The last layer added runs first: the guard (token, Host, Origin, content type), then the
         // session check, then the handler.
         .layer(middleware::from_fn_with_state(state.clone(), auth::require_session))

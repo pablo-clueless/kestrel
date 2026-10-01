@@ -90,7 +90,7 @@ const SizeChart = ({ points, fits }: { points: ComplexityPoint[]; fits?: ModelFi
 
   if (!points.length) {
     return (
-      <div className="text-muted-foreground flex h-72 items-center justify-center rounded-lg border border-dashed text-sm">
+      <div className="text-muted-foreground flex h-72 items-center justify-center border border-dashed text-sm">
         Waiting for the first round…
       </div>
     );

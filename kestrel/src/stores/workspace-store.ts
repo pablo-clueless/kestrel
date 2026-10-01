@@ -95,14 +95,17 @@ const newCollection = (name: string): Collection => ({
   schemaDefs: null,
 });
 
-/** A collection's groups in sidebar order: those made by hand (empty ones included), then any
- * others its endpoints use, e.g. imported tags. */
-export const groupsOf = (collection: Collection): string[] => [
-  ...new Set([
-    ...collection.groups,
-    ...collection.endpoints.flatMap((e) => (e.group ? [e.group] : [])),
-  ]),
-];
+const byName = new Intl.Collator(undefined, { sensitivity: "base", numeric: true });
+
+/** A collection's groups, alphabetically (case-insensitive, `v2` before `v10`): those made by hand
+ * (empty ones included) and any others its endpoints use, e.g. imported tags. */
+export const groupsOf = (collection: Collection): string[] =>
+  [
+    ...new Set([
+      ...collection.groups,
+      ...collection.endpoints.flatMap((e) => (e.group ? [e.group] : [])),
+    ]),
+  ].sort(byName.compare);
 
 /** Applies `fn` to one collection. */
 const mapCollection = (

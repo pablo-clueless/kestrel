@@ -227,7 +227,7 @@ const RequestTab = ({
       ) : (
         <button
           className={cn(
-            "text-muted-foreground hover:text-foreground hover:bg-muted ml-auto flex size-4 shrink-0 items-center justify-center rounded-sm transition-opacity",
+            "text-muted-foreground hover:text-foreground hover:bg-muted ml-auto flex size-4 shrink-0 items-center justify-center transition-opacity",
             active
               ? "@max-[4rem]:mx-auto"
               : "opacity-0 group-hover:opacity-100 focus-visible:opacity-100 @max-[6rem]:hidden",

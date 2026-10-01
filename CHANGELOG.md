@@ -12,6 +12,25 @@ No version has been tagged yet (engine and UI are both `0.1.0`), so the entries 
 
 ### Added
 
+- **JSON body editor:** the body is checked as you type, with the line, column and a plain message
+  for the first problem (e.g. "Line 3, column 9: Remove the trailing comma"). Templates like
+  `{{seq}}` count as values. **Format** (or Shift+Alt+F) re-indents it without changing any value.
+  `{`, `[`, `(` and `"` close themselves, typing a closer steps over it, Backspace removes an empty
+  pair, a selection gets wrapped, and Enter keeps the indentation. Ctrl+Z undoes all of these.
+
+- **Email verification and password reset** (accounts on, with `KESTREL_SMTP_*` set).
+  - New accounts get an email with a link to confirm their address. Profile → Account shows whether
+    it's verified and can send the link again.
+  - **Forgot password?** on the sign-in page emails a reset link. It works once, for 30 minutes, and
+    setting the new password signs the account out everywhere. Asking says the same thing whether
+    or not the address has an account.
+  - Links are single-use and stored only as hashes. Emails are limited to 3 per address per 15
+    minutes.
+  - Settings: `KESTREL_SMTP_HOST`, `KESTREL_SMTP_PORT` (default 587; 465 uses TLS),
+    `KESTREL_SMTP_USERNAME`, `KESTREL_SMTP_PASSWORD`, `KESTREL_SMTP_FROM`, optional
+    `KESTREL_SMTP_TLS`, and `KESTREL_PUBLIC_URL` for where links point. Without SMTP these features
+    are hidden. An incomplete SMTP setup stops the engine at startup.
+
 - **Endpoint groups by hand:** a group picker beside the endpoint name lists the collection's
   existing groups, creates a new one from what you type, or sets **No group**. Hand-made endpoints
   can now be grouped in the sidebar like imported ones.
@@ -61,6 +80,8 @@ No version has been tagged yet (engine and UI are both `0.1.0`), so the entries 
 
 ### Changed
 
+- Endpoint groups are listed alphabetically, in the sidebar and the group picker (ignoring case,
+  with numbers in order: `v2` before `v10`). Endpoints without a group stay at the top.
 - **Sign-in page redesign:** a split screen with the form on the left and an illustrated panel on
   the right (hidden on narrow screens). Sign in and Sign up are a segmented toggle; the email and
   password fields have icons, the email shows a check once it's valid, and the password has a

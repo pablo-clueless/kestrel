@@ -130,6 +130,23 @@ async fn serve() -> anyhow::Result<()> {
             (true, false) => "on, sign-up closed (create accounts with `engine user add`)",
         }
     );
+    // Built here first so a bad sender address or host stops the engine now, not at the first email.
+    match &config.smtp {
+        Some(smtp) => {
+            auth::mail::Mailer::smtp(smtp)?;
+            tracing::info!(
+                "email: on, via {}:{} ({:?}); links point at {}",
+                smtp.host,
+                smtp.port,
+                smtp.tls,
+                config.public_url.as_deref().unwrap_or("the page that asked (KESTREL_PUBLIC_URL is unset)")
+            );
+        }
+        None if config.auth_enabled => {
+            tracing::info!("email: off, so no verification or password reset (set KESTREL_SMTP_HOST)")
+        }
+        None => {}
+    }
     let changed = config.caps.changed();
     if !changed.is_empty() {
         tracing::info!("caps changed from the defaults: {}", changed.join(", "));
