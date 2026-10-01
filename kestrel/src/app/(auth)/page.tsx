@@ -2,7 +2,8 @@
 
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useQueryClient } from "@tanstack/react-query";
-import { CircleCheck, Eye, EyeOff, LockKeyhole, Mail, type LucideIcon } from "lucide-react";
+import { CircleCheck, LockKeyhole, Mail } from "lucide-react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { useForm, useWatch } from "react-hook-form";
@@ -11,6 +12,7 @@ import { z } from "zod";
 import { PASSWORD_MAX, PASSWORD_MESSAGE, PASSWORD_MIN } from "@/config/string";
 import { authenticate, errorMessage } from "@/lib/client";
 import { CircleLoader } from "@/components/shared";
+import { AuthField, PasswordToggle } from "@/components/shared/auth-field";
 import { Button } from "@/components/ui/button";
 import { ME_KEY, useMe } from "@/hooks/use-me";
 import { cn } from "cn";
@@ -39,43 +41,6 @@ const COPY: Record<Mode, { title: string; subtitle: string; action: string; tab:
 };
 
 const MODES: Mode[] = ["login", "signup"];
-
-interface FieldProps extends React.ComponentProps<"input"> {
-  id: string;
-  label: string;
-  icon: LucideIcon;
-  invalid?: boolean;
-  trailing?: React.ReactNode;
-}
-
-/** Input with a leading icon and a small label above the value, in one rounded box. */
-const Field = ({ id, label, icon: Icon, invalid, trailing, className, ...props }: FieldProps) => (
-  <div
-    className={cn(
-      "bg-card focus-within:border-primary focus-within:ring-primary/15 flex h-14 items-center rounded-xl border transition-[border-color,box-shadow] focus-within:ring-4",
-      invalid &&
-        "border-destructive focus-within:border-destructive focus-within:ring-destructive/15",
-      className,
-    )}
-  >
-    <span className="text-muted-foreground grid h-full w-12 shrink-0 place-items-center">
-      <Icon className="size-4.5" />
-    </span>
-    <span className="bg-border h-7 w-px shrink-0" />
-    <div className="flex min-w-0 flex-1 flex-col justify-center px-3">
-      <label htmlFor={id} className="text-muted-foreground text-[11px] leading-none">
-        {label}
-      </label>
-      <input
-        id={id}
-        aria-invalid={invalid}
-        className="placeholder:text-muted-foreground/60 mt-1 w-full bg-transparent text-sm font-medium outline-none"
-        {...props}
-      />
-    </div>
-    {trailing && <span className="grid shrink-0 place-items-center pr-3">{trailing}</span>}
-  </div>
-);
 
 /** Sign-in and sign-up. Goes straight to the workspace when accounts are off or already signed in. */
 const Page = () => {
@@ -144,11 +109,7 @@ const Page = () => {
       </div>
 
       {canSignUp && (
-        <div
-          role="tablist"
-          aria-label="Account"
-          className="bg-muted grid grid-cols-2 rounded-xl p-1"
-        >
+        <div role="tablist" aria-label="Account" className="bg-muted grid grid-cols-2 p-1">
           {MODES.map((m) => (
             <button
               key={m}
@@ -160,7 +121,7 @@ const Page = () => {
                 setMode(m);
               }}
               className={cn(
-                "h-9 rounded-lg text-sm transition-colors",
+                "h-9 text-sm transition-colors",
                 mode === m
                   ? "bg-card text-foreground font-medium shadow-sm"
                   : "text-muted-foreground hover:text-foreground",
@@ -174,7 +135,7 @@ const Page = () => {
 
       <form className="flex flex-col gap-3" onSubmit={handleSubmit(onSubmit)} noValidate>
         <div className="flex flex-col gap-1.5">
-          <Field
+          <AuthField
             id="email"
             label="Email address"
             icon={Mail}
@@ -191,7 +152,7 @@ const Page = () => {
           {errors.email && <p className="text-destructive text-xs">{errors.email.message}</p>}
         </div>
         <div className="flex flex-col gap-1.5">
-          <Field
+          <AuthField
             id="password"
             label="Password"
             icon={LockKeyhole}
@@ -201,14 +162,7 @@ const Page = () => {
             invalid={!!errors.password}
             aria-describedby={mode === "signup" ? "password-hint" : undefined}
             trailing={
-              <button
-                type="button"
-                onClick={() => setShowPassword((v) => !v)}
-                aria-label={showPassword ? "Hide password" : "Show password"}
-                className="text-muted-foreground hover:text-foreground"
-              >
-                {showPassword ? <EyeOff className="size-4.5" /> : <Eye className="size-4.5" />}
-              </button>
+              <PasswordToggle shown={showPassword} onToggle={() => setShowPassword((v) => !v)} />
             }
             {...register("password")}
           />
@@ -223,13 +177,22 @@ const Page = () => {
           )}
         </div>
 
+        {mode === "login" && me.data.mail && (
+          <Link
+            href="/forgot-password"
+            className="text-primary -mt-1 self-end text-xs font-medium hover:underline"
+          >
+            Forgot password?
+          </Link>
+        )}
+
         {error && (
           <p role="alert" className="text-destructive text-sm">
             {error}
           </p>
         )}
 
-        <Button type="submit" disabled={isSubmitting} className="mt-2 h-12 rounded-xl text-sm">
+        <Button type="submit" disabled={isSubmitting} className="mt-2 h-12 text-sm">
           {isSubmitting ? <CircleLoader radius={8} /> : copy.action}
         </Button>
       </form>

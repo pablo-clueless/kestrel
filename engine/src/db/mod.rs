@@ -70,6 +70,18 @@ const AUTH_MIGRATIONS: &[&str] = &[
     -- At most one owner per workspace: two users claiming the same browser workspace can't both win.
     CREATE UNIQUE INDEX one_owner_per_workspace ON auth.memberships (workspace_id) WHERE role = 'owner';
     "#,
+    // 3: email links (A3). Like sessions, only a token's SHA-256 is stored. Using a token deletes
+    // it, which is what makes it single-use.
+    r#"
+    CREATE TABLE auth.email_tokens (
+        token_hash bytea PRIMARY KEY,
+        user_id uuid NOT NULL REFERENCES auth.users (id) ON DELETE CASCADE,
+        purpose text NOT NULL CHECK (purpose IN ('verify', 'reset')),
+        created_at timestamptz NOT NULL DEFAULT now(),
+        expires_at timestamptz NOT NULL
+    );
+    CREATE INDEX email_tokens_by_user ON auth.email_tokens (user_id, purpose);
+    "#,
 ];
 
 /// Bump with a new entry; never edit a shipped one. Applied to every workspace schema, with

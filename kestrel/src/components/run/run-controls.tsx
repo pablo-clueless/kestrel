@@ -405,7 +405,7 @@ export const RunControls = () => {
         {kind === "complexity" && (
           <>
             {endpoint && !usesSize(endpoint) && (
-              <p className="rounded-lg bg-amber-50 p-3 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+              <p className="bg-amber-50 p-3 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-300">
                 Mark the input size in the request with <code>{"{{n}}"}</code> (e.g. a limit),{" "}
                 <code>{"{{n:int_array}}"}</code>, <code>{"{{n:string}}"}</code> or{" "}
                 <code>{"{{n:object_array}}"}</code> in the body. Each request gets fresh random

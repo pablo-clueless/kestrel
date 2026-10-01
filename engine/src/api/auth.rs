@@ -14,7 +14,10 @@ use axum::{
 
 use super::AppState;
 use crate::{
-    auth::{AuthRequest, AuthedUser, ChangePasswordRequest, Client, MeResponse, SessionInfo, session},
+    auth::{
+        AuthRequest, AuthedUser, ChangePasswordRequest, Client, MeResponse, PasswordResetConfirm, PasswordResetRequest,
+        SessionInfo, VerifyEmailRequest, session,
+    },
     error::ApiError,
 };
 
@@ -22,7 +25,18 @@ use crate::{
 fn is_public(path: &str) -> bool {
     // Nested routers may or may not see the `/api` prefix; accept both.
     let path = path.strip_prefix("/api").unwrap_or(path);
-    matches!(path, "/health" | "/auth/signup" | "/auth/login" | "/auth/logout" | "/auth/me")
+    matches!(
+        path,
+        "/health"
+            | "/auth/signup"
+            | "/auth/login"
+            | "/auth/logout"
+            | "/auth/me"
+            // Emailed links are opened signed out (often on another device).
+            | "/auth/password-reset"
+            | "/auth/password-reset/confirm"
+            | "/auth/verify-email"
+    )
 }
 
 /// Puts the signed-in user in the request's extensions, or answers 401.
@@ -43,11 +57,14 @@ pub async fn require_session(State(state): State<AppState>, mut req: Request, ne
     }
 }
 
-/// Who's calling: for rate limits, the session record, and whether the cookie can be `Secure`.
+/// Who's calling: for rate limits, the session record, whether the cookie can be `Secure`, and
+/// where links in emails should point.
 pub struct Caller {
     ip: Option<String>,
     user_agent: Option<String>,
     https: bool,
+    /// The guard has already refused origins that aren't allowed, so this one is safe to link to.
+    origin: Option<String>,
 }
 
 impl FromRequestParts<AppState> for Caller {
@@ -68,13 +85,14 @@ impl FromRequestParts<AppState> for Caller {
             ip: forwarded_ip.or(socket_ip),
             user_agent: header(header::USER_AGENT.as_str()).map(|ua| ua.chars().take(256).collect()),
             https: trusted && header("x-forwarded-proto").is_some_and(|p| p.eq_ignore_ascii_case("https")),
+            origin: header(header::ORIGIN.as_str()).filter(|o| *o != "null").map(str::to_owned),
         })
     }
 }
 
 impl Caller {
     fn client(&self) -> Client<'_> {
-        Client { ip: self.ip.as_deref(), user_agent: self.user_agent.as_deref() }
+        Client { ip: self.ip.as_deref(), user_agent: self.user_agent.as_deref(), origin: self.origin.as_deref() }
     }
 }
 
@@ -164,6 +182,51 @@ pub async fn revoke_session(
     Ok(StatusCode::NO_CONTENT)
 }
 
+fn accounts_on(state: &AppState) -> Result<(), ApiError> {
+    if state.accounts.enabled { Ok(()) } else { Err(ACCOUNTS_OFF) }
+}
+
+/// Emails a reset link if the account exists. Always 204, so it doesn't say whether it does.
+pub async fn request_password_reset(
+    State(state): State<AppState>,
+    caller: Caller,
+    Json(req): Json<PasswordResetRequest>,
+) -> Result<StatusCode, ApiError> {
+    accounts_on(&state)?;
+    state.accounts.request_password_reset(req, caller.client()).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Sets a new password from a reset link. Every session ends, so the UI sends people to sign in.
+pub async fn confirm_password_reset(
+    State(state): State<AppState>,
+    caller: Caller,
+    Json(req): Json<PasswordResetConfirm>,
+) -> Result<StatusCode, ApiError> {
+    accounts_on(&state)?;
+    state.accounts.confirm_password_reset(req, caller.client()).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn verify_email(
+    State(state): State<AppState>,
+    caller: Caller,
+    Json(req): Json<VerifyEmailRequest>,
+) -> Result<StatusCode, ApiError> {
+    accounts_on(&state)?;
+    state.accounts.verify_email(req, caller.client()).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn resend_verification(
+    State(state): State<AppState>,
+    caller: Caller,
+    signed: SignedIn,
+) -> Result<StatusCode, ApiError> {
+    state.accounts.resend_verification(&signed.user, caller.client()).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// Who's signed in and which workspace to use: `auth: "off"` when accounts are off, `user: null`
 /// when signed out. Always 200, so the sign-in page can learn whether sign-up is open.
 pub async fn me(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<MeResponse>, ApiError> {
@@ -194,6 +257,7 @@ mod tests {
     use super::*;
     use crate::{
         api::{TOKEN_HEADER, WORKSPACE_HEADER, router},
+        auth::{Accounts, mail::Mailer},
         config::Config,
         db::{Db, test::require_db},
     };
@@ -574,6 +638,164 @@ mod tests {
         assert_ne!(stored, weak);
         assert!(!crate::auth::password::needs_rehash(&stored), "{stored}");
         assert_eq!(send(&app, login_with("correct horse battery")).await.0, StatusCode::OK, "new hash works");
+    }
+
+    /// A3: accounts on, with email going to a capture instead of SMTP.
+    fn app_with_mail(db: &Arc<Db>, public_url: Option<&str>) -> (Router, Arc<Mailer>) {
+        let mut config = Config::new(7070, TOKEN.into(), false, vec![]);
+        config.auth_enabled = true;
+        config.public_url = public_url.map(str::to_owned);
+        let mailer = Arc::new(Mailer::capture());
+        let mut state = AppState::new(config.clone(), Arc::clone(db));
+        state.accounts = Arc::new(Accounts::new(Arc::clone(db), &config).with_mailer(Arc::clone(&mailer)));
+        (router(state), mailer)
+    }
+
+    /// Waits for the `n`th email to `to` whose link goes to `path` (some are sent in the background)
+    /// and returns the token in it.
+    async fn link_token(mailer: &Mailer, to: &str, path: &str, n: usize) -> String {
+        for _ in 0..200 {
+            let links: Vec<String> = mailer
+                .sent()
+                .iter()
+                .filter(|e| e.to == to)
+                .filter_map(|e| e.body.lines().find(|l| l.contains(&format!("{path}?token="))).map(str::to_owned))
+                .collect();
+            if let Some(link) = links.get(n - 1) {
+                return link.rsplit_once("token=").unwrap().1.to_owned();
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        panic!("no email #{n} to {to} with a {path} link; sent: {:?}", mailer.sent());
+    }
+
+    fn post(uri: &str, cookie: Option<&str>, body: Value) -> Request<Body> {
+        call("POST", uri, cookie, None, Some(body))
+    }
+
+    /// A3: the reset link sets a new password once, ends every session, and verifies the email.
+    #[tokio::test]
+    async fn a_reset_link_sets_a_new_password_once_and_signs_out_everywhere() {
+        let db = require_db!();
+        let (app, mailer) = app_with_mail(&db, Some("https://kestrel.test"));
+        let (here, _) = sign(&app, "/api/auth/signup", "ada@example.com", None).await;
+        let (laptop, _) = sign(&app, "/api/auth/login", "ada@example.com", None).await;
+
+        for email in ["ada@example.com", "nobody@example.com"] {
+            let (status, _, body) = send(&app, post("/api/auth/password-reset", None, json!({ "email": email }))).await;
+            assert_eq!(status, StatusCode::NO_CONTENT, "the same answer for {email}: {body}");
+        }
+        let token = link_token(&mailer, "ada@example.com", "/reset-password", 1).await;
+        let sent = mailer.sent();
+        assert!(sent.iter().all(|e| e.to != "nobody@example.com"), "no email to an unknown address");
+        let reset = sent.iter().find(|e| e.body.contains("/reset-password")).unwrap();
+        assert!(reset.body.contains(&format!("https://kestrel.test/reset-password?token={token}")));
+
+        let confirm = |token: &str, password: &str| {
+            post("/api/auth/password-reset/confirm", None, json!({ "token": token, "newPassword": password }))
+        };
+        assert_eq!(send(&app, confirm(&token, "short")).await.0, StatusCode::BAD_REQUEST, "policy applies");
+        assert_eq!(send(&app, confirm(&token, "a brand new passphrase")).await.0, StatusCode::NO_CONTENT);
+        let (status, _, body) = send(&app, confirm(&token, "and another one again")).await;
+        assert_eq!(
+            (status, body["error"].as_str()),
+            (StatusCode::BAD_REQUEST, Some("this link is invalid or has expired")),
+            "single use"
+        );
+        assert_eq!(send(&app, confirm("not-a-token", "a brand new passphrase")).await.0, StatusCode::BAD_REQUEST);
+
+        for session in [&here, &laptop] {
+            let status = send(&app, call("GET", "/api/workspace", Some(session), None, None)).await.0;
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "every session ended");
+        }
+        assert_eq!(send(&app, login_with("correct horse battery")).await.0, StatusCode::UNAUTHORIZED);
+        let body = json!({ "email": "ada@example.com", "password": "a brand new passphrase" });
+        let (status, _, me) = send(&app, post("/api/auth/login", None, body)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(me["user"]["emailVerified"], true, "the link proved the address");
+    }
+
+    /// A3: links expire, and each kind only works for its own purpose.
+    #[tokio::test]
+    async fn links_expire_and_only_work_for_their_own_purpose() {
+        let db = require_db!();
+        let (app, mailer) = app_with_mail(&db, Some("https://kestrel.test"));
+        sign(&app, "/api/auth/signup", "ada@example.com", None).await;
+        let verify = link_token(&mailer, "ada@example.com", "/verify-email", 1).await;
+        send(&app, post("/api/auth/password-reset", None, json!({ "email": "ada@example.com" }))).await;
+        let reset = link_token(&mailer, "ada@example.com", "/reset-password", 1).await;
+
+        let new_password = |token: &str| {
+            post("/api/auth/password-reset/confirm", None, json!({ "token": token, "newPassword": "a brand new one" }))
+        };
+        assert_eq!(send(&app, new_password(&verify)).await.0, StatusCode::BAD_REQUEST, "verify link can't reset");
+        let verify_with = |token: &str| post("/api/auth/verify-email", None, json!({ "token": token }));
+        assert_eq!(send(&app, verify_with(&reset)).await.0, StatusCode::BAD_REQUEST, "reset link can't verify");
+
+        db.expire_email_token(&session::hash(&reset)).await;
+        assert_eq!(send(&app, new_password(&reset)).await.0, StatusCode::BAD_REQUEST, "expired");
+        assert_eq!(send(&app, verify_with(&verify)).await.0, StatusCode::NO_CONTENT, "still good for its purpose");
+        assert_eq!(db.delete_expired_email_tokens().await.unwrap(), 1, "the sweep reclaims the expired one");
+    }
+
+    /// A3: a verification email goes out at sign-up; the link works signed out; the Account tab can
+    /// ask for another one until the address is verified.
+    #[tokio::test]
+    async fn sign_up_sends_a_verification_link() {
+        let db = require_db!();
+        // No KESTREL_PUBLIC_URL: links go back to the page that asked.
+        let (app, mailer) = app_with_mail(&db, None);
+        let mut req =
+            post("/api/auth/signup", None, json!({ "email": "ada@example.com", "password": "correct horse battery" }));
+        req.headers_mut().insert(header::ORIGIN, "http://localhost:7070".parse().unwrap());
+        let (status, headers, me) = send(&app, req).await;
+        assert_eq!(status, StatusCode::OK, "{me}");
+        assert_eq!((me["mail"].as_bool(), me["user"]["emailVerified"].as_bool()), (Some(true), Some(false)));
+        let cookie = headers[header::SET_COOKIE].to_str().unwrap().split(';').next().unwrap().to_owned();
+        let first = link_token(&mailer, "ada@example.com", "/verify-email", 1).await;
+        assert!(mailer.sent()[0].body.contains("http://localhost:7070/verify-email?token="));
+
+        // Asking again, e.g. the first one went to spam; both links work until one is used.
+        let mut again = post("/api/auth/verify-email/resend", Some(&cookie), json!({}));
+        again.headers_mut().insert(header::ORIGIN, "http://localhost:7070".parse().unwrap());
+        assert_eq!(send(&app, again).await.0, StatusCode::NO_CONTENT);
+        let second = link_token(&mailer, "ada@example.com", "/verify-email", 2).await;
+        assert_ne!(first, second);
+
+        let verify = |token: &str| post("/api/auth/verify-email", None, json!({ "token": token }));
+        assert_eq!(send(&app, verify(&second)).await.0, StatusCode::NO_CONTENT, "no session needed");
+        assert_eq!(send(&app, verify(&first)).await.0, StatusCode::BAD_REQUEST, "the others stop working");
+        let (_, _, me) = send(&app, call("GET", "/api/auth/me", Some(&cookie), None, None)).await;
+        assert_eq!(me["user"]["emailVerified"], true);
+        let resend = post("/api/auth/verify-email/resend", Some(&cookie), json!({}));
+        assert_eq!(send(&app, resend).await.0, StatusCode::BAD_REQUEST, "already verified");
+    }
+
+    /// A3: the reset form can't be used to flood an inbox.
+    #[tokio::test]
+    async fn reset_emails_are_limited_per_address() {
+        let db = require_db!();
+        let (app, _mailer) = app_with_mail(&db, Some("https://kestrel.test"));
+        let ask = || post("/api/auth/password-reset", None, json!({ "email": "ada@example.com" }));
+        for _ in 0..3 {
+            assert_eq!(send(&app, ask()).await.0, StatusCode::NO_CONTENT);
+        }
+        let (status, headers, _) = send(&app, ask()).await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+        assert!(headers[header::RETRY_AFTER].to_str().unwrap().parse::<u64>().unwrap() > 60);
+    }
+
+    /// A3: without SMTP, the email features say so instead of failing quietly.
+    #[tokio::test]
+    async fn without_smtp_the_email_routes_are_off() {
+        let db = require_db!();
+        let app = app(&db, true);
+        let (cookie, me) = sign(&app, "/api/auth/signup", "ada@example.com", None).await;
+        assert_eq!(me["mail"], false);
+        let reset = post("/api/auth/password-reset", None, json!({ "email": "ada@example.com" }));
+        assert_eq!(send(&app, reset).await.0, StatusCode::NOT_FOUND);
+        let resend = post("/api/auth/verify-email/resend", Some(&cookie), json!({}));
+        assert_eq!(send(&app, resend).await.0, StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

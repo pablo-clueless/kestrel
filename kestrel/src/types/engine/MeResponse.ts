@@ -11,6 +11,11 @@ export type MeResponse = { auth: AuthMode,
  */
 signup: boolean, 
 /**
+ * Whether this engine can send email (`KESTREL_SMTP_HOST`), so verification and password
+ * reset are available.
+ */
+mail: boolean, 
+/**
  * The signed-in user; `None` when signed out or when auth is off.
  */
 user: UserInfo | null, 

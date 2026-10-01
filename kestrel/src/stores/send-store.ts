@@ -1,8 +1,8 @@
 import { create } from "zustand";
 
+import type { SendResponse } from "@/types/engine/SendResponse";
 import { errorMessage, sendRequest } from "@/lib/client";
 import type { Endpoint } from "@/types/engine/Endpoint";
-import type { SendResponse } from "@/types/engine/SendResponse";
 import { useWorkspaceStore } from "./workspace-store";
 
 export interface SendEntry {

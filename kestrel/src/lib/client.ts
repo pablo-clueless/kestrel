@@ -17,6 +17,7 @@ import type { MeResponse } from "@/types/engine/MeResponse";
 import type { AuthRequest } from "@/types/engine/AuthRequest";
 import type { ChangePasswordRequest } from "@/types/engine/ChangePasswordRequest";
 import type { SessionInfo } from "@/types/engine/SessionInfo";
+import type { PasswordResetConfirm } from "@/types/engine/PasswordResetConfirm";
 
 // Build-time values, used by `pnpm dev` (the UI on :3000 talks to the engine on :7070).
 const BUILD_TOKEN = process.env.NEXT_PUBLIC_KESTREL_TOKEN ?? "";
@@ -125,6 +126,26 @@ export const listSessions = async () => (await engine.get<SessionInfo[]>("/auth/
 
 export const revokeSession = async (id: string) => {
   await engine.delete(`/auth/sessions/${id}`);
+};
+
+/** Emails a reset link if the address has an account. Succeeds either way, so it doesn't say. */
+export const requestPasswordReset = async (email: string) => {
+  await engine.post("/auth/password-reset", { email });
+};
+
+/** Sets a new password from a reset link. Every session ends; sign in again afterwards. */
+export const resetPassword = async (req: PasswordResetConfirm) => {
+  await engine.post("/auth/password-reset/confirm", req);
+};
+
+/** Confirms the email address from a verification link. Works signed out too. */
+export const verifyEmail = async (token: string) => {
+  await engine.post("/auth/verify-email", { token });
+};
+
+/** Emails the signed-in user a new verification link. */
+export const resendVerification = async () => {
+  await engine.post("/auth/verify-email/resend");
 };
 
 export const getHealth = async () =>
