@@ -6,8 +6,8 @@ interface Props {
 
 export default function AuthLayout({ children }: Props) {
   return (
-    <div className="bg-background grid h-screen w-screen place-items-center">
-      <div className="bg-card min-w-125 border p-4">{children}</div>
+    <div className="bg-background grid min-h-dvh w-full place-items-center px-4 py-10">
+      <div className="bg-card w-full max-w-sm rounded-xs border p-6">{children}</div>
     </div>
   );
 }

@@ -2,7 +2,8 @@
 //!
 //! Each workspace's data lives in its own schema, `ws_<uuid hex>`, so one user's rows can't turn up
 //! in another's results because a `WHERE` was forgotten: the tables simply aren't there. Tables
-//! shared across workspaces live in the `auth` schema; today that's only the workspace registry.
+//! shared across workspaces live in the `auth` schema: the workspace registry, users, sessions and
+//! memberships (`accounts.rs`).
 //!
 //! The rules that keep this sound:
 //! - A workspace query runs only inside [`Db::pinned`], a transaction whose first statement is
@@ -13,6 +14,7 @@
 //! - Schema names are built only from a parsed [`Uuid`], never from request text.
 //! - Shared queries name their schema (`auth.workspaces`).
 
+pub mod accounts;
 pub mod crypto;
 pub mod import_sqlite;
 
@@ -35,6 +37,38 @@ const AUTH_MIGRATIONS: &[&str] = &[
         schema_version int NOT NULL DEFAULT 0,
         created_at timestamptz NOT NULL DEFAULT now()
     );
+    "#,
+    // 2: accounts (A1). Emails are stored trimmed and lowercased by the engine, so plain `text` with
+    // a unique index does what `citext` would, without needing an extension.
+    r#"
+    CREATE TABLE auth.users (
+        id uuid PRIMARY KEY,
+        email text NOT NULL UNIQUE,
+        password_hash text NOT NULL,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        email_verified_at timestamptz
+    );
+    -- Only the SHA-256 of a session token is stored; the token itself is in the cookie.
+    CREATE TABLE auth.sessions (
+        id_hash bytea PRIMARY KEY,
+        user_id uuid NOT NULL REFERENCES auth.users (id) ON DELETE CASCADE,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        expires_at timestamptz NOT NULL,
+        last_seen_at timestamptz NOT NULL DEFAULT now(),
+        user_agent text,
+        ip text
+    );
+    CREATE INDEX sessions_by_user ON auth.sessions (user_id);
+    CREATE TABLE auth.memberships (
+        workspace_id uuid NOT NULL REFERENCES auth.workspaces (id) ON DELETE CASCADE,
+        user_id uuid NOT NULL REFERENCES auth.users (id) ON DELETE CASCADE,
+        role text NOT NULL CHECK (role IN ('owner')),
+        created_at timestamptz NOT NULL DEFAULT now(),
+        PRIMARY KEY (workspace_id, user_id)
+    );
+    CREATE INDEX memberships_by_user ON auth.memberships (user_id);
+    -- At most one owner per workspace: two users claiming the same browser workspace can't both win.
+    CREATE UNIQUE INDEX one_owner_per_workspace ON auth.memberships (workspace_id) WHERE role = 'owner';
     "#,
 ];
 
