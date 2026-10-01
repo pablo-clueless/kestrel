@@ -74,7 +74,7 @@ export const CollectionList = () => {
   };
 
   return (
-    <motion.div className="flex h-full flex-col gap-3">
+    <motion.div className="bg-background flex h-full flex-col gap-3 p-3">
       <motion.div className="flex items-center justify-between">
         <span className="text-muted-foreground text-xs uppercase">Collections</span>
         <motion.div className="flex items-center gap-2">

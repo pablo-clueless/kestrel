@@ -1,19 +1,50 @@
-# Kestrel in Docker: `docker compose up -d --build`, then open http://localhost:7070.
+# Kestrel in Docker.
 #
-# Everything the engine keeps is in /data/kestrel.db on the `kestrel-data` volume, so the container
-# can be rebuilt and recreated freely. There is no login: the port is published on 127.0.0.1 only.
+#   docker compose up -d db              Postgres only, for `cargo run -p engine` / `cargo test` on the host
+#   docker compose up -d --build         Postgres + the engine (serving the UI) at http://localhost:7070
+#
+# Everything the engine keeps is in Postgres, on the `kestrel-db` volume, so containers can be
+# rebuilt and recreated freely. Ports are published on 127.0.0.1 only.
+#
+# Postgres is published on 5433, not 5432, so it doesn't clash with a Postgres installed on the host.
+# From the host: postgres://kestrel:kestrel@localhost:5433/kestrel
 services:
+  db:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: kestrel
+      POSTGRES_PASSWORD: kestrel
+      POSTGRES_DB: kestrel
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - kestrel-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kestrel -d kestrel"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
   kestrel:
     build: .
     image: kestrel
     restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
     ports:
       - "127.0.0.1:7070:7070"
+    environment:
+      KESTREL_DATABASE_URL: postgres://kestrel:kestrel@db:5432/kestrel
+      # Read from the repo-root .env; the engine refuses to start without it.
+      KESTREL_SECRETS_KEY: ${KESTREL_SECRETS_KEY:-}
+      # Optional: a fixed session token instead of a random one per start (only needed by `pnpm dev`).
+      # KESTREL_TOKEN: change-me-to-a-long-random-string
     volumes:
+      # Only needed to run `engine import-sqlite /data/workspaces` once after upgrading from SQLite.
       - kestrel-data:/data
-    # Optional: a fixed session token instead of a random one per start (only needed by `pnpm dev`).
-    # environment:
-    #   KESTREL_TOKEN: change-me-to-a-long-random-string
 
 volumes:
+  kestrel-db:
   kestrel-data:

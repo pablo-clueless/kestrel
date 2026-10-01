@@ -11,6 +11,11 @@ export type Collection = { id: string, name: string,
  */
 vars: { [key in string]: string }, endpoints: Array<Endpoint>, 
 /**
+ * Groups made by hand, kept even while empty. The sidebar shows these and every endpoint's
+ * `group`, so a group that only exists on endpoints (e.g. imported tags) needn't be listed.
+ */
+groups: Array<string>, 
+/**
  * Where the collection came from, e.g. "OpenAPI 3.0.3 · Petstore 1.0.0". None if made by hand.
  */
 source: string | null, 
