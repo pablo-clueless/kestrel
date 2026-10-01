@@ -173,7 +173,8 @@ mod tests {
     async fn rejects_foreign_host_even_with_token() {
         let req = Request::get("/api/health")
             .header(header::HOST, "evil.example:7070")
-            .header(TOKEN_HEADER, TOKEN).header(WORKSPACE_HEADER, WS)
+            .header(TOKEN_HEADER, TOKEN)
+            .header(WORKSPACE_HEADER, WS)
             .body(Body::empty())
             .unwrap();
         assert_eq!(status(&app(), req).await, StatusCode::FORBIDDEN);
@@ -197,7 +198,8 @@ mod tests {
             Request::put("/api/workspace")
                 .header(header::HOST, host)
                 .header(header::ORIGIN, origin)
-                .header(TOKEN_HEADER, TOKEN).header(WORKSPACE_HEADER, WS)
+                .header(TOKEN_HEADER, TOKEN)
+                .header(WORKSPACE_HEADER, WS)
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from("{}"))
                 .unwrap()
@@ -213,7 +215,8 @@ mod tests {
     async fn rejects_non_json_body() {
         let req = Request::post("/api/runs")
             .header(header::HOST, HOST)
-            .header(TOKEN_HEADER, TOKEN).header(WORKSPACE_HEADER, WS)
+            .header(TOKEN_HEADER, TOKEN)
+            .header(WORKSPACE_HEADER, WS)
             .header(header::CONTENT_TYPE, "text/plain")
             .body(Body::from(r#"{"kind":"fake","durationMs":1000}"#))
             .unwrap();
@@ -253,7 +256,8 @@ mod tests {
     async fn rejects_duration_above_cap() {
         let req = Request::post("/api/runs")
             .header(header::HOST, HOST)
-            .header(TOKEN_HEADER, TOKEN).header(WORKSPACE_HEADER, WS)
+            .header(TOKEN_HEADER, TOKEN)
+            .header(WORKSPACE_HEADER, WS)
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(r#"{"kind":"fake","durationMs":600000}"#))
             .unwrap();
@@ -316,7 +320,8 @@ mod tests {
     fn post_json(uri: &str, body: String) -> Request<Body> {
         Request::post(uri)
             .header(header::HOST, HOST)
-            .header(TOKEN_HEADER, TOKEN).header(WORKSPACE_HEADER, WS)
+            .header(TOKEN_HEADER, TOKEN)
+            .header(WORKSPACE_HEADER, WS)
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(body))
             .unwrap()
@@ -370,7 +375,8 @@ mod tests {
         let upload = |name: &str| {
             Request::post(format!("/api/files?name={name}"))
                 .header(header::HOST, HOST)
-                .header(TOKEN_HEADER, TOKEN).header(WORKSPACE_HEADER, WS)
+                .header(TOKEN_HEADER, TOKEN)
+                .header(WORKSPACE_HEADER, WS)
                 .header(header::CONTENT_TYPE, "image/png")
                 .body(Body::from(vec![0x89, b'P', b'N', b'G']))
                 .unwrap()
@@ -474,7 +480,8 @@ mod tests {
         let StartRunResponse { run_id } = json_body(res).await;
         let stop = Request::delete(format!("/api/runs/{run_id}"))
             .header(header::HOST, HOST)
-            .header(TOKEN_HEADER, TOKEN).header(WORKSPACE_HEADER, WS)
+            .header(TOKEN_HEADER, TOKEN)
+            .header(WORKSPACE_HEADER, WS)
             .body(Body::empty())
             .unwrap();
         assert_eq!(status(&app, stop).await, StatusCode::ACCEPTED);
@@ -633,7 +640,8 @@ mod tests {
         let app = app();
         let req = Request::post("/api/runs")
             .header(header::HOST, HOST)
-            .header(TOKEN_HEADER, TOKEN).header(WORKSPACE_HEADER, WS)
+            .header(TOKEN_HEADER, TOKEN)
+            .header(WORKSPACE_HEADER, WS)
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(r#"{"kind":"fake","durationMs":600}"#))
             .unwrap();
