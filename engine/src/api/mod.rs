@@ -61,6 +61,9 @@ pub fn router(state: AppState) -> Router {
         .route("/auth/login", post(auth::login))
         .route("/auth/logout", post(auth::logout))
         .route("/auth/me", get(auth::me))
+        .route("/auth/password", post(auth::change_password))
+        .route("/auth/sessions", get(auth::sessions))
+        .route("/auth/sessions/{id}", axum::routing::delete(auth::revoke_session))
         // The last layer added runs first: the guard (token, Host, Origin, content type), then the
         // session check, then the handler.
         .layer(middleware::from_fn_with_state(state.clone(), auth::require_session))

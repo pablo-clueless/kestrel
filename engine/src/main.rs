@@ -132,7 +132,11 @@ async fn serve() -> anyhow::Result<()> {
     let addr = SocketAddr::new(config.bind, config.port);
     let db = connect(&config).await?;
     tracing::info!("connected to Postgres; one schema per workspace");
-    let app = api::router(api::AppState::new(config, db));
+    let state = api::AppState::new(config, db);
+    if state.accounts.enabled {
+        state.accounts.spawn_session_sweeper();
+    }
+    let app = api::router(state);
     let listener = listen(addr)?;
     tracing::info!("engine listening on http://{addr} (UI at /, API at /api)");
 

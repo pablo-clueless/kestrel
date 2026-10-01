@@ -6,7 +6,7 @@ use std::net::SocketAddr;
 
 use axum::{
     Json,
-    extract::{ConnectInfo, FromRequestParts, Request, State},
+    extract::{ConnectInfo, FromRequestParts, Path, Request, State},
     http::{HeaderMap, StatusCode, header, request::Parts},
     middleware::Next,
     response::{IntoResponse, Response},
@@ -14,7 +14,7 @@ use axum::{
 
 use super::AppState;
 use crate::{
-    auth::{AuthRequest, Client, MeResponse, session},
+    auth::{AuthRequest, AuthedUser, ChangePasswordRequest, Client, MeResponse, SessionInfo, session},
     error::ApiError,
 };
 
@@ -118,6 +118,50 @@ pub async fn logout(State(state): State<AppState>, caller: Caller, headers: Head
         state.accounts.logout(&token).await?;
     }
     Ok((StatusCode::NO_CONTENT, [(header::SET_COOKIE, session::clear_cookie(caller.https))]).into_response())
+}
+
+/// The signed-in user and their session token, for the account routes that need both. 404 when
+/// accounts are off, 401 without a session (the middleware has normally answered that already).
+pub struct SignedIn {
+    user: AuthedUser,
+    token: String,
+}
+
+impl FromRequestParts<AppState> for SignedIn {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, ApiError> {
+        if !state.accounts.enabled {
+            return Err(ACCOUNTS_OFF);
+        }
+        let user = parts.extensions.get::<AuthedUser>().cloned().ok_or(ApiError::Unauthorized("sign in first"))?;
+        let token = session::from_headers(&parts.headers).ok_or(ApiError::Unauthorized("sign in first"))?;
+        Ok(Self { user, token })
+    }
+}
+
+/// Changes the password; every other session is signed out, this one stays.
+pub async fn change_password(
+    State(state): State<AppState>,
+    signed: SignedIn,
+    Json(req): Json<ChangePasswordRequest>,
+) -> Result<StatusCode, ApiError> {
+    state.accounts.change_password(&signed.user, req, &signed.token).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn sessions(State(state): State<AppState>, signed: SignedIn) -> Result<Json<Vec<SessionInfo>>, ApiError> {
+    Ok(Json(state.accounts.sessions(&signed.user, &signed.token).await?))
+}
+
+/// Signs out one session. Revoking the current one works too; the UI's next call then gets a 401.
+pub async fn revoke_session(
+    State(state): State<AppState>,
+    signed: SignedIn,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    state.accounts.revoke_session(&signed.user, &id).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Who's signed in and which workspace to use: `auth: "off"` when accounts are off, `user: null`
@@ -415,6 +459,121 @@ mod tests {
         let password = crate::auth::Accounts::new(Arc::clone(&db), &config).add_user("ada@example.com").await.unwrap();
         let body = json!({ "email": "ada@example.com", "password": password });
         assert_eq!(send(&app, call("POST", "/api/auth/login", None, None, Some(body))).await.0, StatusCode::OK);
+    }
+
+    fn login_with(password: &str) -> Request<Body> {
+        call("POST", "/api/auth/login", None, None, Some(json!({ "email": "ada@example.com", "password": password })))
+    }
+
+    /// A2: needs the current password; signs out every other session, keeps this one.
+    #[tokio::test]
+    async fn changing_the_password_signs_out_other_sessions() {
+        let db = require_db!();
+        let app = app(&db, true);
+        let (here, _) = sign(&app, "/api/auth/signup", "ada@example.com", None).await;
+        let (laptop, _) = sign(&app, "/api/auth/login", "ada@example.com", None).await;
+        let (phone, _) = sign(&app, "/api/auth/login", "ada@example.com", None).await;
+
+        let change = |current: &str, new: &str| {
+            let body = json!({ "currentPassword": current, "newPassword": new });
+            call("POST", "/api/auth/password", Some(&here), None, Some(body))
+        };
+        let (status, _, body) = send(&app, change("not my password", "a brand new passphrase")).await;
+        assert_eq!((status, body["error"].as_str()), (StatusCode::BAD_REQUEST, Some("current password is incorrect")));
+        assert_eq!(
+            send(&app, change("correct horse battery", "short")).await.0,
+            StatusCode::BAD_REQUEST,
+            "policy applies"
+        );
+        assert_eq!(
+            send(&app, change("correct horse battery", "a brand new passphrase")).await.0,
+            StatusCode::NO_CONTENT
+        );
+
+        assert_eq!(send(&app, call("GET", "/api/workspace", Some(&here), None, None)).await.0, StatusCode::OK);
+        for other in [&laptop, &phone] {
+            assert_eq!(
+                send(&app, call("GET", "/api/workspace", Some(other), None, None)).await.0,
+                StatusCode::UNAUTHORIZED
+            );
+        }
+        assert_eq!(send(&app, login_with("correct horse battery")).await.0, StatusCode::UNAUTHORIZED, "old password");
+        assert_eq!(send(&app, login_with("a brand new passphrase")).await.0, StatusCode::OK);
+
+        let no_session =
+            json!({ "currentPassword": "a brand new passphrase", "newPassword": "something else entirely" });
+        let req = call("POST", "/api/auth/password", None, None, Some(no_session));
+        assert_eq!(send(&app, req).await.0, StatusCode::UNAUTHORIZED);
+    }
+
+    /// A2: the Security tab's list, and revoking from it, are limited to your own sessions.
+    #[tokio::test]
+    async fn users_list_and_revoke_only_their_own_sessions() {
+        let db = require_db!();
+        let app = app(&db, true);
+        let (ada, _) = sign(&app, "/api/auth/signup", "ada@example.com", None).await;
+        let (ada_laptop, _) = sign(&app, "/api/auth/login", "ada@example.com", None).await;
+        let (bob, _) = sign(&app, "/api/auth/signup", "bob@example.com", None).await;
+
+        let (status, _, list) = send(&app, call("GET", "/api/auth/sessions", Some(&ada), None, None)).await;
+        assert_eq!(status, StatusCode::OK);
+        let list = list.as_array().unwrap();
+        assert_eq!(list.len(), 2, "{list:?}");
+        assert_eq!(list.iter().filter(|s| s["current"] == true).count(), 1);
+        assert!(list.iter().all(|s| s["expiresAtMs"].as_i64() > s["lastSeenAtMs"].as_i64()));
+        let laptop_id = list.iter().find(|s| s["current"] == false).unwrap()["id"].as_str().unwrap().to_owned();
+        assert!(!laptop_id.contains(token_of(&ada_laptop)), "ids aren't tokens");
+
+        let (_, _, bobs) = send(&app, call("GET", "/api/auth/sessions", Some(&bob), None, None)).await;
+        let bob_id = bobs[0]["id"].as_str().unwrap().to_owned();
+        for id in [bob_id.as_str(), "not-an-id", &"0".repeat(64)] {
+            let req = call("DELETE", &format!("/api/auth/sessions/{id}"), Some(&ada), None, None);
+            assert_eq!(send(&app, req).await.0, StatusCode::NOT_FOUND, "{id}");
+        }
+        assert_eq!(send(&app, call("GET", "/api/workspace", Some(&bob), None, None)).await.0, StatusCode::OK);
+
+        let req = call("DELETE", &format!("/api/auth/sessions/{laptop_id}"), Some(&ada), None, None);
+        assert_eq!(send(&app, req).await.0, StatusCode::NO_CONTENT);
+        assert_eq!(
+            send(&app, call("GET", "/api/workspace", Some(&ada_laptop), None, None)).await.0,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(send(&app, call("GET", "/api/workspace", Some(&ada), None, None)).await.0, StatusCode::OK);
+    }
+
+    /// A2: the daily sweep removes expired sessions only.
+    #[tokio::test]
+    async fn the_sweep_deletes_only_expired_sessions() {
+        let db = require_db!();
+        let app = app(&db, true);
+        let (old, _) = sign(&app, "/api/auth/signup", "ada@example.com", None).await;
+        let (live, _) = sign(&app, "/api/auth/login", "ada@example.com", None).await;
+        db.expire_session(&session::hash(token_of(&old))).await;
+        assert_eq!(db.delete_expired_sessions().await.unwrap(), 1);
+        assert_eq!(db.delete_expired_sessions().await.unwrap(), 0);
+        assert_eq!(send(&app, call("GET", "/api/workspace", Some(&live), None, None)).await.0, StatusCode::OK);
+    }
+
+    /// A2: a hash made with weaker parameters is replaced at the next successful sign-in.
+    #[tokio::test]
+    async fn signing_in_upgrades_an_outdated_hash() {
+        use argon2::{Algorithm, Argon2, Params, Version, password_hash::PasswordHasher};
+
+        let db = require_db!();
+        let app = app(&db, true);
+        let (_, me) = sign(&app, "/api/auth/signup", "ada@example.com", None).await;
+        let id: Uuid = me["user"]["id"].as_str().unwrap().parse().unwrap();
+        let weak = Argon2::new(Algorithm::Argon2id, Version::V0x13, Params::new(8192, 1, 1, None).unwrap())
+            .hash_password(b"correct horse battery")
+            .unwrap()
+            .to_string();
+        db.set_password_hash(id, &weak).await.unwrap();
+
+        assert_eq!(send(&app, login_with("correct horse battery")).await.0, StatusCode::OK, "old hash still works");
+        let stored = db.password_hash(id).await.unwrap().unwrap();
+        assert_ne!(stored, weak);
+        assert!(!crate::auth::password::needs_rehash(&stored), "{stored}");
+        assert_eq!(send(&app, login_with("correct horse battery")).await.0, StatusCode::OK, "new hash works");
     }
 
     #[tokio::test]
