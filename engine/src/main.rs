@@ -1,4 +1,5 @@
 mod api;
+mod auth;
 mod config;
 mod contract;
 mod db;
@@ -20,7 +21,9 @@ const USAGE: &str = "\
 usage: engine                        serve the API and UI
        engine migrate --all          migrate every workspace schema (run before deploying a new version)
        engine import-sqlite [dir]    copy SQLite workspaces (<dir>/<id>/kestrel.db) into Postgres;
-                                     dir defaults to $KESTREL_WORKSPACE_DIR/workspaces";
+                                     dir defaults to $KESTREL_WORKSPACE_DIR/workspaces
+       engine user add <email>       create an account (works with KESTREL_SIGNUP=closed); prints
+                                     a generated password once";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -37,6 +40,7 @@ async fn main() -> anyhow::Result<()> {
         ["migrate", "--all"] => migrate_all().await,
         ["import-sqlite"] => import_sqlite(None).await,
         ["import-sqlite", dir] => import_sqlite(Some(PathBuf::from(dir))).await,
+        ["user", "add", email] => add_user(email).await,
         ["help" | "-h" | "--help"] => {
             println!("{USAGE}");
             Ok(())
@@ -86,6 +90,18 @@ async fn import_sqlite(dir: Option<PathBuf>) -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn add_user(email: &str) -> anyhow::Result<()> {
+    let config = config::Config::from_env()?;
+    let db = connect(&config).await?;
+    let password = auth::Accounts::new(db, &config).add_user(email).await?;
+    // Printed once and not stored anywhere else; there's no password change until A2.
+    println!("created {email}\npassword: {password}");
+    if !config.auth_enabled {
+        eprintln!("note: KESTREL_AUTH is off on this machine, so accounts aren't used until it's set to `on`");
+    }
+    Ok(())
+}
+
 async fn serve() -> anyhow::Result<()> {
     platform::high_res_timer();
     let config = config::Config::from_env()?;
@@ -95,23 +111,33 @@ async fn serve() -> anyhow::Result<()> {
              automatically; `pnpm dev` needs KESTREL_TOKEN in .env."
         );
     }
-    // The engine is a load generator and the UI it serves carries the session token, so anything
-    // that can reach it can drive it. Loopback by default; `KESTREL_BIND` is for private networks.
-    if !config.bind.is_loopback() {
+    // The engine is a load generator and the UI it serves carries the session token, so without
+    // accounts anything that can reach it can drive it. Loopback by default; `KESTREL_BIND` is for
+    // private networks.
+    if !config.bind.is_loopback() && !config.auth_enabled {
         tracing::warn!(
-            "listening on {} (not loopback): keep it private, e.g. `fly deploy --no-public-ips` + \
-             `fly proxy`. There is no login yet.",
+            "listening on {} (not loopback) with KESTREL_AUTH=off: keep it private, e.g. \
+             `fly deploy --no-public-ips` + `fly proxy`, or set KESTREL_AUTH=on.",
             config.bind
         );
     }
+    tracing::info!(
+        "accounts: {}",
+        match (config.auth_enabled, config.signup_open) {
+            (false, _) => "off (a browser's workspace id is its only credential)",
+            (true, true) => "on, sign-up open",
+            (true, false) => "on, sign-up closed (create accounts with `engine user add`)",
+        }
+    );
     let addr = SocketAddr::new(config.bind, config.port);
     let db = connect(&config).await?;
-    tracing::info!("connected to Postgres; one schema per browser workspace");
-    let app = api::router(api::AppState::new(config, model::workspaces::Workspaces::new(db)));
+    tracing::info!("connected to Postgres; one schema per workspace");
+    let app = api::router(api::AppState::new(config, db));
     let listener = listen(addr)?;
     tracing::info!("engine listening on http://{addr} (UI at /, API at /api)");
 
-    axum::serve(listener, app)
+    // With the peer address, for per-IP sign-in rate limits.
+    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;
         })

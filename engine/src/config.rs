@@ -31,6 +31,13 @@ pub struct Config {
     pub database_url: String,
     /// `KESTREL_DB_MAX_CONNECTIONS`, default 10.
     pub db_max_connections: u32,
+    /// `KESTREL_AUTH=on`: every `/api` route but health and sign-in needs a session.
+    pub auth_enabled: bool,
+    /// `KESTREL_SIGNUP=closed` turns off sign-up from the UI (`engine user add` still works).
+    pub signup_open: bool,
+    /// `KESTREL_TRUSTED_PROXY=1`: believe `Fly-Client-IP` / `X-Forwarded-For` / `X-Forwarded-Proto`.
+    /// Only behind a proxy that sets them; otherwise any client could claim any IP.
+    pub trusted_proxy: bool,
 }
 
 /// Limits the API can't raise (HANDOFF → Safety rails → Caps).
@@ -122,6 +129,9 @@ impl Config {
                 .filter(|&n| n > 0)
                 .context("KESTREL_DB_MAX_CONNECTIONS must be a positive number")?;
         }
+        config.auth_enabled = choice("KESTREL_AUTH", &["off", "on"], "off")? == "on";
+        config.signup_open = choice("KESTREL_SIGNUP", &["open", "closed"], "open")? == "open";
+        config.trusted_proxy = choice("KESTREL_TRUSTED_PROXY", &["0", "1"], "0")? == "1";
         Ok(config)
     }
 
@@ -150,7 +160,23 @@ impl Config {
             workspace_dir: PathBuf::new(),
             database_url: String::new(),
             db_max_connections: 10,
+            auth_enabled: false,
+            signup_open: true,
+            trusted_proxy: false,
         }
+    }
+}
+
+/// `var`, which must be one of `allowed` (case-insensitive), or `default` when unset or empty. An
+/// unknown value is an error rather than a silent default: `KESTREL_AUTH=yes` must not mean off.
+fn choice(var: &str, allowed: &[&str], default: &str) -> anyhow::Result<String> {
+    match std::env::var(var) {
+        Ok(v) if !v.trim().is_empty() => {
+            let v = v.trim().to_ascii_lowercase();
+            anyhow::ensure!(allowed.contains(&v.as_str()), "{var} must be one of: {}", allowed.join(", "));
+            Ok(v)
+        }
+        _ => Ok(default.to_owned()),
     }
 }
 

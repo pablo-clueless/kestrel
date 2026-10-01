@@ -1,3 +1,4 @@
+export * from "./auth-gate";
 export * from "./card";
 export * from "./header";
 export * from "./loader";
