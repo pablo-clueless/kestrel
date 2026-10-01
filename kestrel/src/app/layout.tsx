@@ -24,7 +24,12 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
-    <html lang="en" className={`${dm_sans.variable} ${jetbrains_mono.variable} h-full antialiased`}>
+    <html
+      lang="en"
+      className={`${dm_sans.variable} ${jetbrains_mono.variable} h-full antialiased`}
+      // next-themes sets the theme class and color-scheme on <html> before React hydrates.
+      suppressHydrationWarning
+    >
       <body className="flex min-h-full flex-col">
         <ThemeProvider attribute="class" defaultTheme="light">
           <Providers>

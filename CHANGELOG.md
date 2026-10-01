@@ -12,6 +12,15 @@ No version has been tagged yet (engine and UI are both `0.1.0`), so the entries 
 
 ### Added
 
+- **Endpoint groups by hand:** a group picker beside the endpoint name lists the collection's
+  existing groups, creates a new one from what you type, or sets **No group**. Hand-made endpoints
+  can now be grouped in the sidebar like imported ones.
+  - **New group** under a collection's endpoints creates an empty group. Groups made by hand are
+    kept while empty (`Collection.groups`, defaulting to `[]` for existing collections, so no
+    migration). Each group's header can add an endpoint to it, or delete the group, which leaves its
+    endpoints in the collection, ungrouped.
+  - The sidebar lists ungrouped endpoints first, then groups in the order they were made.
+
 - **Configurable caps:** `KESTREL_MAX_RPS`, `KESTREL_MAX_DURATION_S`, `KESTREL_MAX_IN_FLIGHT`,
   `KESTREL_MAX_TIMEOUT_S`, `KESTREL_MAX_SWEEP_S` and more raise or lower the safety limits (e.g.
   for soak tests). Out-of-range values stop the engine at startup; the API still can't change them.
@@ -52,6 +61,11 @@ No version has been tagged yet (engine and UI are both `0.1.0`), so the entries 
 
 ### Changed
 
+- **Sign-in page redesign:** a split screen with the form on the left and an illustrated panel on
+  the right (hidden on narrow screens). Sign in and Sign up are a segmented toggle; the email and
+  password fields have icons, the email shows a check once it's valid, and the password has a
+  show/hide button.
+
 - **Password rule:** 8–128 characters of anything, spaces and non-ASCII included (NIST 800-63B).
   The sign-in form used to reject spaces and non-ASCII characters while saying it required a mix.
 - In `pnpm dev`, the UI calls the engine on the page's own hostname (port 7070) instead of always
@@ -80,6 +94,8 @@ No version has been tagged yet (engine and UI are both `0.1.0`), so the entries 
 
 ### Fixed
 
+- No more hydration warning on `<html>` in development: the theme class that next-themes adds
+  before React loads is now expected.
 - Two engine tests that no longer compiled, and a content-type test that passed for the wrong
   reason. CI now runs the engine tests against a Postgres service.
 - **Request tabs** could stay squashed after closing tabs: they didn't grow back when few remained,

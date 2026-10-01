@@ -132,7 +132,7 @@ export const ImportDialog = ({ open, onClose }: { open: boolean; onClose: () => 
             )}
             {tab === "paste" && (
               <Textarea
-                className="h-48 font-mono text-xs"
+                className="h-60 max-w-3xl resize-none font-mono text-xs wrap-break-word"
                 placeholder={"openapi: 3.0.3\ninfo:\n  title: My API\n…"}
                 value={text}
                 onChange={(e) => set("text", e.target.value)}
