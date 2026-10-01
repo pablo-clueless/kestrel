@@ -334,6 +334,7 @@ mod tests {
                 id: uuid::Uuid::new_v4(),
                 name: "echo".into(),
                 source: None,
+                groups: Vec::new(),
                 schema_defs: None,
                 vars: Default::default(),
                 endpoints: vec![Endpoint {
@@ -564,6 +565,7 @@ mod tests {
                 name: "pets".into(),
                 vars: [("base".to_string(), base)].into(),
                 source: None,
+                groups: Vec::new(),
                 schema_defs: Some(serde_json::json!({ "components": { "schemas": { "Pet": {
                     "type": "object", "required": ["id", "name"], "properties": { "id": { "type": "integer" } }
                 }}}})),
@@ -648,6 +650,7 @@ mod tests {
                 name: "c".into(),
                 vars: [("base".to_string(), base)].into(),
                 source: None,
+                groups: Vec::new(),
                 schema_defs: None,
                 endpoints: vec![endpoint(with_n, "{{n:int_array}}"), endpoint(without_n, "[1,2,3]")],
             }],

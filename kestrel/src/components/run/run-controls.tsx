@@ -244,8 +244,8 @@ export const RunControls = () => {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center justify-between border-b px-5 py-4">
-        <h2 className="text-[15px] font-semibold">Run test</h2>
+      <div className="flex items-center justify-between border-b px-5 py-2">
+        <h2 className="text-sm font-medium">Run Test</h2>
         <span
           className={cn(
             "flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs",
