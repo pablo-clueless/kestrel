@@ -1,4 +1,4 @@
-import { Space_Grotesk, Space_Mono } from "next/font/google";
+import { DM_Sans, JetBrains_Mono } from "next/font/google";
 import { ThemeProvider } from "next-themes";
 import type { Metadata } from "next";
 
@@ -6,14 +6,14 @@ import { Providers } from "@/components/providers";
 import { Toaster } from "@/components/ui/sonner";
 import "./globals.css";
 
-const space_grotesk = Space_Grotesk({
+const dm_sans = DM_Sans({
   subsets: ["latin"],
-  variable: "--font-space-grotesk",
+  variable: "--font-dm-sans",
 });
 
-const space_mono = Space_Mono({
+const jetbrains_mono = JetBrains_Mono({
   subsets: ["latin"],
-  variable: "--font-space-mono",
+  variable: "--font-jetbrains-mono",
   weight: ["400", "700"],
 });
 
@@ -26,10 +26,12 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html
       lang="en"
-      className={`${space_grotesk.variable} ${space_mono.variable} h-full antialiased`}
+      className={`${dm_sans.variable} ${jetbrains_mono.variable} h-full antialiased`}
+      // next-themes sets the theme class and color-scheme on <html> before React hydrates.
+      suppressHydrationWarning
     >
       <body className="flex min-h-full flex-col">
-        <ThemeProvider defaultTheme="light">
+        <ThemeProvider attribute="class" defaultTheme="light">
           <Providers>
             {children}
             <Toaster position="top-right" richColors />

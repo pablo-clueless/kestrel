@@ -37,13 +37,10 @@ pub fn spawn(registry: &Arc<RunRegistry>, store: &Arc<WorkspaceStore>, run: Arc<
             Prepared::Load(p) => load::run(Arc::clone(&run), *p).await,
             Prepared::Complexity(p) => complexity::run(Arc::clone(&run), *p).await,
         }
-        if let Some(report) = run.report() {
-            let saved = tokio::task::spawn_blocking(move || store.save_run(&report)).await;
-            match saved {
-                Ok(Ok(())) => {}
-                Ok(Err(err)) => tracing::warn!("couldn't save run {}: {err:#}", run.id),
-                Err(err) => tracing::warn!("couldn't save run {}: {err}", run.id),
-            }
+        if let Some(report) = run.report()
+            && let Err(err) = store.save_run(&report).await
+        {
+            tracing::warn!("couldn't save run {}: {err:#}", run.id);
         }
         registry.evict_after(run.id, RETENTION);
     });

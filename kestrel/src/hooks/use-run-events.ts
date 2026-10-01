@@ -18,7 +18,8 @@ export function useRunEvents() {
     // A finished run shown from history has nothing left to stream.
     if (!runId || useRunStore.getState().status !== "running") return;
     const { applyEvent, setReport, setError } = useRunStore.getState();
-    const source = new EventSource(runEventsUrl(runId));
+    // With credentials: the session cookie, when accounts are on and the UI is on another origin.
+    const source = new EventSource(runEventsUrl(runId), { withCredentials: true });
 
     source.onmessage = (message) => {
       const event = JSON.parse(message.data) as RunEvent;

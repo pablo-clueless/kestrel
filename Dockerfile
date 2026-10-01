@@ -2,8 +2,9 @@
 #
 # Kestrel in one image: the Rust engine with the Next.js UI embedded, serving both on one port.
 #   docker build -t kestrel .
-#   docker run --rm -p 127.0.0.1:7070:7070 -v kestrel-data:/data kestrel   → http://localhost:7070
-# There is no login: publish the port on 127.0.0.1 (as above) or a private network only.
+#   docker run --rm -p 127.0.0.1:7070:7070 -e KESTREL_DATABASE_URL=… -e KESTREL_SECRETS_KEY=… kestrel
+# Data lives in Postgres (or use `docker compose up -d --build`, which brings its own).
+# There is no login yet: publish the port on 127.0.0.1 (as above) or a private network only.
 
 # ── UI: static export into /app/kestrel/out ─────────────────────────────────────────────────────
 FROM node:24-slim AS ui
