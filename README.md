@@ -119,8 +119,10 @@ signing up isn't lost.
 - Sign-in and sign-up are rate limited (5 attempts a minute per email, 20 per IP), with no lockout.
 - For a deployment reachable from the internet, also set `KESTREL_SIGNUP=closed` and create accounts
   with `engine user add <email>` (it prints a generated password once). With open sign-up, anyone
-  could create an account and use your engine to send load. Password changes, session management
-  and email verification arrive in later phases (see `HANDOFF.md` → Accounts).
+  could create an account and use your engine to send load.
+- **Profile → Security** changes the password (which signs out every other device) and lists where
+  the account is signed in, with a Sign out for each. Expired sessions are cleaned up daily.
+  Email verification and password reset by email arrive later (see `HANDOFF.md` → Accounts).
 - In `pnpm dev`, open the UI on `localhost:3000`, not `127.0.0.1:3000`: the cookie only crosses
   between the UI and the engine when both are on the same hostname.
 

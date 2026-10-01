@@ -53,6 +53,19 @@ pub async fn verify(password: String, stored: Option<String>) -> bool {
     .unwrap_or(false)
 }
 
+/// Whether `stored` was made with other parameters than today's, and should be replaced the next
+/// time the password is known (a successful sign-in). Every hash made now starts with the same
+/// `$argon2id$v=19$m=…,t=…,p=…$` prefix, so comparing prefixes is enough.
+pub fn needs_rehash(stored: &str) -> bool {
+    static PREFIX: OnceLock<String> = OnceLock::new();
+    let prefix = PREFIX.get_or_init(|| {
+        // `$argon2id$v=19$m=19456,t=2,p=1$<salt>$<hash>`: keep everything before the salt.
+        let parts: Vec<&str> = dummy_hash().split('$').collect();
+        format!("{}$", parts[..parts.len() - 2].join("$"))
+    });
+    !stored.starts_with(prefix.as_str())
+}
+
 fn dummy_hash() -> &'static str {
     static DUMMY: OnceLock<String> = OnceLock::new();
     DUMMY.get_or_init(|| {
@@ -73,6 +86,17 @@ mod tests {
         assert!(!verify("wrong horse battery".into(), Some(stored)).await);
         assert!(!verify("correct horse battery".into(), None).await);
         assert!(!verify("anything".into(), Some("not a phc string".into())).await);
+    }
+
+    #[tokio::test]
+    async fn spots_hashes_made_with_other_parameters() {
+        assert!(!needs_rehash(&hash("correct horse battery".into()).await.unwrap()));
+        let weaker = Argon2::new(Algorithm::Argon2id, Version::V0x13, Params::new(8192, 1, 1, None).unwrap())
+            .hash_password(b"correct horse battery")
+            .unwrap()
+            .to_string();
+        assert!(needs_rehash(&weaker), "{weaker}");
+        assert!(needs_rehash("$argon2i$v=19$m=19456,t=2,p=1$c2FsdA$aGFzaA"), "other algorithm");
     }
 
     #[test]

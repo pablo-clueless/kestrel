@@ -69,6 +69,34 @@ pub struct MeResponse {
     pub workspace_id: Option<Uuid>,
 }
 
+#[derive(Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ChangePasswordRequest {
+    pub current_password: String,
+    pub new_password: String,
+}
+
+/// One signed-in device or browser, for the Security tab.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct SessionInfo {
+    /// Opaque; pass it back to revoke the session. (It's derived from the token's hash, which
+    /// can't be turned back into a token.)
+    pub id: String,
+    /// The session making this request.
+    pub current: bool,
+    #[ts(type = "number")]
+    pub created_at_ms: i64,
+    #[ts(type = "number")]
+    pub last_seen_at_ms: i64,
+    #[ts(type = "number")]
+    pub expires_at_ms: i64,
+    pub user_agent: Option<String>,
+    pub ip: Option<String>,
+}
+
 /// Where a sign-in attempt came from, for rate limiting and the session record.
 pub struct Client<'a> {
     pub ip: Option<&'a str>,
@@ -81,6 +109,7 @@ pub struct Accounts {
     pub signup_open: bool,
     by_email: RateLimiter,
     by_ip: RateLimiter,
+    password_changes: RateLimiter,
 }
 
 /// Same message for a wrong password and an unknown email, so it doesn't reveal who has an account.
@@ -94,6 +123,7 @@ impl Accounts {
             signup_open: config.signup_open,
             by_email: RateLimiter::per_minute(5),
             by_ip: RateLimiter::per_minute(20),
+            password_changes: RateLimiter::per_minute(5),
         }
     }
 
@@ -133,12 +163,89 @@ impl Accounts {
             Some(u) => (Some(u.id), Some(u.password_hash)),
             None => (None, None),
         };
-        if !password::verify(req.password, stored).await {
+        let outdated = stored.as_deref().is_some_and(password::needs_rehash);
+        if !password::verify(req.password.clone(), stored).await {
             return Err(ApiError::Unauthorized(BAD_CREDENTIALS));
         }
         let id = id.expect("verify only succeeds for a known user");
+        // The one moment the password is known: upgrade a hash made with older parameters.
+        // Best effort, since the sign-in itself has succeeded either way.
+        if outdated {
+            let upgraded = async { self.db.set_password_hash(id, &password::hash(req.password).await?).await };
+            if let Err(err) = upgraded.await {
+                tracing::warn!("couldn't rehash the password of {email}: {err:#}");
+            }
+        }
         self.db.ensure_user_workspace(id, req.workspace).await.map_err(internal)?;
         self.start_session(id, email, client).await
+    }
+
+    /// Changes `user`'s password after checking the current one, and signs out every other session
+    /// (`keep` is the token of the session making the change). Attempts are rate limited per
+    /// account, so a stolen session can't be used to guess the password. That's a separate budget
+    /// from sign-in, so signing in on a few devices doesn't block a password change.
+    pub async fn change_password(
+        &self,
+        user: &AuthedUser,
+        req: ChangePasswordRequest,
+        keep: &str,
+    ) -> Result<u64, ApiError> {
+        self.password_changes.check(&user.id.to_string()).map_err(ApiError::TooManyRequests)?;
+        let stored = self.db.password_hash(user.id).await.map_err(internal)?;
+        if !password::verify(req.current_password, stored).await {
+            return Err(ApiError::BadRequest("current password is incorrect".into()));
+        }
+        password::check_policy(&req.new_password).map_err(ApiError::BadRequest)?;
+        let hash = password::hash(req.new_password).await.map_err(internal)?;
+        let ended = self.db.change_password(user.id, &hash, &session::hash(keep)).await.map_err(internal)?;
+        tracing::info!("password changed for {}; {ended} other session(s) signed out", user.email);
+        Ok(ended)
+    }
+
+    /// `user`'s live sessions, with the one making this request marked `current`.
+    pub async fn sessions(&self, user: &AuthedUser, current_token: &str) -> Result<Vec<SessionInfo>, ApiError> {
+        let current = session::hash(current_token);
+        let rows = self.db.sessions_of(user.id).await.map_err(internal)?;
+        Ok(rows
+            .into_iter()
+            .map(|row| SessionInfo {
+                current: row.id_hash == current,
+                id: hex(&row.id_hash),
+                created_at_ms: row.created_at_ms,
+                last_seen_at_ms: row.last_seen_at_ms,
+                expires_at_ms: row.expires_at_ms,
+                user_agent: row.user_agent,
+                ip: row.ip,
+            })
+            .collect())
+    }
+
+    /// Signs out one of `user`'s sessions by its id from [`Self::sessions`]. Anyone else's session,
+    /// or a malformed id, is a 404.
+    pub async fn revoke_session(&self, user: &AuthedUser, id: &str) -> Result<(), ApiError> {
+        const NOT_FOUND: ApiError = ApiError::NotFound("session not found");
+        let id_hash = unhex(id).ok_or(NOT_FOUND)?;
+        match self.db.delete_session_of(user.id, &id_hash).await.map_err(internal)? {
+            true => Ok(()),
+            false => Err(NOT_FOUND),
+        }
+    }
+
+    /// Deletes expired sessions now, then once a day. They're already refused when used; this only
+    /// keeps the table from growing.
+    pub fn spawn_session_sweeper(self: &Arc<Self>) {
+        let accounts = Arc::clone(self);
+        tokio::spawn(async move {
+            let mut every_day = tokio::time::interval(std::time::Duration::from_secs(24 * 60 * 60));
+            loop {
+                every_day.tick().await;
+                match accounts.db.delete_expired_sessions().await {
+                    Ok(0) => {}
+                    Ok(n) => tracing::info!("deleted {n} expired session(s)"),
+                    Err(err) => tracing::warn!("couldn't delete expired sessions: {err:#}"),
+                }
+            }
+        });
     }
 
     async fn start_session(
@@ -225,6 +332,17 @@ pub fn normalize_email(raw: &str) -> Result<String, ApiError> {
 fn generate_password() -> String {
     const ALPHABET: &[u8] = b"abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
     (0..20).map(|_| ALPHABET[rand::random_range(0..ALPHABET.len())] as char).collect()
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn unhex(s: &str) -> Option<Vec<u8>> {
+    if s.len() != 64 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok()).collect()
 }
 
 fn internal(err: anyhow::Error) -> ApiError {
