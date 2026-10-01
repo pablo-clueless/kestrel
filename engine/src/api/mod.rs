@@ -97,24 +97,47 @@ mod tests {
 
     use super::*;
     use crate::{
+        db::{Db, crypto::SecretsCipher, test::require_db},
         engine::types::{RunEvent, RunReport, RunStatus, RunSummary, StartRunResponse},
-        model::{Secrets, Workspace, store::WorkspaceStore},
+        model::{Secrets, Workspace},
     };
 
     const TOKEN: &str = "test-token";
     const HOST: &str = "127.0.0.1:7070";
-    /// The workspace test requests act on; `app_with` seeds it.
+    /// The workspace test requests act on; `app_with` seeds it. Each test's database has its own
+    /// schema prefix, so tests sharing this id still never share data.
     const WS: &str = "00000000-0000-4000-8000-000000000001";
 
-    fn app() -> Router {
-        app_with(Workspace::default(), Secrets::default())
+    fn config() -> Config {
+        Config::new(7070, TOKEN.into(), false, vec!["http://localhost:3000".into()])
     }
 
-    fn app_with(workspace: Workspace, secrets: Secrets) -> Router {
-        let config = Config::new(7070, TOKEN.into(), false, vec!["http://localhost:3000".into()]);
-        let workspaces = Workspaces::in_memory();
-        workspaces.insert(WS.parse().unwrap(), WorkspaceStore::in_memory(workspace, secrets));
+    /// For tests that are decided before any workspace is opened (the guard, health, the UI): the
+    /// database is never connected to, so these run without one.
+    fn app() -> Router {
+        let db = Db::lazy("postgres://unused@127.0.0.1:1/unused", 1, SecretsCipher::for_tests(), "x_").unwrap();
+        router(AppState::new(config(), Workspaces::new(Arc::new(db))))
+    }
+
+    /// A router over `db` with workspace `WS` holding `workspace` and `secrets`.
+    async fn app_with(db: &Arc<Db>, workspace: Workspace, secrets: Secrets) -> Router {
+        app_on(db, config(), workspace, secrets).await
+    }
+
+    async fn app_on(db: &Arc<Db>, config: Config, workspace: Workspace, secrets: Secrets) -> Router {
+        let workspaces = Workspaces::new(Arc::clone(db));
+        let store = workspaces.get(WS.parse().unwrap()).await.unwrap();
+        store.save_workspace(workspace).await.unwrap();
+        for (env, kv) in secrets {
+            for (key, value) in kv {
+                store.set_secret(&env, &key, Some(value)).await.unwrap();
+            }
+        }
         router(AppState::new(config, workspaces))
+    }
+
+    async fn empty_app(db: &Arc<Db>) -> Router {
+        app_with(db, Workspace::default(), Secrets::default()).await
     }
 
     fn get(uri: &str) -> axum::http::request::Builder {
@@ -191,9 +214,10 @@ mod tests {
 
     #[tokio::test]
     async fn accepts_an_allowed_deployment_host_over_https() {
+        let db = require_db!();
         let mut config = Config::new(7070, TOKEN.into(), false, vec![]);
         config.allow_host("kestrel.example.com");
-        let app = router(AppState::new(config, Workspaces::in_memory()));
+        let app = app_on(&db, config, Workspace::default(), Secrets::default()).await;
         let req = |host: &str, origin: &str| {
             Request::put("/api/workspace")
                 .header(header::HOST, host)
@@ -211,14 +235,18 @@ mod tests {
         assert_eq!(status(&app, req("other.example.com", "https://other.example.com")).await, StatusCode::FORBIDDEN);
     }
 
+    /// Rejected by the guard, before any workspace is opened.
     #[tokio::test]
     async fn rejects_non_json_body() {
+        let body = r#"{"kind":"fake","durationMs":1000}"#;
         let req = Request::post("/api/runs")
             .header(header::HOST, HOST)
             .header(TOKEN_HEADER, TOKEN)
             .header(WORKSPACE_HEADER, WS)
             .header(header::CONTENT_TYPE, "text/plain")
-            .body(Body::from(r#"{"kind":"fake","durationMs":1000}"#))
+            // As a real client sends it; the guard keys its content-type check off the body's length.
+            .header(header::CONTENT_LENGTH, body.len())
+            .body(Body::from(body))
             .unwrap();
         assert_eq!(status(&app(), req).await, StatusCode::UNSUPPORTED_MEDIA_TYPE);
     }
@@ -230,12 +258,13 @@ mod tests {
         assert_eq!(status(&app(), req).await, StatusCode::FORBIDDEN);
 
         // Passes the guard, then 404s because the run doesn't exist.
+        let db = require_db!();
         let id = uuid::Uuid::new_v4();
         let req = Request::get(format!("/api/runs/{id}/events?token={TOKEN}&workspace={WS}"))
             .header(header::HOST, HOST)
             .body(Body::empty())
             .unwrap();
-        assert_eq!(status(&app(), req).await, StatusCode::NOT_FOUND);
+        assert_eq!(status(&empty_app(&db).await, req).await, StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
@@ -254,6 +283,7 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_duration_above_cap() {
+        let db = require_db!();
         let req = Request::post("/api/runs")
             .header(header::HOST, HOST)
             .header(TOKEN_HEADER, TOKEN)
@@ -261,7 +291,7 @@ mod tests {
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(r#"{"kind":"fake","durationMs":600000}"#))
             .unwrap();
-        assert_eq!(status(&app(), req).await, StatusCode::BAD_REQUEST);
+        assert_eq!(status(&empty_app(&db).await, req).await, StatusCode::BAD_REQUEST);
     }
 
     /// Serves `/echo-headers` on an ephemeral loopback port; returns its base URL.
@@ -332,7 +362,8 @@ mod tests {
     async fn latency_run_measures_and_redacts_echoed_secrets() {
         let base = echo_headers_server().await;
         let (workspace, secrets, id) = echo_workspace(&base);
-        let app = app_with(workspace, secrets);
+        let db = require_db!();
+        let app = app_with(&db, workspace, secrets).await;
 
         let config = format!(
             r#"{{"kind":"latency","endpointId":"{id}","warmup":2,"samples":20,"keepAlive":true,"timeoutMs":5000}}"#
@@ -371,7 +402,8 @@ mod tests {
 
     #[tokio::test]
     async fn uploads_files_of_any_type() {
-        let app = app();
+        let db = require_db!();
+        let app = empty_app(&db).await;
         let upload = |name: &str| {
             Request::post(format!("/api/files?name={name}"))
                 .header(header::HOST, HOST)
@@ -402,7 +434,8 @@ mod tests {
             { "source": "body", "path": "no.such", "target": "variable", "name": "missing" },
             { "source": "status", "target": "variable", "name": "skipped", "enabled": false },
         ]);
-        let app = app_with(workspace, secrets);
+        let db = require_db!();
+        let app = app_with(&db, workspace, secrets).await;
         let body = serde_json::json!({ "endpoint": endpoint, "environment": "local" }).to_string();
 
         let res = app.clone().oneshot(post_json("/api/send", body)).await.unwrap();
@@ -430,7 +463,8 @@ mod tests {
         let base = echo_headers_server().await;
         let (workspace, secrets, _) = echo_workspace(&base);
         let endpoint = serde_json::to_value(&workspace.collections[0].endpoints[0]).unwrap();
-        let app = app_with(workspace, secrets);
+        let db = require_db!();
+        let app = app_with(&db, workspace, secrets).await;
         let body = serde_json::json!({ "endpoint": endpoint }).to_string();
 
         let res = app.clone().oneshot(post_json("/api/send", body.clone())).await.unwrap();
@@ -449,7 +483,8 @@ mod tests {
     async fn latency_run_with_undefined_variable_is_a_400() {
         let (mut workspace, secrets, id) = echo_workspace("http://127.0.0.1:1");
         workspace.collections[0].endpoints[0].url = "{{nope}}/x".into();
-        let app = app_with(workspace, secrets);
+        let db = require_db!();
+        let app = app_with(&db, workspace, secrets).await;
         let config = format!(
             r#"{{"kind":"latency","endpointId":"{id}","warmup":0,"samples":1,"keepAlive":true,"timeoutMs":1000}}"#
         );
@@ -463,7 +498,8 @@ mod tests {
     async fn load_against_unconfirmed_host_is_refused_until_confirmed() {
         // TEST-NET-1: never routed, never resolved, so nothing is sent before confirmation.
         let (workspace, secrets, id) = echo_workspace("http://192.0.2.1:9");
-        let app = app_with(workspace, secrets);
+        let db = require_db!();
+        let app = app_with(&db, workspace, secrets).await;
         let config = format!(
             r#"{{"kind":"load","endpointId":"{id}","mode":{{"type":"closed","concurrency":1}},"durationMs":100,"timeoutMs":100,"keepAlive":true}}"#
         );
@@ -541,7 +577,8 @@ mod tests {
             }],
             ..Default::default()
         };
-        let app = app_with(workspace, Secrets::default());
+        let db = require_db!();
+        let app = app_with(&db, workspace, Secrets::default()).await;
         let config = format!(
             r#"{{"kind":"latency","endpointId":"{id}","warmup":0,"samples":4,"keepAlive":true,"timeoutMs":5000}}"#
         );
@@ -601,7 +638,8 @@ mod tests {
             }],
             ..Default::default()
         };
-        let app = app_with(workspace, Secrets::default());
+        let db = require_db!();
+        let app = app_with(&db, workspace, Secrets::default()).await;
         let config = |id: uuid::Uuid| {
             format!(
                 r#"{{"kind":"complexity","endpointId":"{id}","minN":1,"maxN":64,"points":4,"samples":3,"warmup":1,"timeoutMs":5000,"keepAlive":true,"slowMs":5000,"budgetMs":60000}}"#
@@ -637,7 +675,8 @@ mod tests {
     /// Start a short fake run, read the whole SSE stream, then fetch the report.
     #[tokio::test]
     async fn fake_run_streams_to_finished_and_produces_a_report() {
-        let app = app();
+        let db = require_db!();
+        let app = empty_app(&db).await;
         let req = Request::post("/api/runs")
             .header(header::HOST, HOST)
             .header(TOKEN_HEADER, TOKEN)
@@ -686,10 +725,16 @@ mod tests {
 
     #[tokio::test]
     async fn requires_a_workspace_id() {
-        let app = app();
+        let db = require_db!();
+        let app = empty_app(&db).await;
         let req = |ws: Option<&str>| {
             let req = Request::get("/api/workspace").header(header::HOST, HOST).header(TOKEN_HEADER, TOKEN);
-            ws.map_or(req, |ws| req.header(WORKSPACE_HEADER, ws)).body(Body::empty()).unwrap()
+            match ws {
+                Some(ws) => req.header(WORKSPACE_HEADER, ws),
+                None => req,
+            }
+            .body(Body::empty())
+            .unwrap()
         };
         assert_eq!(status(&app, req(None)).await, StatusCode::BAD_REQUEST);
         assert_eq!(status(&app, req(Some("../../etc"))).await, StatusCode::BAD_REQUEST);
@@ -701,7 +746,8 @@ mod tests {
 
     #[tokio::test]
     async fn workspaces_dont_see_each_others_data_or_runs() {
-        let app = app();
+        let db = require_db!();
+        let app = empty_app(&db).await;
         let other = uuid::Uuid::new_v4().to_string();
         let as_other = |req: axum::http::request::Builder| {
             req.header(header::HOST, HOST).header(TOKEN_HEADER, TOKEN).header(WORKSPACE_HEADER, other.as_str())

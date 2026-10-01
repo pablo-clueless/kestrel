@@ -20,13 +20,23 @@ No version has been tagged yet (engine and UI are both `0.1.0`), so the entries 
 - **Sign-in page** form scaffold using `react-hook-form` + `zod`, with a shared password rule
   (`config/string.ts`). It doesn't authenticate yet.
 - Shared `TabPanel` component.
-- `DATABASE_URL` placeholder in `.env.example`, ahead of the Postgres move.
 - **HANDOFF.md**: the self-built accounts plan (sessions, Argon2id, per-user workspaces, phases
   A1–A3), and the move to **Postgres with one schema per workspace** (phase A0). Development uses
   Postgres in Docker; production uses a provisioned database.
 
 ### Changed
 
+- **Storage moved from SQLite to Postgres**, with one schema per workspace (`ws_<id>`), so one
+  workspace's data can't appear in another's results even if a query forgot to filter. Every query
+  runs in a transaction pinned to its workspace's schema, and an unpinned query finds no tables.
+  - **Breaking:** the engine now needs `KESTREL_DATABASE_URL` and `KESTREL_SECRETS_KEY` to start.
+    For development, `docker compose up -d db` starts Postgres on `localhost:5433`.
+  - Secrets are encrypted at rest with AES-256-GCM, each bound to its workspace, environment and
+    key.
+  - `engine migrate --all` migrates every workspace schema ahead of a deploy.
+  - `engine import-sqlite [dir]` moves existing `workspaces/<id>/kestrel.db` files into Postgres,
+    keeping their ids so browsers keep their workspaces. Safe to re-run.
+  - The Fly config no longer needs a volume; `docker-compose.yml` now includes Postgres.
 - **Run history moved into the sidebar** as a Collections / History tab, instead of a sheet opened
   from the header. Runs are fetched only while the tab is visible, and opening a run no longer
   closes the panel.
@@ -40,6 +50,8 @@ No version has been tagged yet (engine and UI are both `0.1.0`), so the entries 
 
 ### Fixed
 
+- Two engine tests that no longer compiled, and a content-type test that passed for the wrong
+  reason. CI now runs the engine tests against a Postgres service.
 - **Request tabs** could stay squashed after closing tabs: they didn't grow back when few remained,
   and sometimes showed only the close button. Held widths are now released when a tab opens or the
   pointer leaves the strip, and are never held while the strip is scrolling.

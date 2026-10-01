@@ -5,8 +5,9 @@
 #
 # First deploy:
 #   fly apps create <your-app-name>                  # then set `app` below to the same name
-#   fly volumes create kestrel_data --size 1 --region <primary_region>
-#   fly deploy --no-public-ips --ha=false            # exactly one machine: runs and the workspace live on it
+#   fly secrets set KESTREL_DATABASE_URL='postgres://…?sslmode=require' \
+#                   KESTREL_SECRETS_KEY=$(openssl rand -hex 32)   # keep a copy of this key elsewhere too
+#   fly deploy --no-public-ips --ha=false            # exactly one machine: live runs are held in its memory
 #
 # Use it:
 #   fly proxy 7070:7070                              # then open http://localhost:7070
@@ -26,10 +27,14 @@ primary_region = "iad"
   KESTREL_PORT = "7070"
   KESTREL_WORKSPACE_DIR = "/data"
 
-# kestrel.db (workspace, secrets, run history) survives deploys and restarts.
-[mounts]
-  source = "kestrel_data"
-  destination = "/data"
+# All data is in Postgres (KESTREL_DATABASE_URL), so no volume is needed.
+#
+# Upgrading a deployment that kept its data on the `kestrel_data` volume (SQLite)? Uncomment this,
+# deploy, run `fly ssh console -C "kestrel-engine import-sqlite /data/workspaces"` once, then
+# comment it out again and `fly volumes destroy` the volume when you're satisfied.
+# [mounts]
+#   source = "kestrel_data"
+#   destination = "/data"
 
 # No [http_service] / [[services]] on purpose: nothing is routed through Fly's public proxy.
 

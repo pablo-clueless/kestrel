@@ -60,7 +60,7 @@ async fn prepare(state: &AppState, scope: &Scope, config: &RunConfig) -> Result<
             in_range("samples", cfg.samples, 1, caps.max_samples)?;
             in_range("warmup", cfg.warmup, 0, caps.max_warmup)?;
             in_range("timeoutMs", cfg.timeout_ms, 1, max_timeout_ms)?;
-            let (request, contract) = compile_endpoint(scope, cfg.endpoint_id, cfg.environment.as_deref())?;
+            let (request, contract) = compile_endpoint(scope, cfg.endpoint_id, cfg.environment.as_deref()).await?;
             let mut cfg = cfg.clone();
             cfg.ok_statuses.extend(contract::ok_statuses_from(contract.as_ref()));
             let mut prepared = latency::prepare(cfg, request, caps.max_duration, scope.store.confirmed_hosts())
@@ -80,7 +80,7 @@ async fn prepare(state: &AppState, scope: &Scope, config: &RunConfig) -> Result<
             if let Some(n) = cfg.max_in_flight {
                 in_range("maxInFlight", n, 1, caps.max_in_flight)?;
             }
-            let (request, contract) = compile_endpoint(scope, cfg.endpoint_id, cfg.environment.as_deref())?;
+            let (request, contract) = compile_endpoint(scope, cfg.endpoint_id, cfg.environment.as_deref()).await?;
             let mut cfg = cfg.clone();
             cfg.ok_statuses.extend(contract::ok_statuses_from(contract.as_ref()));
             let mut prepared =
@@ -102,7 +102,7 @@ async fn prepare(state: &AppState, scope: &Scope, config: &RunConfig) -> Result<
             in_range("timeoutMs", cfg.timeout_ms, 1, max_timeout_ms)?;
             in_range("slowMs", cfg.slow_ms, 1, max_timeout_ms)?;
             in_range("budgetMs", cfg.budget_ms, 1_000, caps.max_sweep_duration.as_millis() as u32)?;
-            let (request, _) = compile_endpoint(scope, cfg.endpoint_id, cfg.environment.as_deref())?;
+            let (request, _) = compile_endpoint(scope, cfg.endpoint_id, cfg.environment.as_deref()).await?;
             let prepared =
                 complexity::prepare(cfg.clone(), request, caps.max_sweep_duration, scope.store.confirmed_hosts())
                     .await
@@ -113,7 +113,7 @@ async fn prepare(state: &AppState, scope: &Scope, config: &RunConfig) -> Result<
 }
 
 /// The request to send, and the contract to check responses against (for imported endpoints).
-fn compile_endpoint(
+async fn compile_endpoint(
     scope: &Scope,
     id: Uuid,
     environment: Option<&str>,
@@ -123,7 +123,8 @@ fn compile_endpoint(
     let endpoint = workspace
         .endpoint(id)
         .ok_or_else(|| ApiError::BadRequest("endpoint not found; save the workspace first".into()))?;
-    let request = CompiledRequest::compile_with(endpoint, &workspace, &store.secrets(), &**store, environment, false)
+    let files = store.files_for(endpoint).await.map_err(|e| ApiError::Internal(format!("{e:#}")))?;
+    let request = CompiledRequest::compile_with(endpoint, &workspace, &store.secrets(), &files, environment, false)
         .map_err(|e| ApiError::BadRequest(e.to_string()))?;
     let contract = contract::for_endpoint(&workspace, endpoint).map_err(ApiError::BadRequest)?;
     Ok((request, contract))
@@ -133,7 +134,7 @@ fn compile_endpoint(
 pub async fn list(State(state): State<AppState>, scope: Scope) -> Result<Json<Vec<RunSummary>>, ApiError> {
     let mut runs = state.runs.list(scope.id);
     let live: HashSet<Uuid> = runs.iter().map(|r| r.run_id).collect();
-    let saved = scope.store.runs().map_err(|e| ApiError::Internal(format!("{e:#}")))?;
+    let saved = scope.store.runs().await.map_err(|e| ApiError::Internal(format!("{e:#}")))?;
     runs.extend(saved.into_iter().filter(|r| !live.contains(&r.run_id)));
     runs.sort_by_key(|r| std::cmp::Reverse(r.started_at_ms));
     Ok(Json(runs))
@@ -152,7 +153,7 @@ pub async fn report(
 ) -> Result<Json<RunReport>, ApiError> {
     let Some(run) = state.runs.get(scope.id, id) else {
         // Evicted from memory (or from before a restart): serve the saved report.
-        let saved = scope.store.run_report(id).map_err(|e| ApiError::Internal(format!("{e:#}")))?;
+        let saved = scope.store.run_report(id).await.map_err(|e| ApiError::Internal(format!("{e:#}")))?;
         return saved.map(Json).ok_or(ApiError::RunNotFound);
     };
     if run.status() == RunStatus::Running {

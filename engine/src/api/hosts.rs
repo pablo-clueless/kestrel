@@ -25,6 +25,6 @@ pub async fn confirm(scope: Scope, Json(req): Json<ConfirmHostRequest>) -> Resul
         return Err(ApiError::BadRequest("host must be a bare hostname, e.g. api.example.com".into()));
     }
     tracing::info!("host confirmed for load testing: {host}");
-    scope.store.confirm_host(&host).map_err(|e| ApiError::Internal(format!("{e:#}")))?;
+    scope.store.confirm_host(&host).await.map_err(|e| ApiError::Internal(format!("{e:#}")))?;
     Ok(StatusCode::NO_CONTENT)
 }
