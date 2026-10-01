@@ -42,7 +42,7 @@ export const EndpointList = ({ collection }: { collection: Collection }) => {
               key={e.id}
               className={cn(
                 "group flex items-center gap-2 rounded-xs px-2 py-1 text-sm transition-colors duration-150",
-                e.id === selectedId ? "bg-muted font-medium" : "hover:bg-muted/60",
+                e.id === selectedId ? "bg-primary/15 font-medium" : "hover:bg-muted-foreground/10",
               )}
             >
               <button
