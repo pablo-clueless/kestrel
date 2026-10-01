@@ -20,8 +20,7 @@ impl FromRequestParts<AppState> for Scope {
     type Rejection = ApiError;
 
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, ApiError> {
-        let from_query =
-            || parts.uri.query()?.split('&').find_map(|pair| pair.strip_prefix("workspace="));
+        let from_query = || parts.uri.query()?.split('&').find_map(|pair| pair.strip_prefix("workspace="));
         let raw = parts.headers.get(WORKSPACE_HEADER).and_then(|v| v.to_str().ok()).or_else(from_query);
         // Parsing as a UUID also keeps the id safe to use as a directory name.
         let id = raw

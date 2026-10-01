@@ -17,7 +17,10 @@ use crate::{
     },
     error::ApiError,
     extract,
-    model::{store::WorkspaceStore, ExtractTarget, FileRef, Saved, SendResponse, SetSecretRequest, TryRequest, Workspace, WorkspaceResponse},
+    model::{
+        ExtractTarget, FileRef, Saved, SendResponse, SetSecretRequest, TryRequest, Workspace, WorkspaceResponse,
+        store::WorkspaceStore,
+    },
     redact::Redactor,
     template::request::CompiledRequest,
 };
@@ -47,10 +50,7 @@ pub async fn put(scope: Scope, Json(workspace): Json<Workspace>) -> Result<Statu
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub async fn set_secret(
-    scope: Scope,
-    Json(req): Json<SetSecretRequest>,
-) -> Result<StatusCode, ApiError> {
+pub async fn set_secret(scope: Scope, Json(req): Json<SetSecretRequest>) -> Result<StatusCode, ApiError> {
     if req.environment.trim().is_empty() || req.key.trim().is_empty() {
         return Err(ApiError::BadRequest("environment and key are required".into()));
     }
@@ -111,8 +111,7 @@ pub async fn send(
     let store = &scope.store;
     let compiled = compile(store, &req, false)?;
     let rendered = compiled.render().map_err(ApiError::BadRequest)?;
-    let opts =
-        ClientOptions { keep_alive: true, follow_redirects: true, confirmed_hosts: store.confirmed_hosts() };
+    let opts = ClientOptions { keep_alive: true, follow_redirects: true, confirmed_hosts: store.confirmed_hosts() };
     let target = client::connect(&rendered.url, &opts).await.map_err(ApiError::BadRequest)?;
     let timeout = req.timeout_ms.map_or(DEFAULT_SEND_TIMEOUT, |ms| Duration::from_millis(ms.into()));
     let outcome = client::execute(&target.client, &rendered, timeout.min(state.config.caps.max_timeout)).await;
@@ -123,8 +122,7 @@ pub async fn send(
     let redactor = Redactor::new(compiled.api_key_header.as_deref(), &secret_values, Some(&rendered));
     let mut sample = sample::build(&rendered, &outcome, &redactor, SEND_BODY_BYTES);
     // The draft endpoint carries its own `expect`; schema definitions come from its saved collection.
-    let contract =
-        crate::contract::for_endpoint(&store.workspace(), &req.endpoint).map_err(ApiError::BadRequest)?;
+    let contract = crate::contract::for_endpoint(&store.workspace(), &req.endpoint).map_err(ApiError::BadRequest)?;
     if let (Some(contract), Some(status)) = (contract, outcome.status) {
         let check = contract.check(status, &outcome.body);
         sample.contract = Some(crate::contract::ContractCheck { message: redactor.text(&check.message), ..check });
@@ -165,13 +163,6 @@ fn run_extracts(store: &WorkspaceStore, req: &TryRequest, outcome: &Outcome) -> 
 
 fn compile(store: &WorkspaceStore, req: &TryRequest, mask: bool) -> Result<CompiledRequest, ApiError> {
     let workspace = store.workspace();
-    CompiledRequest::compile_with(
-        &req.endpoint,
-        &workspace,
-        &store.secrets(),
-        store,
-        req.environment.as_deref(),
-        mask,
-    )
-    .map_err(|e| ApiError::BadRequest(e.to_string()))
+    CompiledRequest::compile_with(&req.endpoint, &workspace, &store.secrets(), store, req.environment.as_deref(), mask)
+        .map_err(|e| ApiError::BadRequest(e.to_string()))
 }
