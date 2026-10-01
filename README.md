@@ -32,7 +32,7 @@ reference endpoints correctly, and reports a cached O(n²) endpoint as O(n²), n
 - **Collections** of endpoints, one per API. Import OpenAPI 3.0 / 3.1 or Swagger 2.0 (JSON or YAML)
   from a file, pasted text or a URL, or add endpoints by hand.
 - **Environments and secrets.** `{{base}}`-style variables resolve from the active environment, then
-  its secrets, then the collection. Secrets are write-only in the UI, stored in a gitignored file, and
+  its secrets, then the collection. Secrets are write-only in the UI, encrypted at rest, and
   redacted from every response and report, including when a server echoes them back.
 - **Template generators:** `{{uuid}}`, `{{seq}}`, `{{int:1..100}}`, plus size generators for Big-O:
   `{{n}}`, `{{n:int_array}}`, `{{n:string}}`, `{{n:object_array}}`.
@@ -42,16 +42,20 @@ reference endpoints correctly, and reports a cached O(n²) endpoint as O(n²), n
 
 ## Quick start
 
-**You need** Rust (stable, 1.88+), Node 24 and pnpm 10.
+**You need** Rust (stable, 1.88+), Node 24, pnpm 10 and Docker (for Postgres).
 
 ```bash
 # 1. One .env at the repo root configures both the engine and the UI.
-cp .env.example .env              # then set KESTREL_TOKEN to a long random string
+cp .env.example .env              # then set KESTREL_TOKEN to a long random string,
+                                  # and KESTREL_SECRETS_KEY to the output of `openssl rand -hex 32`
 
-# 2. Engine (use --release for load tests: a debug build is a much slower load generator)
+# 2. Postgres, on localhost:5433 (KESTREL_DATABASE_URL in .env.example already points at it)
+docker compose up -d db
+
+# 3. Engine (use --release for load tests: a debug build is a much slower load generator)
 cargo run --release -p engine     # http://127.0.0.1:7070
 
-# 3. UI
+# 4. UI
 cd kestrel
 pnpm install
 pnpm dev                          # http://localhost:3000
@@ -59,8 +63,8 @@ pnpm dev                          # http://localhost:3000
 
 **Single binary:** the engine also serves the built UI. Run `pnpm build` in `kestrel/`, then
 `cargo run --release -p engine` and open http://localhost:7070. Release builds embed the UI, so the
-binary is the whole app. The engine injects the session token into the page it serves, so no `.env`
-is needed this way.
+binary plus a database is the whole app. The engine injects the session token into the page it
+serves, so `KESTREL_TOKEN` isn't needed this way (the database URL and secrets key still are).
 
 To try everything against something with known behaviour, start the reference server and import its
 spec:
@@ -87,33 +91,38 @@ set an endpoint's body to `{{n:int_array}}`, for example on `/sort` or `/linear`
 
 | Variable | Default | |
 |---|---|---|
+| `KESTREL_DATABASE_URL` | – (required) | Postgres. Development: `postgres://kestrel:kestrel@localhost:5433/kestrel` from `docker compose up -d db` |
+| `KESTREL_SECRETS_KEY` | – (required) | 64 hex characters (`openssl rand -hex 32`) that encrypt stored secrets. Keep it safe and stable: without it, stored secrets can't be read |
+| `KESTREL_DB_MAX_CONNECTIONS` | `10` | Database connection pool size |
 | `KESTREL_TOKEN` | random per start | Required by every API call. The UI reads it at build time, so set it in `.env` |
 | `KESTREL_PORT` | `7070` | |
 | `KESTREL_BIND` | `127.0.0.1` | Loopback by default. Only change it on a private network (see Deploying) |
-| `KESTREL_WORKSPACE_DIR` | working directory | Where the `workspaces/` directory of databases lives |
+| `KESTREL_WORKSPACE_DIR` | working directory | Only read by `engine import-sqlite`, which looks for old SQLite workspaces under `workspaces/` |
 | `KESTREL_UI_ORIGINS` | `http://localhost:3000,http://127.0.0.1:3000` | Origins allowed to call the engine |
 | `TARGET_PORT` | `8089` | Reference server port |
 
 **Workspaces:** each browser gets its own workspace. The UI makes up a random id on first load,
 keeps it in `localStorage` and sends it as `X-Kestrel-Workspace` with every call, so people sharing
-one engine don't see each other's requests, secrets or runs. There's no login: clearing site data
-starts a new, empty workspace, and anyone who learns an id can open that workspace.
+one engine don't see each other's requests, secrets or runs. There's no login yet: clearing site
+data starts a new, empty workspace, and anyone who learns an id can open that workspace.
 
-**Storage:** each workspace is one SQLite database, `workspaces/<id>/kestrel.db` (plus its
-`-wal`/`-shm` files while the engine runs):
+**Storage:** Postgres, with **one schema per workspace** (`ws_<id>`), so one workspace's data can't
+show up in another's results even if a query forgot to filter. A shared `auth` schema holds the
+registry of workspaces. Each workspace schema holds:
 - collections, endpoints and environments;
-- secret values, which are never sent to the UI or included in reports;
+- secret values, encrypted with `KESTREL_SECRETS_KEY` and never sent to the UI or included in reports;
 - files uploaded for multipart bodies;
 - the reports of the last 500 finished runs;
 - hosts confirmed for load testing.
 
-It holds secrets, so `kestrel.db*` is added to a `.gitignore` in the same directory automatically.
-A new database imports an existing `kestrel.json`, `kestrel.secrets.json` and `kestrel-files/`
-once; after that those files aren't read and can be deleted.
+Schemas are created and migrated when a workspace is first opened. Before deploying a new engine
+version, `engine migrate --all` brings every workspace up to date ahead of time. Back up with
+`pg_dump` as for any Postgres database.
 
-To back it up while the engine runs, copy it with SQLite rather than `cp`, so the copy is
-consistent: `sqlite3 workspaces/<id>/kestrel.db ".backup kestrel-backup.db"`. A `kestrel.db` from
-before workspaces, directly in `KESTREL_WORKSPACE_DIR`, is no longer read.
+**Upgrading from SQLite:** run `engine import-sqlite` once with the old data directory available
+(`KESTREL_WORKSPACE_DIR`, or pass the `workspaces/` directory). Each `workspaces/<id>/kestrel.db`
+becomes `ws_<id>` with the same id, so every browser keeps its workspace. It's safe to run again: it
+skips workspaces that are already in Postgres.
 
 ## Safety
 
@@ -133,7 +142,8 @@ browser.
 ## Development
 
 ```bash
-cargo test -p engine                 # 110 tests: API guard, runners, stats, import, contract, templates
+docker compose up -d db              # the store and API tests need Postgres (KESTREL_TEST_DATABASE_URL)
+cargo test -p engine                 # 146 tests: API guard, store isolation, runners, stats, import, …
 cargo clippy -p engine --all-targets -- -D warnings
 cargo fmt --all                      # rustfmt.toml: max_width 120
 cargo test -p engine export_bindings # regenerate the TypeScript types in kestrel/src/types/engine
@@ -144,13 +154,17 @@ pnpm prettier:check
 pnpm build                           # static export into kestrel/out
 ```
 
+Each database test works in its own uniquely prefixed schemas and drops them when it ends, so tests
+run in parallel against one database (the development one is fine). Without
+`KESTREL_TEST_DATABASE_URL` they're skipped with a note; in CI, where `CI` is set, they fail instead.
+
 The engine's API types are the source of truth. [ts-rs](https://github.com/Aleph-Alpha/ts-rs)
 generates them into `kestrel/src/types/engine/`. Don't edit those files by hand: commit what
 `cargo test` produces.
 
 **CI** (`.github/workflows/ci.yaml`) runs on pushes and PRs to `main`:
-- **Engine:** rustfmt, clippy with warnings as errors, tests, and a check that the generated TypeScript
-  types are committed and current.
+- **Engine:** rustfmt, clippy with warnings as errors, tests (against a Postgres service container),
+  and a check that the generated TypeScript types are committed and current.
 - **UI:** Prettier, ESLint, and a production build, which includes the type check.
 
 ### Layout
@@ -158,6 +172,8 @@ generates them into `kestrel/src/types/engine/`. Don't edit those files by hand:
 ```
 engine/                 Rust engine (axum + tokio + reqwest)
   src/api/              HTTP API and the security guard
+  src/db/               Postgres: pool, per-workspace schemas + migrations, secrets encryption, SQLite import
+  src/model/            workspace types, the per-workspace store and its cache
   src/engine/           runners: latency, load (open/closed), complexity; run registry + SSE history
   src/import/           OpenAPI 3.0/3.1 + Swagger 2.0 → collections
   src/template/         {{…}} parsing, variables, generators
@@ -174,22 +190,20 @@ HANDOFF.md              design notes, decisions and milestone status
 
 ## Deploying
 
-One container holds everything: the engine binary with the UI embedded, serving both on port 7070.
+One container runs the engine binary with the UI embedded, serving both on port 7070. It keeps
+nothing itself: all data is in Postgres.
 
 ```bash
-docker compose up -d --build                                            # http://localhost:7070
-# or without compose:
+docker compose up -d --build              # Postgres + the engine: http://localhost:7070
+# or without compose, against a database you run:
 docker build -t kestrel .
-docker run --rm -p 127.0.0.1:7070:7070 -v kestrel-data:/data kestrel
+docker run --rm -p 127.0.0.1:7070:7070 \
+  -e KESTREL_DATABASE_URL=postgres://… -e KESTREL_SECRETS_KEY=… kestrel
 ```
 
-All data is in `kestrel.db` on the `/data` volume, so the container itself is disposable: rebuild
-and recreate it freely. Only remove the volume if you mean to wipe the workspace and run history.
-Back up from the host with:
-
-```bash
-docker run --rm -v kestrel-data:/data -v "$PWD":/backup alpine   sh -c 'apk add -q sqlite && sqlite3 /data/kestrel.db ".backup /backup/kestrel-backup.db"'
-```
+With compose, the data is on the `kestrel-db` volume; set `KESTREL_SECRETS_KEY` in `.env` first.
+Containers can be rebuilt and recreated freely. Only remove the volume if you mean to wipe every
+workspace. Back up with `docker compose exec db pg_dump -U kestrel kestrel > kestrel-backup.sql`.
 
 > **There is no login.** Anyone who can load the UI can drive the load generator. Publish the port on
 > `127.0.0.1` (as above) or keep it on a private network. Never expose it publicly.
@@ -201,13 +215,17 @@ WireGuard, so only members of your Fly org can reach it.
 
 ```bash
 fly apps create <your-app-name>                    # and set `app` in fly.toml to match
-fly volumes create kestrel_data --size 1 --region iad
-fly deploy --no-public-ips --ha=false              # exactly one machine: runs and the workspace live on it
+fly secrets set KESTREL_DATABASE_URL='postgres://…?sslmode=require' KESTREL_SECRETS_KEY=$(openssl rand -hex 32)
+fly deploy --no-public-ips --ha=false              # exactly one machine: live runs are held in its memory
 fly proxy 7070:7070                                # then open http://localhost:7070
 ```
 
-- `kestrel.db` (workspace, secrets, run history) lives on the `kestrel_data` volume and survives
-  deploys.
+- Workspaces, secrets and run history live in the Postgres database you provide. Any provider
+  works; if it puts a connection pooler in front, use its **transaction** mode.
+- Store `KESTREL_SECRETS_KEY` somewhere besides Fly too: losing it means losing every stored secret.
+- Upgrading a deployment that used SQLite: deploy, then run
+  `fly ssh console -C "kestrel-engine import-sqlite /data/workspaces"` once, while the old
+  `kestrel_data` volume is still mounted.
 - It's a dedicated-CPU machine because shared CPU adds jitter to latency numbers. Switch `cpu_kind`
   to `shared` in `fly.toml` for lighter, cheaper use.
 - Latency is measured from the Fly region, not from your machine.
@@ -218,7 +236,7 @@ fly proxy 7070:7070                                # then open http://localhost:
 | Variable | Container default | |
 |---|---|---|
 | `KESTREL_BIND` | `::` | Any address, IPv4 and IPv6 (Fly's private network is IPv6). Defaults to `127.0.0.1` outside the container |
-| `KESTREL_WORKSPACE_DIR` | `/data` | Mount a volume here |
+| `KESTREL_WORKSPACE_DIR` | `/data` | Only for `import-sqlite`: where an old SQLite volume is mounted |
 | `KESTREL_ALLOWED_HOSTS` | – | Extra `Host` values to accept, comma-separated, e.g. the hostname your platform serves the app on (`kestrel.example.com`, no scheme). Their `http://` and `https://` origins are allowed too |
 
 `GET /healthz` answers `ok` without a token, for health checks.
@@ -235,7 +253,8 @@ fit, even though Vercel runs Rust functions:
   function instance adds its own jitter, and the p99 lateness numbers above wouldn't hold.
 - **The security model is local.** The session token is built into the UI bundle, which is fine on
   localhost. On a public URL, anyone who loads the page gets a token for a load generator.
-- **Storage is a local SQLite file** (`kestrel.db`), which doesn't persist on serverless.
+- **The engine holds live runs in memory**, so it needs one long-lived process. (Storage is no
+  longer the obstacle: it's Postgres.)
 - **Load-testing third parties from shared cloud infrastructure** risks the host's acceptable-use
   rules.
 

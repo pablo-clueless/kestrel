@@ -1,25 +1,24 @@
 //! One [`WorkspaceStore`] per browser. The UI makes up a random id, keeps it in `localStorage` and
-//! sends it with every call; each id gets its own database under `workspaces/<id>/`. There is no
-//! login: knowing an id is what grants access to that workspace, so ids are v4 UUIDs (122 random
-//! bits) and are never listed.
+//! sends it with every call; each id gets its own Postgres schema (`ws_<id>`, see `db`). There is
+//! no login yet (HANDOFF → Accounts, A1): knowing an id is what grants access to that workspace,
+//! so ids are v4 UUIDs (122 random bits) and are never listed.
 
 use std::{
     collections::HashMap,
-    path::PathBuf,
     sync::{Arc, Mutex},
 };
 
 use uuid::Uuid;
 
 use super::store::WorkspaceStore;
+use crate::db::Db;
 
 /// Stores kept open at once. Past this, the least recently used ones that nothing else holds
-/// (e.g. a run in progress) are closed; they reopen from disk on their next request.
+/// (e.g. a run in progress) are closed; they reload from the database on their next request.
 const MAX_OPEN: usize = 256;
 
 pub struct Workspaces {
-    /// `None` keeps every workspace in memory (tests).
-    root: Option<PathBuf>,
+    db: Arc<Db>,
     open: Mutex<Open>,
 }
 
@@ -30,49 +29,39 @@ struct Open {
 }
 
 impl Workspaces {
-    /// Workspaces in subdirectories of `root`, created on first use.
-    pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: Some(root.into()), open: Mutex::default() }
-    }
-
-    #[cfg(test)]
-    pub fn in_memory() -> Self {
-        Self { root: None, open: Mutex::default() }
-    }
-
-    /// Puts `store` in place of workspace `id`, for tests.
-    #[cfg(test)]
-    pub fn insert(&self, id: Uuid, store: WorkspaceStore) {
-        let mut open = self.open.lock().unwrap();
-        open.tick += 1;
-        let tick = open.tick;
-        open.stores.insert(id, (Arc::new(store), tick));
+    pub fn new(db: Arc<Db>) -> Self {
+        Self { db, open: Mutex::default() }
     }
 
     /// Workspace `id`, opened (or created) if it isn't already.
-    pub fn get(&self, id: Uuid) -> anyhow::Result<Arc<WorkspaceStore>> {
+    pub async fn get(&self, id: Uuid) -> anyhow::Result<Arc<WorkspaceStore>> {
+        if let Some(store) = self.open.lock().unwrap().touch(id) {
+            return Ok(store);
+        }
+        // Opened without holding the lock, so a slow database doesn't stall every other workspace.
+        let store = Arc::new(WorkspaceStore::open(Arc::clone(&self.db), id).await?);
         let mut open = self.open.lock().unwrap();
+        // Another request may have opened it meanwhile; keep theirs, so there's one cache per id.
+        if let Some(existing) = open.touch(id) {
+            return Ok(existing);
+        }
+        open.evict();
         open.tick += 1;
         let tick = open.tick;
-        if let Some((store, used)) = open.stores.get_mut(&id) {
-            *used = tick;
-            return Ok(Arc::clone(store));
-        }
-        let store = Arc::new(match &self.root {
-            // `Uuid`'s hyphenated form is safe as a directory name.
-            Some(root) => WorkspaceStore::open(root.join(id.to_string()))?,
-            #[cfg(test)]
-            None => WorkspaceStore::in_memory(Default::default(), Default::default()),
-            #[cfg(not(test))]
-            None => unreachable!("in-memory workspaces are test-only"),
-        });
-        open.evict();
         open.stores.insert(id, (Arc::clone(&store), tick));
         Ok(store)
     }
 }
 
 impl Open {
+    fn touch(&mut self, id: Uuid) -> Option<Arc<WorkspaceStore>> {
+        self.tick += 1;
+        let tick = self.tick;
+        let (store, used) = self.stores.get_mut(&id)?;
+        *used = tick;
+        Some(Arc::clone(store))
+    }
+
     /// Closes idle stores, least recently used first, until there's room for one more.
     fn evict(&mut self) {
         if self.stores.len() < MAX_OPEN {
@@ -95,32 +84,44 @@ impl Open {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Workspace;
+    use crate::{db::test::require_db, model::Workspace};
 
-    #[test]
-    fn keeps_workspaces_apart_and_reopens_them_from_disk() {
-        let dir = std::env::temp_dir().join(format!("kestrel-workspaces-{}", Uuid::new_v4()));
+    #[tokio::test]
+    async fn keeps_workspaces_apart_and_reloads_them() {
+        let db = require_db!();
         let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
         {
-            let workspaces = Workspaces::new(&dir);
-            let mut ws = Workspace::default();
-            ws.active_environment = Some("a-only".into());
-            workspaces.get(a).unwrap().save_workspace(ws).unwrap();
-            assert_eq!(workspaces.get(b).unwrap().workspace().active_environment, None);
+            let workspaces = Workspaces::new(Arc::clone(&db));
+            let ws = Workspace { active_environment: Some("a-only".into()), ..Default::default() };
+            workspaces.get(a).await.unwrap().save_workspace(ws).await.unwrap();
+            assert_eq!(workspaces.get(b).await.unwrap().workspace().active_environment, None);
         }
-        let reopened = Workspaces::new(&dir);
-        assert_eq!(reopened.get(a).unwrap().workspace().active_environment.as_deref(), Some("a-only"));
-        let _ = std::fs::remove_dir_all(&dir);
+        let reopened = Workspaces::new(Arc::clone(&db));
+        assert_eq!(reopened.get(a).await.unwrap().workspace().active_environment.as_deref(), Some("a-only"));
     }
 
-    #[test]
-    fn evicts_only_idle_stores() {
-        let workspaces = Workspaces::in_memory();
-        let held = workspaces.get(Uuid::new_v4()).unwrap();
-        for _ in 0..MAX_OPEN + 10 {
-            workspaces.get(Uuid::new_v4()).unwrap();
+    #[tokio::test]
+    async fn returns_one_store_per_id() {
+        let db = require_db!();
+        let workspaces = Workspaces::new(Arc::clone(&db));
+        let id = Uuid::new_v4();
+        let (x, y) = tokio::join!(workspaces.get(id), workspaces.get(id));
+        assert!(Arc::ptr_eq(&x.unwrap(), &y.unwrap()), "concurrent opens share one cache");
+    }
+
+    #[tokio::test]
+    async fn evicts_only_idle_stores() {
+        // Eviction is pure bookkeeping; exercise it without a database (the pool never connects).
+        let url = "postgres://unused@localhost/unused";
+        let db = Arc::new(Db::lazy(url, 1, crate::db::crypto::SecretsCipher::for_tests(), "x_").unwrap());
+        let mut open = Open::default();
+        let fake = || Arc::new(WorkspaceStore::empty_for_tests(Arc::clone(&db)));
+        let held = fake();
+        open.stores.insert(Uuid::new_v4(), (Arc::clone(&held), 0));
+        for i in 0..MAX_OPEN + 10 {
+            open.evict();
+            open.stores.insert(Uuid::new_v4(), (fake(), i as u64 + 1));
         }
-        let open = workspaces.open.lock().unwrap();
         assert!(open.stores.len() <= MAX_OPEN);
         assert!(open.stores.values().any(|(s, _)| Arc::ptr_eq(s, &held)));
     }

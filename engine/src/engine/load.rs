@@ -662,7 +662,7 @@ mod tests {
             Err(_) => panic!("prepare failed"),
         };
         let registry = Arc::new(RunRegistry::default());
-        let r = registry.create(super::super::types::RunConfig::Load(cfg));
+        let r = registry.create(uuid::Uuid::nil(), super::super::types::RunConfig::Load(cfg));
         super::run(Arc::clone(&r), prepared).await;
         r.report().unwrap()
     }
