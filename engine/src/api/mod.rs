@@ -1,3 +1,4 @@
+mod auth;
 mod guard;
 mod hosts;
 mod import;
@@ -18,7 +19,7 @@ use axum::{
 use serde_json::{Value, json};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
-use crate::{config::Config, engine::registry::RunRegistry, model::workspaces::Workspaces};
+use crate::{auth::Accounts, config::Config, db::Db, engine::registry::RunRegistry, model::workspaces::Workspaces};
 
 pub use guard::TOKEN_HEADER;
 pub use scope::{Scope, WORKSPACE_HEADER};
@@ -31,11 +32,13 @@ pub struct AppState {
     pub config: Arc<Config>,
     pub runs: Arc<RunRegistry>,
     pub workspaces: Arc<Workspaces>,
+    pub accounts: Arc<Accounts>,
 }
 
 impl AppState {
-    pub fn new(config: Config, workspaces: Workspaces) -> Self {
-        Self { config: Arc::new(config), runs: Arc::default(), workspaces: Arc::new(workspaces) }
+    pub fn new(config: Config, db: Arc<Db>) -> Self {
+        let accounts = Arc::new(Accounts::new(Arc::clone(&db), &config));
+        Self { config: Arc::new(config), runs: Arc::default(), workspaces: Arc::new(Workspaces::new(db)), accounts }
     }
 }
 
@@ -54,6 +57,13 @@ pub fn router(state: AppState) -> Router {
         .route("/runs/{id}", axum::routing::delete(runs::stop))
         .route("/runs/{id}/events", get(runs::events))
         .route("/runs/{id}/report", get(runs::report))
+        .route("/auth/signup", post(auth::signup))
+        .route("/auth/login", post(auth::login))
+        .route("/auth/logout", post(auth::logout))
+        .route("/auth/me", get(auth::me))
+        // The last layer added runs first: the guard (token, Host, Origin, content type), then the
+        // session check, then the handler.
+        .layer(middleware::from_fn_with_state(state.clone(), auth::require_session))
         .layer(middleware::from_fn_with_state(state.clone(), guard::guard))
         .with_state(state.clone());
 
@@ -73,6 +83,8 @@ fn cors(config: &Config) -> CorsLayer {
         config.allowed_origins.iter().filter_map(|o| HeaderValue::from_str(o).ok()).collect();
     CorsLayer::new()
         .allow_origin(AllowOrigin::list(origins))
+        // The session cookie, when the UI is on another origin (`pnpm dev` on :3000).
+        .allow_credentials(true)
         .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
         .allow_headers([
             header::CONTENT_TYPE,
@@ -116,7 +128,7 @@ mod tests {
     /// database is never connected to, so these run without one.
     fn app() -> Router {
         let db = Db::lazy("postgres://unused@127.0.0.1:1/unused", 1, SecretsCipher::for_tests(), "x_").unwrap();
-        router(AppState::new(config(), Workspaces::new(Arc::new(db))))
+        router(AppState::new(config(), Arc::new(db)))
     }
 
     /// A router over `db` with workspace `WS` holding `workspace` and `secrets`.
@@ -125,15 +137,15 @@ mod tests {
     }
 
     async fn app_on(db: &Arc<Db>, config: Config, workspace: Workspace, secrets: Secrets) -> Router {
-        let workspaces = Workspaces::new(Arc::clone(db));
-        let store = workspaces.get(WS.parse().unwrap()).await.unwrap();
+        let state = AppState::new(config, Arc::clone(db));
+        let store = state.workspaces.get(WS.parse().unwrap()).await.unwrap();
         store.save_workspace(workspace).await.unwrap();
         for (env, kv) in secrets {
             for (key, value) in kv {
                 store.set_secret(&env, &key, Some(value)).await.unwrap();
             }
         }
-        router(AppState::new(config, workspaces))
+        router(state)
     }
 
     async fn empty_app(db: &Arc<Db>) -> Router {

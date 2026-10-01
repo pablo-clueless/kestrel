@@ -1,5 +1,12 @@
-import { useState } from "react";
+"use client";
 
+import { LogOut, Settings, User } from "lucide-react";
+import Link from "next/link";
+import { useState } from "react";
+import { toast } from "sonner";
+
+import { errorMessage, signOut } from "@/lib/client";
+import { useMe } from "@/hooks/use-me";
 import { Button } from "../ui/button";
 import { cn } from "cn";
 import {
@@ -11,56 +18,67 @@ import {
   PopoverTrigger,
 } from "../ui/popover";
 
-type Variant = "default" | "destructive" | "info" | "success" | "warning";
+const item =
+  "flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-sm transition-colors hover:bg-muted";
 
-const VARIANTS: Record<Variant, string> = {
-  default: "hover:bg-gray-100 text-gray-700 dark:hover:bg-gray-950 dark:text-gray-400",
-  destructive: "hover:bg-red-50 text-red-700 dark:hover:bg-red-950 dark:text-red-400",
-  info: "hover:bg-blue-50 text-blue-700 dark:hover:bg-blue-950 dark:text-blue-400",
-  success: "hover:bg-green-50 text-green-700 dark:hover:bg-green-950 dark:text-green-400",
-  warning: "hover:bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-400",
-};
-
-const menu: { id: string; label: string; href: string; variant: Variant }[] = [
-  { id: "profile", label: "Profile", href: "/profile", variant: "default" },
-  { id: "settings", label: "Settings", href: "/settings", variant: "default" },
-  { id: "logout", label: "Logout", href: "/signout", variant: "destructive" },
-];
-
+/** The signed-in user's menu. Hidden when accounts are off: there's no one to sign out. */
 export const LoggUser = () => {
   const [open, setOpen] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
+  const user = useMe().data?.user;
+  if (!user) return null;
+
+  const onSignOut = async () => {
+    setSigningOut(true);
+    try {
+      await signOut();
+      // A full load, not router.push: the stores still hold this user's workspace and runs.
+      // eslint-disable-next-line @next/next/no-location-assign-relative-destination
+      window.location.assign("/");
+    } catch (err) {
+      toast.error(errorMessage(err));
+      setSigningOut(false);
+    }
+  };
 
   return (
     <Popover onOpenChange={setOpen} open={open}>
       <PopoverTrigger
         render={
           <Button
-            onClick={() => setOpen}
             variant="outline"
             size="icon"
-            className="w-50"
-            aria-label="Toggle theme"
-          ></Button>
+            aria-label={`Account: ${user.email}`}
+            title={user.email}
+            className="font-semibold uppercase"
+          />
         }
-      />
-      <PopoverContent align="end">
-        <PopoverHeader>
-          <PopoverTitle></PopoverTitle>
-          <PopoverDescription></PopoverDescription>
+      >
+        {user.email.charAt(0)}
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-60 gap-0 p-0">
+        <PopoverHeader className="border-b px-2.5 py-2">
+          <PopoverTitle className="text-sm">Signed in as</PopoverTitle>
+          <PopoverDescription className="truncate" title={user.email}>
+            {user.email}
+          </PopoverDescription>
         </PopoverHeader>
-        <div className="">
-          {menu.map((item) => (
-            <div
-              className={cn(
-                "cursor-pointer border-b px-2.5 py-1.5 text-sm last:border-b-0",
-                VARIANTS[item.variant],
-              )}
-              key={item.id}
-            >
-              <span>{item.label}</span>
-            </div>
-          ))}
-        </div>
+        <nav className="flex flex-col py-1">
+          <Link href="/profile" className={item} onClick={() => setOpen(false)}>
+            <User className="size-3.5" /> Profile
+          </Link>
+          <Link href="/settings" className={item} onClick={() => setOpen(false)}>
+            <Settings className="size-3.5" /> Settings
+          </Link>
+          <button
+            type="button"
+            className={cn(item, "border-t text-red-700 dark:text-red-400")}
+            onClick={onSignOut}
+            disabled={signingOut}
+          >
+            <LogOut className="size-3.5" /> {signingOut ? "Signing out…" : "Sign out"}
+          </button>
+        </nav>
       </PopoverContent>
     </Popover>
   );
