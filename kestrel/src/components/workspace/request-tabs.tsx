@@ -38,14 +38,51 @@ export const RequestTabs = () => {
     [workspace, drafts],
   );
 
+  const tabIds = openIds.filter((id) => endpoints.has(id));
+
+  const stripRef = useRef<HTMLDivElement>(null);
+  const tabRefs = useRef(new Map<string, HTMLElement>());
+
   const [frozenWidth, setFrozenWidth] = useState<number | null>(null);
   const closeWithMouse = (id: string) => {
-    setFrozenWidth(tabRefs.current.get(id)?.offsetWidth ?? null);
+    const tab = tabRefs.current.get(id);
+    const list = tab?.parentElement;
+    // Only hold widths while every tab fits: once the strip scrolls, tabs are at their minimum and
+    // holding that would keep them squashed after closing.
+    const fits = list && list.scrollWidth <= list.clientWidth;
+    setFrozenWidth(tab && fits ? tab.getBoundingClientRect().width : null);
     closeTab(id);
   };
 
+  // Opening a tab lets widths refit (e.g. + clicked right after closing some).
+  const tabCount = tabIds.length;
+  const prevCount = useRef(tabCount);
+  useEffect(() => {
+    if (tabCount > prevCount.current) setFrozenWidth(null);
+    prevCount.current = tabCount;
+  }, [tabCount]);
+
+  // Release held widths once the pointer is outside the strip. Checked on the document as well as
+  // pointerleave, which can be skipped when the element under the pointer is removed.
+  useEffect(() => {
+    if (frozenWidth === null) return;
+    const release = (e: PointerEvent) => {
+      if (!(e.target instanceof Node) || !stripRef.current?.contains(e.target)) {
+        setFrozenWidth(null);
+      }
+    };
+    const releaseAll = () => setFrozenWidth(null);
+    document.addEventListener("pointermove", release);
+    document.addEventListener("pointerdown", release);
+    window.addEventListener("blur", releaseAll);
+    return () => {
+      document.removeEventListener("pointermove", release);
+      document.removeEventListener("pointerdown", release);
+      window.removeEventListener("blur", releaseAll);
+    };
+  }, [frozenWidth]);
+
   // Keep the active tab visible when the strip scrolls.
-  const tabRefs = useRef(new Map<string, HTMLElement>());
   useEffect(() => {
     if (selectedId) {
       tabRefs.current.get(selectedId)?.scrollIntoView({ block: "nearest", inline: "nearest" });
@@ -76,6 +113,7 @@ export const RequestTabs = () => {
 
   return (
     <div
+      ref={stripRef}
       className="bg-card flex h-9 shrink-0 items-stretch"
       onPointerLeave={() => setFrozenWidth(null)}
     >
@@ -88,12 +126,11 @@ export const RequestTabs = () => {
         role="tablist"
         aria-label="Open requests"
         // Wants every tab at full width, then shrinks to the space left beside the + button.
-        style={{ flexBasis: `${openIds.length * TAB_REM}rem` }}
+        style={{ flexBasis: `${tabIds.length * TAB_REM}rem` }}
         className="flex min-w-0 shrink grow-0 items-stretch overflow-x-auto"
       >
-        {openIds.map((id) => {
-          const endpoint = endpoints.get(id);
-          if (!endpoint) return null;
+        {tabIds.map((id) => {
+          const endpoint = endpoints.get(id)!;
           return (
             <RequestTab
               key={id}
@@ -168,7 +205,7 @@ const RequestTab = ({
       onKeyDown={onKeyDown}
       style={width === null ? undefined : { flex: `0 0 ${width}px` }}
       className={cn(
-        "group @container relative flex min-w-10 shrink grow-0 basis-56 cursor-default items-center gap-1.5 border-r px-2.5 text-xs outline-none select-none",
+        "group @container relative flex min-w-10 shrink grow-0 basis-56 cursor-default items-center gap-1.5 border-r px-2 text-xs outline-none select-none",
         "focus-visible:ring-ring/50 focus-visible:ring-2 focus-visible:ring-inset",
         active
           ? "bg-background text-foreground -mb-px font-medium"
