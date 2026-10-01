@@ -142,6 +142,15 @@ export const stopRun = async (runId: string) => {
 export const getReport = async (runId: string) =>
   (await engine.get<RunReport>(`/runs/${runId}/report`)).data;
 
+/** The report's chartable table as CSV: the timeline, or Big-O's per-size points. */
+export const getReportCsv = async (runId: string) =>
+  (
+    await engine.get<string>(`/runs/${runId}/report`, {
+      params: { format: "csv" },
+      responseType: "text",
+    })
+  ).data;
+
 export const getWorkspace = async () => (await engine.get<WorkspaceResponse>("/workspace")).data;
 
 export const putWorkspace = async (workspace: Workspace) => {
