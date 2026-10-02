@@ -12,6 +12,14 @@ No version has been tagged yet (engine and UI are both `0.1.0`), so the entries 
 
 ### Added
 
+- **curl import.** Paste a curl command into a request's URL field and it fills in the method, URL,
+  query, headers, auth and body (Undo is in the notice). Paste one or more commands into **Import**
+  (e.g. DevTools' "Copy all as cURL") and they become a collection; when they share an origin it
+  becomes the collection's `base`. Reads bash and Windows `cmd` quoting, `-d`/`--data-*`,
+  `--data-urlencode`, `--json`, `-F`, `-G`, `-u`, `-b`, and `Authorization` headers (moved to the
+  Auth tab). Anything that reads a file (`-d @file`, `-F f=@file`) is listed to fill in by hand,
+  and credentials get a reminder that they're stored as plain text.
+
 - **JSON body editor:** the body is checked as you type, with the line, column and a plain message
   for the first problem (e.g. "Line 3, column 9: Remove the trailing comma"). Templates like
   `{{seq}}` count as values. **Format** (or Shift+Alt+F) re-indents it without changing any value.

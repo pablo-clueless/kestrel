@@ -14,14 +14,14 @@ import {
   YAxis,
 } from "recharts";
 
-import { StatGrid, StatTile } from "@/components/shared/stat-tile";
-import { cn } from "@/lib/utils";
-import { useRunStore } from "@/stores/run-store";
-import type { ComplexityPoint } from "@/types/engine/ComplexityPoint";
 import type { ComplexityResult } from "@/types/engine/ComplexityResult";
+import type { ComplexityPoint } from "@/types/engine/ComplexityPoint";
+import { StatGrid, StatTile } from "@/components/shared/stat-tile";
 import type { Confidence } from "@/types/engine/Confidence";
-import type { Model } from "@/types/engine/Model";
 import type { ModelFit } from "@/types/engine/ModelFit";
+import type { Model } from "@/types/engine/Model";
+import { useRunStore } from "@/stores/run-store";
+import { cn } from "@/lib/utils";
 
 import { legendProps, tick, tooltipStyle } from "./charts";
 

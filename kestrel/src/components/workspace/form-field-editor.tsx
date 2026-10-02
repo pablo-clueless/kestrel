@@ -4,9 +4,9 @@ import { FileUp, Loader2, Plus, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
-import { errorMessage, uploadFile } from "@/lib/client";
 import type { FieldKind } from "@/types/engine/FieldKind";
 import type { FormField } from "@/types/engine/FormField";
+import { errorMessage, uploadFile } from "@/lib/client";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";

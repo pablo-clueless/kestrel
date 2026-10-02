@@ -1,10 +1,10 @@
 "use client";
 
-import { useQueryClient } from "@tanstack/react-query";
-import { CircleCheck, TriangleAlert } from "lucide-react";
-import Link from "next/link";
-import { useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useRef, useState } from "react";
+import { CircleCheck, TriangleAlert } from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
+import { useSearchParams } from "next/navigation";
+import Link from "next/link";
 
 import { errorMessage, verifyEmail } from "@/lib/client";
 import { CircleLoader } from "@/components/shared";
