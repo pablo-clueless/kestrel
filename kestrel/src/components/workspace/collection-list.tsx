@@ -8,6 +8,8 @@ import { activeCollectionOf, useWorkspaceStore } from "@/stores/workspace-store"
 import type { Collection } from "@/types/engine/Collection";
 import { useLayoutStore } from "@/stores/layout-store";
 import { Button } from "@/components/ui/button";
+import { InlineNameForm } from "@/components/shared/inline-name-form";
+import { AddPairForm } from "@/components/shared/add-pair-form";
 import { EndpointList } from "./endpoint-list";
 import { ImportDialog } from "./import-dialog";
 import { useValues } from "@/hooks/use-values";
@@ -40,18 +42,17 @@ const hoverAction =
  * whose endpoint you last selected or added. Also loads the workspace. */
 export const CollectionList = () => {
   const { workspace, loadError, load, addCollection } = useWorkspaceStore();
-  const { values, set, patch } = useValues({
+  const { values, set } = useValues({
     initialValue: {
-      // Inline "new collection" name field.
+      // Whether the inline "new collection" name field is open.
       adding: false,
-      newName: "",
       // Which dialog is open.
       editing: null as Collection | null,
       deleting: null as Collection | null,
       importing: false,
     },
   });
-  const { adding, newName, editing, deleting, importing } = values;
+  const { adding, editing, deleting, importing } = values;
   const active = activeCollectionOf(workspace);
   const { expandedCollections, expandCollection, collapseCollection, collapseAllCollections } =
     useLayoutStore();
@@ -83,12 +84,6 @@ export const CollectionList = () => {
       </motion.div>
     );
   }
-
-  const create = () => {
-    const name = newName.trim();
-    if (name) addCollection(name);
-    patch({ newName: "", adding: false });
-  };
 
   return (
     <motion.div className="bg-background flex h-full flex-col gap-3 p-3">
@@ -126,23 +121,16 @@ export const CollectionList = () => {
       </motion.div>
       <AnimatePresence initial={false}>
         {adding && (
-          <motion.form
-            {...collapse}
-            className="overflow-hidden"
-            onSubmit={(e) => {
-              e.preventDefault();
-              create();
-            }}
-          >
-            <Input
-              autoFocus
+          <motion.div {...collapse} className="overflow-hidden">
+            <InlineNameForm
               placeholder="Collection name"
-              value={newName}
-              onChange={(e) => set("newName", e.target.value)}
-              onBlur={create}
-              onKeyDown={(e) => e.key === "Escape" && set("adding", false)}
+              onSubmit={(name) => {
+                addCollection(name);
+                set("adding", false);
+              }}
+              onCancel={() => set("adding", false)}
             />
-          </motion.form>
+          </motion.div>
         )}
       </AnimatePresence>
       <nav className="-mx-2 flex-1 overflow-y-auto">
@@ -224,12 +212,6 @@ const CollectionSettingsDialog = ({
   const live = useWorkspaceStore(
     (s) => s.workspace?.collections.find((c) => c.id === collection?.id) ?? null,
   );
-  // The "add variable" row.
-  const {
-    values: draft,
-    set: setDraft,
-    reset: clearDraft,
-  } = useValues({ initialValue: { key: "", value: "" } });
 
   return (
     <Dialog open={live !== null} onOpenChange={(open) => !open && onClose()}>
@@ -271,35 +253,13 @@ const CollectionSettingsDialog = ({
                   </button>
                 </motion.div>
               ))}
-              <form
-                className="flex items-center gap-4"
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  if (!draft.key.trim()) return;
-                  setCollectionVar(live.id, draft.key.trim(), draft.value);
-                  clearDraft();
-                }}
-              >
-                <Input
-                  className="w-24 shrink-0"
-                  placeholder="base"
-                  value={draft.key}
-                  onChange={(e) => setDraft("key", e.target.value)}
-                />
-                <Input
-                  className="flex-1 font-mono"
-                  placeholder="https://api.example.com"
-                  value={draft.value}
-                  onChange={(e) => setDraft("value", e.target.value)}
-                />
-                <button
-                  type="submit"
-                  className="text-muted-foreground hover:text-green-500"
-                  aria-label="Add variable"
-                >
-                  <Plus className="size-4" />
-                </button>
-              </form>
+              <AddPairForm
+                noun="Variable"
+                keyPlaceholder="base"
+                valuePlaceholder="https://api.example.com"
+                keyClassName="w-24"
+                onAdd={(key, value) => setCollectionVar(live.id, key, value)}
+              />
             </motion.div>
           </motion.div>
         )}
