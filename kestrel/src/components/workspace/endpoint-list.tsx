@@ -5,7 +5,7 @@ import { useMemo, useState } from "react";
 import { motion } from "framer-motion";
 
 import { MethodBadge } from "@/components/shared/method-badge";
-import { groupsOf, useWorkspaceStore } from "@/stores/workspace-store";
+import { activeCollectionOf, groupsOf, useWorkspaceStore } from "@/stores/workspace-store";
 import type { Collection } from "@/types/engine/Collection";
 import type { Endpoint } from "@/types/engine/Endpoint";
 import { Input } from "@/components/ui/input";
@@ -18,8 +18,14 @@ const hoverAction =
 /** The endpoints of one collection, grouped by tag/folder, with filter and add. Ungrouped
  * endpoints come first; groups made by hand are listed even while empty. */
 export const EndpointList = ({ collection }: { collection: Collection }) => {
-  const { selectedId, select, addEndpoint, removeEndpoint, addGroup, removeGroup } =
-    useWorkspaceStore();
+  const { selectedId, removeEndpoint, addGroup, removeGroup } = useWorkspaceStore();
+  const setActiveCollection = useWorkspaceStore((s) => s.setActiveCollection);
+  const isActive = useWorkspaceStore((s) => activeCollectionOf(s.workspace)?.id === collection.id);
+  // Several collections can be open in the sidebar, but the editor and "add endpoint" work on the
+  // active one, so acting inside this list makes its collection active first.
+  const activate = () => {
+    if (!isActive) setActiveCollection(collection.id);
+  };
   const [filter, setFilter] = useState("");
   // Inline "new group" name field; null when closed.
   const [newGroup, setNewGroup] = useState<string | null>(null);
@@ -57,7 +63,7 @@ export const EndpointList = ({ collection }: { collection: Collection }) => {
               <p className="text-muted-foreground min-w-0 flex-1 truncate text-xs">{group}</p>
               <button
                 className={cn(hoverAction, "hover:text-primary")}
-                onClick={() => addEndpoint(group)}
+                onClick={() => activate()}
                 aria-label={`Add endpoint to ${group}`}
                 title="Add endpoint to this group"
               >
@@ -86,7 +92,7 @@ export const EndpointList = ({ collection }: { collection: Collection }) => {
             >
               <button
                 className="flex min-w-0 flex-1 items-center gap-2 text-left"
-                onClick={() => select(e.id)}
+                onClick={() => activate()}
               >
                 <MethodBadge method={e.method} short className="w-11" />
                 <span className="truncate">{e.name || e.url}</span>
@@ -122,7 +128,7 @@ export const EndpointList = ({ collection }: { collection: Collection }) => {
       <div className="flex items-center gap-3 px-2">
         <button
           className="text-muted-foreground hover:text-primary flex items-center gap-1 text-xs"
-          onClick={() => addEndpoint()}
+          onClick={() => activate()}
         >
           <Plus className="size-3.5" /> Add endpoint
         </button>
