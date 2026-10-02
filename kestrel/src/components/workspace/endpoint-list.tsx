@@ -4,8 +4,8 @@ import { FolderPlus, Plus, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { motion } from "framer-motion";
 
-import { MethodBadge } from "@/components/shared/method-badge";
 import { activeCollectionOf, groupsOf, useWorkspaceStore } from "@/stores/workspace-store";
+import { MethodBadge } from "@/components/shared/method-badge";
 import type { Collection } from "@/types/engine/Collection";
 import type { Endpoint } from "@/types/engine/Endpoint";
 import { Input } from "@/components/ui/input";
@@ -18,7 +18,7 @@ const hoverAction =
 /** The endpoints of one collection, grouped by tag/folder, with filter and add. Ungrouped
  * endpoints come first; groups made by hand are listed even while empty. */
 export const EndpointList = ({ collection }: { collection: Collection }) => {
-  const { selectedId, removeEndpoint, addGroup, removeGroup } = useWorkspaceStore();
+  const { selectedId, select, removeEndpoint, addGroup, removeGroup } = useWorkspaceStore();
   const setActiveCollection = useWorkspaceStore((s) => s.setActiveCollection);
   const isActive = useWorkspaceStore((s) => activeCollectionOf(s.workspace)?.id === collection.id);
   // Several collections can be open in the sidebar, but the editor and "add endpoint" work on the
@@ -92,7 +92,10 @@ export const EndpointList = ({ collection }: { collection: Collection }) => {
             >
               <button
                 className="flex min-w-0 flex-1 items-center gap-2 text-left"
-                onClick={() => activate()}
+                onClick={() => {
+                  activate();
+                  select(e.id);
+                }}
               >
                 <MethodBadge method={e.method} short className="w-11" />
                 <span className="truncate">{e.name || e.url}</span>
