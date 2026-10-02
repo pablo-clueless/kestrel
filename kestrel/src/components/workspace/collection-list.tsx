@@ -1,10 +1,11 @@
 "use client";
 
-import { ChevronRight, FileUp, Plus, Settings2, Trash, Trash2 } from "lucide-react";
+import { ChevronRight, ChevronsDownUp, FileUp, Plus, Settings2, Trash, Trash2 } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 
 import { activeCollectionOf, useWorkspaceStore } from "@/stores/workspace-store";
+import { useLayoutStore } from "@/stores/layout-store";
 import type { Collection } from "@/types/engine/Collection";
 import { Button } from "@/components/ui/button";
 import { EndpointList } from "./endpoint-list";
@@ -34,10 +35,11 @@ const collapse = {
 const hoverAction =
   "text-muted-foreground pointer-events-none opacity-0 transition-[opacity,color] duration-150 group-hover:pointer-events-auto group-hover:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100";
 
-/** Sidebar: collections of endpoints. The active one is expanded; clicking another switches to it.
- * Also loads the workspace. */
+/** Sidebar: collections of endpoints. Clicking a collection opens or closes it, so any number can
+ * be open, none included; it doesn't select anything. The active collection (in bold) is the one
+ * whose endpoint you last selected or added. Also loads the workspace. */
 export const CollectionList = () => {
-  const { workspace, loadError, load, setActiveCollection, addCollection } = useWorkspaceStore();
+  const { workspace, loadError, load, addCollection } = useWorkspaceStore();
   const { values, set, patch } = useValues({
     initialValue: {
       // Inline "new collection" name field.
@@ -51,10 +53,25 @@ export const CollectionList = () => {
   });
   const { adding, newName, editing, deleting, importing } = values;
   const active = activeCollectionOf(workspace);
+  const { expandedCollections, expandCollection, collapseCollection, collapseAllCollections } =
+    useLayoutStore();
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  // A collection you've just made or imported becomes active and opens, so you can see it. Nothing
+  // else opens by itself: not the active collection after a reload, nor the one that becomes
+  // active when you delete another.
+  const activeId = active?.id;
+  const ids = workspace?.collections.map((c) => c.id).join(",");
+  const known = useRef<Set<string> | null>(null);
+  useEffect(() => {
+    if (ids === undefined) return;
+    const current = new Set(ids ? ids.split(",") : []);
+    if (known.current && activeId && !known.current.has(activeId)) expandCollection(activeId);
+    known.current = current;
+  }, [ids, activeId, expandCollection]);
 
   if (loadError) {
     return (
@@ -78,6 +95,15 @@ export const CollectionList = () => {
       <motion.div className="flex items-center justify-between">
         <span className="text-muted-foreground text-xs uppercase">Collections</span>
         <motion.div className="flex items-center gap-2">
+          <button
+            className="text-muted-foreground hover:text-primary disabled:pointer-events-none disabled:opacity-40"
+            onClick={collapseAllCollections}
+            disabled={expandedCollections.length === 0}
+            aria-label="Collapse all collections"
+            title="Collapse all"
+          >
+            <ChevronsDownUp className="size-4" />
+          </button>
           <button
             className="text-muted-foreground hover:text-primary"
             onClick={() => set("importing", true)}
@@ -122,6 +148,7 @@ export const CollectionList = () => {
       <nav className="-mx-2 flex-1 overflow-y-auto">
         {workspace?.collections.map((c) => {
           const isActive = c.id === active?.id;
+          const isOpen = expandedCollections.includes(c.id);
           return (
             <motion.div key={c.id} className="mb-1">
               <motion.div
@@ -132,13 +159,13 @@ export const CollectionList = () => {
               >
                 <button
                   className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
-                  onClick={() => setActiveCollection(c.id)}
-                  aria-expanded={isActive}
+                  onClick={() => (isOpen ? collapseCollection(c.id) : expandCollection(c.id))}
+                  aria-expanded={isOpen}
                 >
                   <ChevronRight
                     className={cn(
                       "size-4 shrink-0 transition-[rotate,color] duration-200 ease-out motion-reduce:transition-none",
-                      isActive ? "rotate-90" : "text-muted-foreground",
+                      isOpen ? "rotate-90" : "text-muted-foreground",
                     )}
                   />
                   <span className="truncate">{c.name}</span>
@@ -162,7 +189,7 @@ export const CollectionList = () => {
                 </button>
               </motion.div>
               <AnimatePresence initial={false}>
-                {isActive && (
+                {isOpen && (
                   <motion.div key="endpoints" {...collapse} className="overflow-hidden">
                     <EndpointList collection={c} />
                   </motion.div>

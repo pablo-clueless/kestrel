@@ -54,18 +54,17 @@ export const Header = () => {
         >
           <PanelLeft className="size-4" />
         </button>
-        <nav className="flex min-w-0 items-center gap-1.5" aria-label="Breadcrumb">
-          <span className="text-muted-foreground truncate">
-            {isDraft ? "Unsaved" : (collection?.name ?? "No collection")}
-          </span>
-          {endpoint && (
-            <>
-              <ChevronRight className="text-muted-foreground size-3.5 shrink-0" />
-              <MethodBadge method={endpoint.method} />
-              <span className="truncate font-medium">{endpoint.name || endpoint.url}</span>
-            </>
-          )}
-        </nav>
+        {/* Only while a request is open; with nothing open the header stays blank. */}
+        {endpoint && (
+          <nav className="flex min-w-0 items-center gap-1.5" aria-label="Breadcrumb">
+            <span className="text-muted-foreground truncate">
+              {isDraft ? "Unsaved" : (collection?.name ?? "No collection")}
+            </span>
+            <ChevronRight className="text-muted-foreground size-3.5 shrink-0" />
+            <MethodBadge method={endpoint.method} />
+            <span className="truncate font-medium">{endpoint.name || endpoint.url}</span>
+          </nav>
+        )}
       </div>
       <div className="flex items-center gap-2">
         <EnvironmentBar />

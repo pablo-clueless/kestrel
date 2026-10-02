@@ -1,41 +1,45 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { Settings } from "lucide-react";
 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "../ui/sheet";
 import { useWorkspaceStore } from "@/stores/workspace-store";
 import { EnvironmentEditor } from "./environment-editor";
-import { Environment } from "@/types/engine/Environment";
 import { Button } from "@/components/ui/button";
 
-const DEFAULT_ENVS: Environment[] = [{ name: "No Environment", vars: {} }];
+/** The picker's "no environment" entry. It stands for `null`; it's never stored as a name. */
+const NONE = "__kestrel_no_environment__";
 
 /** Header: active environment picker, plus a slide-over to edit environments and secrets. */
 export const EnvironmentBar = () => {
   const { workspace, setActiveEnvironment } = useWorkspaceStore();
   const [open, setOpen] = useState(false);
-  const envs = useMemo(() => {
-    if (!workspace) return [...DEFAULT_ENVS];
-    if (!workspace.environments) return [...DEFAULT_ENVS];
-    return [...DEFAULT_ENVS, ...workspace.environments];
-  }, [workspace]);
+  const envs = workspace?.environments ?? [];
+  const active = workspace?.activeEnvironment;
+  const value = active && envs.some((e) => e.name === active) ? active : NONE;
+  // Labels for the trigger, which otherwise shows the raw value (and NONE isn't for reading).
+  const items = [
+    { value: NONE, label: "No environment" },
+    ...envs.map((e) => ({ value: e.name, label: e.name })),
+  ];
 
   return (
     <div className="flex items-center gap-2">
       <Select
-        value={workspace?.activeEnvironment ?? ""}
+        value={value}
+        items={items}
         disabled={!workspace}
-        onValueChange={(v) => setActiveEnvironment(v || null)}
+        onValueChange={(v) => setActiveEnvironment(v && v !== NONE ? v : null)}
       >
         <SelectTrigger className="min-w-44">
           <SelectValue placeholder="No environment" />
         </SelectTrigger>
         <SelectContent>
-          {envs.map((e) => (
-            <SelectItem key={e.name} value={e.name}>
-              {e.name}
+          {items.map((item) => (
+            <SelectItem key={item.value} value={item.value}>
+              {item.label}
             </SelectItem>
           ))}
         </SelectContent>

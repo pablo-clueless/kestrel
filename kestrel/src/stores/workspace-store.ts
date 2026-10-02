@@ -150,9 +150,8 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => {
     const openIds = get().openIds.filter((id) => ids.has(id));
     set({ openIds });
     const { selectedId } = get();
-    if (selectedId !== null && !ids.has(selectedId)) {
-      select(openIds.at(-1) ?? activeCollectionOf(get().workspace)?.endpoints[0]?.id ?? null);
-    }
+    // Fall back to another open tab, never to an endpoint nobody opened.
+    if (selectedId !== null && !ids.has(selectedId)) select(openIds.at(-1) ?? null);
   };
 
   /** Applies an edit and schedules a save. */
@@ -184,14 +183,15 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => {
     load: async () => {
       try {
         const { workspace, secretKeys } = await getWorkspace();
-        const first = activeCollectionOf(workspace)?.endpoints[0]?.id ?? null;
-        set({
-          workspace,
-          secretKeys,
-          selectedId: first,
-          openIds: first ? [first] : [],
-          loadError: null,
-        });
+        // Nothing is opened for you: the dashboard starts blank until you pick an endpoint.
+        set({ workspace, secretKeys, selectedId: null, openIds: [], loadError: null });
+        // An active environment that doesn't exist (e.g. "No Environment", which the picker used
+        // to save as a name) makes every send and run fail with "unknown environment". Clear it,
+        // and save that, since the engine falls back to the saved one.
+        const active = workspace.activeEnvironment;
+        if (active !== null && !workspace.environments.some((e) => e.name === active)) {
+          get().setActiveEnvironment(null);
+        }
       } catch (err) {
         set({ loadError: errorMessage(err) });
       }
@@ -232,15 +232,9 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => {
       });
     },
 
-    setActiveCollection: (id) => {
-      edit((ws) => ({ ...ws, activeCollection: id }));
-      const collection = get().workspace?.collections.find((c) => c.id === id);
-      const { selectedId, drafts } = get();
-      if (selectedId !== null && selectedId in drafts) return;
-      if (!collection?.endpoints.some((e) => e.id === get().selectedId)) {
-        select(collection?.endpoints[0]?.id ?? null);
-      }
-    },
+    // Only the active collection changes; the selection is left to whoever called (selecting or
+    // adding an endpoint), so opening a collection never picks an endpoint for you.
+    setActiveCollection: (id) => edit((ws) => ({ ...ws, activeCollection: id })),
 
     addCollection: (name) => {
       const collection = newCollection(name);
