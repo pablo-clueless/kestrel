@@ -1,48 +1,53 @@
 "use client";
 
 import { Minus, Plus, Trash2 } from "lucide-react";
-import { useState } from "react";
+import { z } from "zod";
 
 import { useWorkspaceStore } from "@/stores/workspace-store";
+import { AddPairForm } from "@/components/shared/add-pair-form";
+import { Form } from "@/components/form";
 import { Input, Label } from "./fields";
+
+const envSchema = z.object({ name: z.string() });
+
+const addButton = "text-muted-foreground hover:text-green-500 shrink-0";
 
 /** Variables and secrets for the active environment. Secret values are write-only. */
 export const EnvironmentEditor = () => {
   const { workspace, secretKeys, addEnvironment, removeEnvironment, setVar, setSecret } =
     useWorkspaceStore();
-  const [newEnv, setNewEnv] = useState("");
   const active = workspace?.environments.find((e) => e.name === workspace.activeEnvironment);
-
-  const create = () => {
-    const name = newEnv.trim();
-    if (!name) return;
-    addEnvironment(name);
-    setNewEnv("");
-  };
 
   return (
     <div className="flex flex-col gap-4 text-sm">
-      <form
-        className="flex gap-1.5"
-        onSubmit={(e) => {
-          e.preventDefault();
-          create();
+      <Form
+        schema={envSchema}
+        defaultValues={{ name: "" }}
+        fields={{
+          name: {
+            type: "text",
+            label: "New environment",
+            hideLabel: true,
+            placeholder: "New environment",
+            autoComplete: "off",
+            className: "flex-1",
+          },
+        }}
+        onSubmit={({ name }, form) => {
+          if (!name) return;
+          addEnvironment(name);
+          form.reset();
         }}
       >
-        <Input
-          className="flex-1"
-          placeholder="New environment"
-          value={newEnv}
-          onChange={(e) => setNewEnv(e.target.value)}
-        />
-        <button
-          type="submit"
-          className="text-muted-foreground hover:text-green-500"
-          aria-label="Add environment"
-        >
-          <Plus className="size-4" />
-        </button>
-      </form>
+        {({ field }) => (
+          <div className="flex items-center gap-1.5">
+            {field("name")}
+            <button type="submit" className={addButton} aria-label="Add environment">
+              <Plus className="size-4" />
+            </button>
+          </div>
+        )}
+      </Form>
       {!active ? (
         <p className="text-muted-foreground">Pick an environment in the header, or create one.</p>
       ) : (
@@ -78,7 +83,7 @@ export const EnvironmentEditor = () => {
                 </button>
               </div>
             ))}
-            <NewPair onAdd={(k, v) => setVar(active.name, k, v)} valuePlaceholder="value" />
+            <AddPairForm noun="Variable" onAdd={(k, v) => setVar(active.name, k, v)} />
           </section>
           <section className="flex flex-col gap-1.5">
             <Label>Secrets</Label>
@@ -97,7 +102,8 @@ export const EnvironmentEditor = () => {
                 </button>
               </div>
             ))}
-            <NewPair
+            <AddPairForm
+              noun="Secret"
               secret
               onAdd={(k, v) => void setSecret(active.name, k, v)}
               valuePlaceholder="value (write-only)"
@@ -106,48 +112,5 @@ export const EnvironmentEditor = () => {
         </div>
       )}
     </div>
-  );
-};
-
-const NewPair = ({
-  onAdd,
-  valuePlaceholder,
-  secret,
-}: {
-  onAdd: (key: string, value: string) => void;
-  valuePlaceholder: string;
-  secret?: boolean;
-}) => {
-  const [key, setKey] = useState("");
-  const [value, setValue] = useState("");
-  return (
-    <form
-      className="flex items-center gap-3"
-      onSubmit={(e) => {
-        e.preventDefault();
-        if (!key.trim()) return;
-        onAdd(key.trim(), value);
-        setKey("");
-        setValue("");
-      }}
-    >
-      <Input
-        className="w-16 shrink-0"
-        placeholder="name"
-        value={key}
-        onChange={(e) => setKey(e.target.value)}
-      />
-      <Input
-        className="flex-1 font-mono"
-        type={secret ? "password" : "text"}
-        autoComplete="off"
-        placeholder={valuePlaceholder}
-        value={value}
-        onChange={(e) => setValue(e.target.value)}
-      />
-      <button type="submit" className="text-muted-foreground hover:text-green-500" aria-label="Add">
-        <Plus className="size-4" />
-      </button>
-    </form>
   );
 };

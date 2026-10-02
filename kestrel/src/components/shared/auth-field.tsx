@@ -1,3 +1,4 @@
+import type { ControllerRenderProps, FieldValues, Path } from "react-hook-form";
 import { Eye, EyeOff, type LucideIcon } from "lucide-react";
 
 import { cn } from "cn";
@@ -57,4 +58,51 @@ export const PasswordToggle = ({ shown, onToggle }: { shown: boolean; onToggle: 
   >
     {shown ? <EyeOff className="size-4.5" /> : <Eye className="size-4.5" />}
   </button>
+);
+
+type ControlProps<T extends FieldValues> = Omit<
+  Props,
+  "name" | "value" | "onChange" | "onBlur" | "invalid" | "ref"
+> & {
+  /** From a `Form` custom field's render props. */
+  field: ControllerRenderProps<T, Path<T>>;
+  error?: string;
+  /** Shown under the field while there's no error, e.g. the password rule. */
+  hint?: React.ReactNode;
+};
+
+/** An `AuthField` wired to a `Form` field, with its error (or hint) underneath. */
+export const AuthControl = <T extends FieldValues>({
+  // Destructured: reading `field.ref` and then `field.value` makes the React Compiler treat the
+  // whole object as a ref.
+  field: { ref, name, value, onChange, onBlur },
+  error,
+  hint,
+  id,
+  ...props
+}: ControlProps<T>) => (
+  <div className="flex flex-col gap-1.5">
+    <AuthField
+      {...props}
+      id={id}
+      ref={ref}
+      name={name}
+      value={(value as string | undefined) ?? ""}
+      onChange={(e) => onChange(e.target.value)}
+      onBlur={onBlur}
+      invalid={!!error}
+      aria-describedby={error || hint ? `${id}-note` : undefined}
+    />
+    {error ? (
+      <p id={`${id}-note`} className="text-destructive text-xs">
+        {error}
+      </p>
+    ) : (
+      hint && (
+        <p id={`${id}-note`} className="text-muted-foreground text-xs">
+          {hint}
+        </p>
+      )
+    )}
+  </div>
 );

@@ -34,14 +34,29 @@ export const Form = <T extends FieldValues>(
     className?: string;
     disabled?: boolean;
     mode?: "all" | "onBlur" | "onChange" | "onSubmit" | "onTouched";
+    /** Toast the first error when submitting an invalid form (default). Turn it off when every field
+     * shows its own error inline, so the message doesn't appear twice. */
+    toastOnInvalid?: boolean;
   },
 ) => {
-  const { children, defaultValues, fields, onSubmit, schema, className, disabled, mode } = config;
+  const {
+    children,
+    defaultValues,
+    fields,
+    onSubmit,
+    schema,
+    className,
+    disabled,
+    mode,
+    toastOnInvalid = true,
+  } = config;
 
+  // Fields whose values are submitted exactly as typed: passwords, and any marked `trim: false`.
   const passwords = useMemo(() => {
     const keys = new Set<string>();
     for (const [key, def] of Object.entries(fields ?? {})) {
-      if ((def as { type?: string })?.type === "password") keys.add(key);
+      const { type, trim } = (def ?? {}) as { type?: string; trim?: boolean };
+      if (type === "password" || trim === false) keys.add(key);
     }
     return keys;
   }, [fields]);
@@ -102,6 +117,7 @@ export const Form = <T extends FieldValues>(
         await onSubmit(cleaned, form);
       },
       (errors) => {
+        if (!toastOnInvalid) return;
         toast.error(firstFieldErrorMessage(errors) ?? "Please fix the highlighted fields.");
       },
     )(event);
