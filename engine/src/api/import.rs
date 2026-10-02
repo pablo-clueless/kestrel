@@ -4,7 +4,10 @@ use axum::Json;
 
 use crate::{
     error::ApiError,
-    import::{self, ImportRequest, ImportResult, ImportSource},
+    import::{
+        self, ImportRequest, ImportResult, ImportSource,
+        curl::{CurlParseRequest, CurlParseResult},
+    },
 };
 
 const MAX_SPEC_BYTES: usize = 10 * 1024 * 1024;
@@ -26,6 +29,14 @@ pub async fn import(Json(req): Json<ImportRequest>) -> Result<Json<ImportResult>
         .map_err(|e| ApiError::Internal(format!("import task failed: {e}")))?
         .map(Json)
         .map_err(ApiError::BadRequest)
+}
+
+/// Reads one curl command into an endpoint, for pasting into a request. Nothing is saved.
+pub async fn curl(Json(req): Json<CurlParseRequest>) -> Result<Json<CurlParseResult>, ApiError> {
+    if req.command.len() > MAX_SPEC_BYTES {
+        return Err(ApiError::BadRequest("the command is larger than 10 MB".into()));
+    }
+    import::curl::parse_one(&req.command).map(Json).map_err(ApiError::BadRequest)
 }
 
 async fn fetch(url: &str) -> Result<String, String> {

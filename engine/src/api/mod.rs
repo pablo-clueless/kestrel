@@ -51,6 +51,7 @@ pub fn router(state: AppState) -> Router {
         .route("/send", post(workspace::send))
         .route("/files", post(workspace::upload_file).layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES)))
         .route("/import", post(import::import))
+        .route("/import/curl", post(import::curl))
         .route("/hosts", get(hosts::list))
         .route("/hosts/confirm", post(hosts::confirm))
         .route("/runs", get(runs::list).post(runs::start))

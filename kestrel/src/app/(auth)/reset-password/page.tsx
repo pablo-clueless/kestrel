@@ -1,18 +1,18 @@
 "use client";
 
-import { zodResolver } from "@hookform/resolvers/zod";
-import { useQueryClient } from "@tanstack/react-query";
 import { CircleCheck, LockKeyhole, TriangleAlert } from "lucide-react";
-import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { useQueryClient } from "@tanstack/react-query";
+import { zodResolver } from "@hookform/resolvers/zod";
 import { Suspense, useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { useForm } from "react-hook-form";
+import Link from "next/link";
 import { z } from "zod";
 
 import { PASSWORD_MAX, PASSWORD_MESSAGE, PASSWORD_MIN } from "@/config/string";
+import { AuthField, PasswordToggle } from "@/components/shared/auth-field";
 import { errorMessage, resetPassword } from "@/lib/client";
 import { CircleLoader } from "@/components/shared";
-import { AuthField, PasswordToggle } from "@/components/shared/auth-field";
 import { Button } from "@/components/ui/button";
 import { ME_KEY } from "@/hooks/use-me";
 
