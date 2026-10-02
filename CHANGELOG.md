@@ -80,6 +80,14 @@ No version has been tagged yet (engine and UI are both `0.1.0`), so the entries 
 
 ### Changed
 
+- Collections in the sidebar open and close independently: clicking an open collection closes it,
+  so none has to be open, and a **Collapse all** button closes them all at once. Opening a collection
+  doesn't select an endpoint or change the active one; selecting or adding an endpoint inside a
+  collection makes it active, so the editor always uses the right one.
+  After a reload the dashboard starts blank: every collection closed, no request open and no
+  breadcrumb, until you pick an endpoint. Only a collection you've just created or imported opens
+  by itself, and deleting the open endpoint falls back to another open tab, never to one you
+  didn't open.
 - Endpoint groups are listed alphabetically, in the sidebar and the group picker (ignoring case,
   with numbers in order: `v2` before `v10`). Endpoints without a group stay at the top.
 - **Sign-in page redesign:** a split screen with the form on the left and an illustrated panel on
@@ -115,6 +123,9 @@ No version has been tagged yet (engine and UI are both `0.1.0`), so the entries 
 
 ### Fixed
 
+- Choosing **No environment** no longer breaks sending and runs. It used to be saved as an
+  environment called "No Environment", which the engine rejected as unknown. It's now saved as no
+  environment, and a workspace that already saved that name is repaired when it loads.
 - No more hydration warning on `<html>` in development: the theme class that next-themes adds
   before React loads is now expected.
 - Two engine tests that no longer compiled, and a content-type test that passed for the wrong
