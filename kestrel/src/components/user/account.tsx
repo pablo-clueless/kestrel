@@ -1,15 +1,15 @@
 "use client";
 
-import { useMutation } from "@tanstack/react-query";
 import { BadgeCheck, CircleAlert } from "lucide-react";
+import { useMutation } from "@tanstack/react-query";
 import { toast } from "sonner";
 
 import { errorMessage, resendVerification } from "@/lib/client";
 import { useMe } from "@/hooks/use-me";
 import { Button } from "../ui/button";
+import { TabPanel } from "../shared";
 import { Input } from "../ui/input";
 import { Label } from "../ui/label";
-import { TabPanel } from "../shared";
 
 interface Props {
   selected: string;

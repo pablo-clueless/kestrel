@@ -1,18 +1,19 @@
 "use client";
 
-import { zodResolver } from "@hookform/resolvers/zod";
-import { useQueryClient } from "@tanstack/react-query";
 import { CircleCheck, LockKeyhole, Mail } from "lucide-react";
-import Link from "next/link";
+import { useQueryClient } from "@tanstack/react-query";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { useForm, useWatch } from "react-hook-form";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { useForm, useWatch } from "react-hook-form";
+import Link from "next/link";
 import { z } from "zod";
 
 import { PASSWORD_MAX, PASSWORD_MESSAGE, PASSWORD_MIN } from "@/config/string";
-import { authenticate, errorMessage } from "@/lib/client";
-import { CircleLoader } from "@/components/shared";
 import { AuthField, PasswordToggle } from "@/components/shared/auth-field";
+import { authenticate, errorMessage } from "@/lib/client";
+// import { Form, type FormField } from "@/components/form";
+import { CircleLoader } from "@/components/shared";
 import { Button } from "@/components/ui/button";
 import { ME_KEY, useMe } from "@/hooks/use-me";
 import { cn } from "cn";
@@ -23,10 +24,10 @@ const schema = z.object({
 });
 
 type FormValues = z.infer<typeof schema>;
-type Mode = "login" | "signup";
+type Mode = "signin" | "signup";
 
 const COPY: Record<Mode, { title: string; subtitle: string; action: string; tab: string }> = {
-  login: {
+  signin: {
     title: "Welcome back",
     subtitle: "Sign in with your email and password.",
     action: "Sign in",
@@ -40,16 +41,18 @@ const COPY: Record<Mode, { title: string; subtitle: string; action: string; tab:
   },
 };
 
-const MODES: Mode[] = ["login", "signup"];
+const defaultValues: FormValues = { email: "", password: "" };
+
+const MODES: Mode[] = ["signin", "signup"];
 
 /** Sign-in and sign-up. Goes straight to the workspace when accounts are off or already signed in. */
 const Page = () => {
-  const router = useRouter();
-  const queryClient = useQueryClient();
-  const me = useMe();
-  const [mode, setMode] = useState<Mode>("login");
-  const [error, setError] = useState<string | null>(null);
   const [showPassword, setShowPassword] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [mode, setMode] = useState<Mode>("signin");
+  const queryClient = useQueryClient();
+  const router = useRouter();
+  const me = useMe();
 
   const {
     register,
@@ -57,7 +60,7 @@ const Page = () => {
     control,
     formState: { errors, isSubmitting },
   } = useForm<FormValues>({
-    defaultValues: { email: "", password: "" },
+    defaultValues,
     resolver: zodResolver(schema),
   });
 
@@ -86,6 +89,7 @@ const Page = () => {
       </div>
     );
   }
+
   if (me.isError) {
     return (
       <div className="flex flex-col items-center gap-3 p-4 text-center text-sm">
@@ -107,7 +111,6 @@ const Page = () => {
         <h1 className="text-3xl font-bold tracking-tight">{copy.title}</h1>
         <p className="text-muted-foreground text-sm">{copy.subtitle}</p>
       </div>
-
       {canSignUp && (
         <div role="tablist" aria-label="Account" className="bg-muted grid grid-cols-2 p-1">
           {MODES.map((m) => (
@@ -132,7 +135,6 @@ const Page = () => {
           ))}
         </div>
       )}
-
       <form className="flex flex-col gap-3" onSubmit={handleSubmit(onSubmit)} noValidate>
         <div className="flex flex-col gap-1.5">
           <AuthField
@@ -176,8 +178,7 @@ const Page = () => {
             )
           )}
         </div>
-
-        {mode === "login" && me.data.mail && (
+        {mode === "signin" && me.data.mail && (
           <Link
             href="/forgot-password"
             className="text-primary -mt-1 self-end text-xs font-medium hover:underline"
@@ -185,13 +186,11 @@ const Page = () => {
             Forgot password?
           </Link>
         )}
-
         {error && (
           <p role="alert" className="text-destructive text-sm">
             {error}
           </p>
         )}
-
         <Button type="submit" disabled={isSubmitting} className="mt-2 h-12 text-sm">
           {isSubmitting ? <CircleLoader radius={8} /> : copy.action}
         </Button>

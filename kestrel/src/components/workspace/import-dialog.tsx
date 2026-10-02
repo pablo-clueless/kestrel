@@ -38,7 +38,8 @@ const INITIAL = {
   dragging: false,
 };
 
-/** OpenAPI 3.0/3.1 or Swagger 2.0 (JSON or YAML) → a new collection. Two steps: source, then review. */
+/** OpenAPI 3.0/3.1 or Swagger 2.0 (JSON or YAML), or curl commands → a new collection. Two steps:
+ * source, then review. */
 export const ImportDialog = ({ open, onClose }: { open: boolean; onClose: () => void }) => {
   const addImportedCollection = useWorkspaceStore((s) => s.addImportedCollection);
   const { values, set, patch, reset } = useValues({ initialValue: INITIAL });
@@ -82,7 +83,7 @@ export const ImportDialog = ({ open, onClose }: { open: boolean; onClose: () => 
           <DialogDescription>
             {result
               ? "Check what was found, then add it as a new collection."
-              : "OpenAPI 3.0 / 3.1 or Swagger 2.0, as JSON or YAML. Each spec becomes a collection."}
+              : "OpenAPI 3.0 / 3.1 or Swagger 2.0 (JSON or YAML), or curl commands. Each import becomes a collection."}
           </DialogDescription>
         </DialogHeader>
 
@@ -133,7 +134,9 @@ export const ImportDialog = ({ open, onClose }: { open: boolean; onClose: () => 
             {tab === "paste" && (
               <Textarea
                 className="h-60 max-w-3xl resize-none font-mono text-xs wrap-break-word"
-                placeholder={"openapi: 3.0.3\ninfo:\n  title: My API\n…"}
+                placeholder={
+                  "openapi: 3.0.3\ninfo:\n  title: My API\n…\n\nor one or more curl commands, e.g. from DevTools → Copy all as cURL"
+                }
                 value={text}
                 onChange={(e) => set("text", e.target.value)}
               />
@@ -153,7 +156,7 @@ export const ImportDialog = ({ open, onClose }: { open: boolean; onClose: () => 
             <label className="flex flex-col gap-1.5">
               <Label>Collection name (optional)</Label>
               <Input
-                placeholder="Defaults to the spec's title"
+                placeholder="Defaults to the spec's title (or the host, for curl)"
                 value={name}
                 onChange={(e) => set("name", e.target.value)}
               />

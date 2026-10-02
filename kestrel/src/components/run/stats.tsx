@@ -2,14 +2,14 @@
 
 import { ShieldAlert, ShieldCheck } from "lucide-react";
 
-import { cn } from "@/lib/utils";
 import type { ContractSummary } from "@/types/engine/ContractSummary";
 import { StatGrid, StatTile } from "@/components/shared/stat-tile";
+import { ComplexityLive, ComplexityResults } from "./complexity";
 import { StatusBadge } from "@/components/shared/method-badge";
 import { DistributionChart, LiveChart } from "./charts";
-import { ComplexityLive, ComplexityResults } from "./complexity";
 import { useRunStore } from "@/stores/run-store";
 import { int, ms } from "@/lib/format";
+import { cn } from "@/lib/utils";
 
 /** Latest window's numbers above the live chart. */
 export const LiveSummary = () => {

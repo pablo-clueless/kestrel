@@ -1,15 +1,15 @@
 "use client";
 
-import { zodResolver } from "@hookform/resolvers/zod";
 import { ArrowLeft, Mail, MailCheck } from "lucide-react";
-import Link from "next/link";
-import { useState } from "react";
+import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
+import { useState } from "react";
+import Link from "next/link";
 import { z } from "zod";
 
 import { errorMessage, requestPasswordReset } from "@/lib/client";
-import { CircleLoader } from "@/components/shared";
 import { AuthField } from "@/components/shared/auth-field";
+import { CircleLoader } from "@/components/shared";
 import { Button } from "@/components/ui/button";
 
 const schema = z.object({
