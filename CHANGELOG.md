@@ -88,6 +88,11 @@ No version has been tagged yet (engine and UI are both `0.1.0`), so the entries 
 
 ### Changed
 
+- Every form uses the shared `Form` component (`components/form`): sign-in, forgot and reset
+  password, change password, and the inline forms for new collections, groups, environments,
+  variables and secrets. `Form` gained `autoComplete`/`autoFocus` and `hideLabel` for fields,
+  `trim: false` for values that must be kept exactly (passwords, templates), and `toastOnInvalid`
+  for forms that already show each error inline.
 - Collections in the sidebar open and close independently: clicking an open collection closes it,
   so none has to be open, and a **Collapse all** button closes them all at once. Opening a collection
   doesn't select an endpoint or change the active one; selecting or adding an endpoint inside a
@@ -131,6 +136,8 @@ No version has been tagged yet (engine and UI are both `0.1.0`), so the entries 
 
 ### Fixed
 
+- **Add endpoint** in the sidebar (and the + on a group) adds an endpoint again; it had only been
+  making the collection active.
 - Choosing **No environment** no longer breaks sending and runs. It used to be saved as an
   environment called "No Environment", which the engine rejected as unknown. It's now saved as no
   environment, and a workspace that already saved that name is repaired when it loads.

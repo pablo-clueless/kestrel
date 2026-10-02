@@ -2,15 +2,14 @@
 
 import { CircleCheck, LockKeyhole, TriangleAlert } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
-import { zodResolver } from "@hookform/resolvers/zod";
 import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { useForm } from "react-hook-form";
 import Link from "next/link";
 import { z } from "zod";
 
 import { PASSWORD_MAX, PASSWORD_MESSAGE, PASSWORD_MIN } from "@/config/string";
-import { AuthField, PasswordToggle } from "@/components/shared/auth-field";
+import { AuthControl, PasswordToggle } from "@/components/shared/auth-field";
+import { Form, type FormField } from "@/components/form";
 import { errorMessage, resetPassword } from "@/lib/client";
 import { CircleLoader } from "@/components/shared";
 import { Button } from "@/components/ui/button";
@@ -57,11 +56,6 @@ const ResetForm = () => {
   const [done, setDone] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showPassword, setShowPassword] = useState(false);
-  const {
-    register,
-    handleSubmit,
-    formState: { errors, isSubmitting },
-  } = useForm<FormValues>({ defaultValues: { password: "" }, resolver: zodResolver(schema) });
 
   useEffect(() => {
     if (token) window.history.replaceState(null, "", window.location.pathname);
@@ -97,6 +91,32 @@ const ResetForm = () => {
     );
   }
 
+  const fields: Record<keyof FormValues, FormField<FormValues>> = {
+    password: {
+      label: "New password",
+      trim: false,
+      custom: true,
+      customMode: "controlled",
+      render: ({ field, error }) => (
+        <AuthControl
+          field={field}
+          error={error}
+          hint={PASSWORD_MESSAGE}
+          id="new-password"
+          label="New password"
+          icon={LockKeyhole}
+          type={showPassword ? "text" : "password"}
+          autoComplete="new-password"
+          autoFocus
+          placeholder="••••••••"
+          trailing={
+            <PasswordToggle shown={showPassword} onToggle={() => setShowPassword((v) => !v)} />
+          }
+        />
+      ),
+    },
+  };
+
   const onSubmit = async ({ password }: FormValues) => {
     setError(null);
     try {
@@ -116,45 +136,30 @@ const ResetForm = () => {
         <p className="text-muted-foreground text-sm">Setting it signs you out on every device.</p>
       </div>
 
-      <form className="flex flex-col gap-3" onSubmit={handleSubmit(onSubmit)} noValidate>
-        <div className="flex flex-col gap-1.5">
-          <AuthField
-            id="new-password"
-            label="New password"
-            icon={LockKeyhole}
-            type={showPassword ? "text" : "password"}
-            autoComplete="new-password"
-            autoFocus
-            placeholder="••••••••"
-            invalid={!!errors.password}
-            aria-describedby="password-hint"
-            trailing={
-              <PasswordToggle shown={showPassword} onToggle={() => setShowPassword((v) => !v)} />
-            }
-            {...register("password")}
-          />
-          {errors.password ? (
-            <p className="text-destructive text-xs">{errors.password.message}</p>
-          ) : (
-            <p id="password-hint" className="text-muted-foreground text-xs">
-              {PASSWORD_MESSAGE}
-            </p>
-          )}
-        </div>
-
-        {error && (
-          <div role="alert" className="text-destructive flex flex-col gap-1 text-sm">
-            <p>{error}</p>
-            <Link href="/forgot-password" className="text-primary font-medium hover:underline">
-              Get a new link
-            </Link>
+      <Form
+        schema={schema}
+        defaultValues={{ password: "" }}
+        fields={fields}
+        onSubmit={onSubmit}
+        toastOnInvalid={false}
+      >
+        {({ field, isSubmitting }) => (
+          <div className="flex flex-col gap-3">
+            {field("password")}
+            {error && (
+              <div role="alert" className="text-destructive flex flex-col gap-1 text-sm">
+                <p>{error}</p>
+                <Link href="/forgot-password" className="text-primary font-medium hover:underline">
+                  Get a new link
+                </Link>
+              </div>
+            )}
+            <Button type="submit" disabled={isSubmitting} className="mt-2 h-12 text-sm">
+              {isSubmitting ? <CircleLoader radius={8} /> : "Set new password"}
+            </Button>
           </div>
         )}
-
-        <Button type="submit" disabled={isSubmitting} className="mt-2 h-12 text-sm">
-          {isSubmitting ? <CircleLoader radius={8} /> : "Set new password"}
-        </Button>
-      </form>
+      </Form>
     </div>
   );
 };

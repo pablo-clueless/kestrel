@@ -1,9 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { zodResolver } from "@hookform/resolvers/zod";
 import { Laptop, Smartphone } from "lucide-react";
-import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { z } from "zod";
 
@@ -11,10 +9,9 @@ import { changePassword, errorMessage, listSessions, revokeSession } from "@/lib
 import { PASSWORD_MAX, PASSWORD_MESSAGE, PASSWORD_MIN } from "@/config/string";
 import type { SessionInfo } from "@/types/engine/SessionInfo";
 import { useMe } from "@/hooks/use-me";
+import { Form } from "../form";
 import { Button } from "../ui/button";
 import { TabPanel } from "../shared";
-import { Input } from "../ui/input";
-import { Label } from "../ui/label";
 
 interface Props {
   selected: string;
@@ -59,59 +56,8 @@ const passwordSchema = z
     message: "Choose a password you aren't using now",
   });
 
-type PasswordValues = z.infer<typeof passwordSchema>;
-
 const ChangePassword = () => {
   const queryClient = useQueryClient();
-  const {
-    register,
-    handleSubmit,
-    reset,
-    setError,
-    formState: { errors, isSubmitting },
-  } = useForm<PasswordValues>({
-    defaultValues: { currentPassword: "", newPassword: "", confirm: "" },
-    resolver: zodResolver(passwordSchema),
-  });
-
-  const onSubmit = async ({ currentPassword, newPassword }: PasswordValues) => {
-    try {
-      await changePassword({ currentPassword, newPassword });
-      reset();
-      toast.success("Password changed. Your other devices have been signed out.");
-      void queryClient.invalidateQueries({ queryKey: SESSIONS_KEY });
-    } catch (err) {
-      const message = errorMessage(err);
-      if (message === "current password is incorrect") {
-        setError("currentPassword", { message: "That's not your current password" });
-      } else {
-        setError("root", { message });
-      }
-    }
-  };
-
-  const field = (
-    name: keyof PasswordValues,
-    label: string,
-    autoComplete: string,
-    hint?: string,
-  ) => (
-    <div className="flex flex-col gap-1.5">
-      <Label htmlFor={name}>{label}</Label>
-      <Input
-        id={name}
-        type="password"
-        autoComplete={autoComplete}
-        aria-invalid={!!errors[name]}
-        {...register(name)}
-      />
-      {errors[name] ? (
-        <p className="text-destructive text-xs">{errors[name].message}</p>
-      ) : (
-        hint && <p className="text-muted-foreground text-xs">{hint}</p>
-      )}
-    </div>
-  );
 
   return (
     <section className="flex flex-col gap-4">
@@ -121,19 +67,61 @@ const ChangePassword = () => {
           Every other device signed in to this account is signed out.
         </p>
       </div>
-      <form className="flex max-w-sm flex-col gap-4" onSubmit={handleSubmit(onSubmit)} noValidate>
-        {field("currentPassword", "Current password", "current-password")}
-        {field("newPassword", "New password", "new-password", PASSWORD_MESSAGE)}
-        {field("confirm", "Confirm new password", "new-password")}
-        {errors.root && (
-          <p role="alert" className="text-destructive text-sm">
-            {errors.root.message}
-          </p>
+      <Form
+        className="max-w-sm"
+        schema={passwordSchema}
+        defaultValues={{ currentPassword: "", newPassword: "", confirm: "" }}
+        toastOnInvalid={false}
+        fields={{
+          currentPassword: {
+            type: "password",
+            label: "Current password",
+            autoComplete: "current-password",
+          },
+          newPassword: {
+            type: "password",
+            label: "New password",
+            autoComplete: "new-password",
+            description: PASSWORD_MESSAGE,
+          },
+          confirm: {
+            type: "password",
+            label: "Confirm new password",
+            autoComplete: "new-password",
+          },
+        }}
+        onSubmit={async ({ currentPassword, newPassword }, form) => {
+          try {
+            await changePassword({ currentPassword, newPassword });
+            form.reset();
+            toast.success("Password changed. Your other devices have been signed out.");
+            void queryClient.invalidateQueries({ queryKey: SESSIONS_KEY });
+          } catch (err) {
+            const message = errorMessage(err);
+            if (message === "current password is incorrect") {
+              form.setError("currentPassword", { message: "That's not your current password" });
+            } else {
+              form.setError("root", { message });
+            }
+          }
+        }}
+      >
+        {({ field, form, isSubmitting }) => (
+          <div className="flex flex-col gap-4">
+            {field("currentPassword")}
+            {field("newPassword")}
+            {field("confirm")}
+            {form.formState.errors.root && (
+              <p role="alert" className="text-destructive text-sm">
+                {form.formState.errors.root.message}
+              </p>
+            )}
+            <Button type="submit" className="self-start" disabled={isSubmitting}>
+              {isSubmitting ? "Changing…" : "Change password"}
+            </Button>
+          </div>
         )}
-        <Button type="submit" className="self-start" disabled={isSubmitting}>
-          {isSubmitting ? "Changing…" : "Change password"}
-        </Button>
-      </form>
+      </Form>
     </section>
   );
 };
