@@ -87,7 +87,7 @@ export const resolveValue = <V>(
 ): V | undefined =>
   typeof value === "function" ? (value as (values: FieldValues) => V)(values ?? {}) : value;
 
-export const firstFieldErrorMessage =(errors: unknown): string | undefined => {
+export const firstFieldErrorMessage = (errors: unknown): string | undefined => {
   if (!errors || typeof errors !== "object") return undefined;
   const node = errors as { message?: unknown; root?: unknown } & Record<string, unknown>;
   if (typeof node.message === "string" && node.message.trim()) return node.message;

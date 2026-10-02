@@ -2,17 +2,15 @@
 
 import { CircleCheck, LockKeyhole, Mail } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
-import { zodResolver } from "@hookform/resolvers/zod";
-import { useForm, useWatch } from "react-hook-form";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { z } from "zod";
 
 import { PASSWORD_MAX, PASSWORD_MESSAGE, PASSWORD_MIN } from "@/config/string";
-import { AuthField, PasswordToggle } from "@/components/shared/auth-field";
+import { AuthControl, PasswordToggle } from "@/components/shared/auth-field";
 import { authenticate, errorMessage } from "@/lib/client";
-// import { Form, type FormField } from "@/components/form";
+import { Form, type FormField } from "@/components/form";
 import { CircleLoader } from "@/components/shared";
 import { Button } from "@/components/ui/button";
 import { ME_KEY, useMe } from "@/hooks/use-me";
@@ -54,17 +52,53 @@ const Page = () => {
   const router = useRouter();
   const me = useMe();
 
-  const {
-    register,
-    handleSubmit,
-    control,
-    formState: { errors, isSubmitting },
-  } = useForm<FormValues>({
-    defaultValues,
-    resolver: zodResolver(schema),
-  });
-
-  const email = useWatch({ control, name: "email" });
+  const fields: Record<keyof FormValues, FormField<FormValues>> = {
+    email: {
+      label: "Email address",
+      custom: true,
+      customMode: "controlled",
+      render: ({ field, error }) => (
+        <AuthControl
+          field={field}
+          error={error}
+          id="email"
+          label="Email address"
+          icon={Mail}
+          type="email"
+          autoComplete="email"
+          autoFocus
+          placeholder="you@example.com"
+          trailing={
+            !error && schema.shape.email.safeParse(field.value).success ? (
+              <CircleCheck className="text-success size-4.5" />
+            ) : null
+          }
+        />
+      ),
+    },
+    password: {
+      label: "Password",
+      trim: false,
+      custom: true,
+      customMode: "controlled",
+      render: ({ field, error }) => (
+        <AuthControl
+          field={field}
+          error={error}
+          hint={mode === "signup" ? PASSWORD_MESSAGE : undefined}
+          id="password"
+          label="Password"
+          icon={LockKeyhole}
+          type={showPassword ? "text" : "password"}
+          autoComplete={mode === "signup" ? "new-password" : "current-password"}
+          placeholder="••••••••"
+          trailing={
+            <PasswordToggle shown={showPassword} onToggle={() => setShowPassword((v) => !v)} />
+          }
+        />
+      ),
+    },
+  };
 
   const proceed = me.data && (me.data.auth === "off" || me.data.user !== null);
   useEffect(() => {
@@ -103,7 +137,6 @@ const Page = () => {
 
   const copy = COPY[mode];
   const canSignUp = me.data.signup;
-  const emailValid = schema.shape.email.safeParse(email).success;
 
   return (
     <div className="flex flex-col gap-6">
@@ -135,66 +168,36 @@ const Page = () => {
           ))}
         </div>
       )}
-      <form className="flex flex-col gap-3" onSubmit={handleSubmit(onSubmit)} noValidate>
-        <div className="flex flex-col gap-1.5">
-          <AuthField
-            id="email"
-            label="Email address"
-            icon={Mail}
-            type="email"
-            autoComplete="email"
-            autoFocus
-            placeholder="you@example.com"
-            invalid={!!errors.email}
-            trailing={
-              emailValid && !errors.email ? <CircleCheck className="text-success size-4.5" /> : null
-            }
-            {...register("email")}
-          />
-          {errors.email && <p className="text-destructive text-xs">{errors.email.message}</p>}
-        </div>
-        <div className="flex flex-col gap-1.5">
-          <AuthField
-            id="password"
-            label="Password"
-            icon={LockKeyhole}
-            type={showPassword ? "text" : "password"}
-            autoComplete={mode === "signup" ? "new-password" : "current-password"}
-            placeholder="••••••••"
-            invalid={!!errors.password}
-            aria-describedby={mode === "signup" ? "password-hint" : undefined}
-            trailing={
-              <PasswordToggle shown={showPassword} onToggle={() => setShowPassword((v) => !v)} />
-            }
-            {...register("password")}
-          />
-          {errors.password ? (
-            <p className="text-destructive text-xs">{errors.password.message}</p>
-          ) : (
-            mode === "signup" && (
-              <p id="password-hint" className="text-muted-foreground text-xs">
-                {PASSWORD_MESSAGE}
+      <Form
+        schema={schema}
+        defaultValues={defaultValues}
+        fields={fields}
+        onSubmit={onSubmit}
+        toastOnInvalid={false}
+      >
+        {({ field, isSubmitting }) => (
+          <div className="flex flex-col gap-3">
+            {field("email")}
+            {field("password")}
+            {mode === "signin" && me.data.mail && (
+              <Link
+                href="/forgot-password"
+                className="text-primary -mt-1 self-end text-xs font-medium hover:underline"
+              >
+                Forgot password?
+              </Link>
+            )}
+            {error && (
+              <p role="alert" className="text-destructive text-sm">
+                {error}
               </p>
-            )
-          )}
-        </div>
-        {mode === "signin" && me.data.mail && (
-          <Link
-            href="/forgot-password"
-            className="text-primary -mt-1 self-end text-xs font-medium hover:underline"
-          >
-            Forgot password?
-          </Link>
+            )}
+            <Button type="submit" disabled={isSubmitting} className="mt-2 h-12 text-sm">
+              {isSubmitting ? <CircleLoader radius={8} /> : copy.action}
+            </Button>
+          </div>
         )}
-        {error && (
-          <p role="alert" className="text-destructive text-sm">
-            {error}
-          </p>
-        )}
-        <Button type="submit" disabled={isSubmitting} className="mt-2 h-12 text-sm">
-          {isSubmitting ? <CircleLoader radius={8} /> : copy.action}
-        </Button>
-      </form>
+      </Form>
     </div>
   );
 };

@@ -5,6 +5,7 @@ import { useMemo, useState } from "react";
 import { motion } from "framer-motion";
 
 import { activeCollectionOf, groupsOf, useWorkspaceStore } from "@/stores/workspace-store";
+import { InlineNameForm } from "@/components/shared/inline-name-form";
 import { MethodBadge } from "@/components/shared/method-badge";
 import type { Collection } from "@/types/engine/Collection";
 import type { Endpoint } from "@/types/engine/Endpoint";
@@ -18,7 +19,8 @@ const hoverAction =
 /** The endpoints of one collection, grouped by tag/folder, with filter and add. Ungrouped
  * endpoints come first; groups made by hand are listed even while empty. */
 export const EndpointList = ({ collection }: { collection: Collection }) => {
-  const { selectedId, select, removeEndpoint, addGroup, removeGroup } = useWorkspaceStore();
+  const { selectedId, select, addEndpoint, removeEndpoint, addGroup, removeGroup } =
+    useWorkspaceStore();
   const setActiveCollection = useWorkspaceStore((s) => s.setActiveCollection);
   const isActive = useWorkspaceStore((s) => activeCollectionOf(s.workspace)?.id === collection.id);
   // Several collections can be open in the sidebar, but the editor and "add endpoint" work on the
@@ -27,8 +29,8 @@ export const EndpointList = ({ collection }: { collection: Collection }) => {
     if (!isActive) setActiveCollection(collection.id);
   };
   const [filter, setFilter] = useState("");
-  // Inline "new group" name field; null when closed.
-  const [newGroup, setNewGroup] = useState<string | null>(null);
+  // Whether the inline "new group" name field is open.
+  const [addingGroup, setAddingGroup] = useState(false);
 
   const q = filter.trim().toLowerCase();
   const groups = useMemo(() => {
@@ -45,12 +47,6 @@ export const EndpointList = ({ collection }: { collection: Collection }) => {
     return [...map.entries()].filter(([g, eps]) => eps.length > 0 || (!q && g !== ""));
   }, [collection, q]);
 
-  const createGroup = () => {
-    const name = newGroup?.trim();
-    if (name) addGroup(collection.id, name);
-    setNewGroup(null);
-  };
-
   return (
     <motion.div className="flex flex-col gap-2 px-3 py-2">
       {collection.endpoints.length > 5 && (
@@ -63,7 +59,10 @@ export const EndpointList = ({ collection }: { collection: Collection }) => {
               <p className="text-muted-foreground min-w-0 flex-1 truncate text-xs">{group}</p>
               <button
                 className={cn(hoverAction, "hover:text-primary")}
-                onClick={() => activate()}
+                onClick={() => {
+                  activate();
+                  addEndpoint(group);
+                }}
                 aria-label={`Add endpoint to ${group}`}
                 title="Add endpoint to this group"
               >
@@ -111,33 +110,29 @@ export const EndpointList = ({ collection }: { collection: Collection }) => {
           ))}
         </motion.div>
       ))}
-      {newGroup !== null && (
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            createGroup();
+      {addingGroup && (
+        <InlineNameForm
+          placeholder="Group name"
+          onSubmit={(name) => {
+            addGroup(collection.id, name);
+            setAddingGroup(false);
           }}
-        >
-          <Input
-            autoFocus
-            placeholder="Group name"
-            value={newGroup}
-            onChange={(e) => setNewGroup(e.target.value)}
-            onBlur={createGroup}
-            onKeyDown={(e) => e.key === "Escape" && setNewGroup(null)}
-          />
-        </form>
+          onCancel={() => setAddingGroup(false)}
+        />
       )}
       <div className="flex items-center gap-3 px-2">
         <button
           className="text-muted-foreground hover:text-primary flex items-center gap-1 text-xs"
-          onClick={() => activate()}
+          onClick={() => {
+            activate();
+            addEndpoint();
+          }}
         >
           <Plus className="size-3.5" /> Add endpoint
         </button>
         <button
           className="text-muted-foreground hover:text-primary flex items-center gap-1 text-xs"
-          onClick={() => setNewGroup("")}
+          onClick={() => setAddingGroup(true)}
         >
           <FolderPlus className="size-3.5" /> New group
         </button>

@@ -1,14 +1,13 @@
 "use client";
 
 import { ArrowLeft, Mail, MailCheck } from "lucide-react";
-import { zodResolver } from "@hookform/resolvers/zod";
-import { useForm } from "react-hook-form";
 import { useState } from "react";
 import Link from "next/link";
 import { z } from "zod";
 
 import { errorMessage, requestPasswordReset } from "@/lib/client";
-import { AuthField } from "@/components/shared/auth-field";
+import { AuthControl } from "@/components/shared/auth-field";
+import { Form, type FormField } from "@/components/form";
 import { CircleLoader } from "@/components/shared";
 import { Button } from "@/components/ui/button";
 
@@ -27,21 +26,37 @@ const BackToSignIn = () => (
   </Link>
 );
 
+const fields: Record<keyof FormValues, FormField<FormValues>> = {
+  email: {
+    label: "Email address",
+    custom: true,
+    customMode: "controlled",
+    render: ({ field, error }) => (
+      <AuthControl
+        field={field}
+        error={error}
+        id="email"
+        label="Email address"
+        icon={Mail}
+        type="email"
+        autoComplete="email"
+        autoFocus
+        placeholder="you@example.com"
+      />
+    ),
+  },
+};
+
 /** Asks for a reset link. The answer is the same whether or not the address has an account. */
 const Page = () => {
   const [sentTo, setSentTo] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const {
-    register,
-    handleSubmit,
-    formState: { errors, isSubmitting },
-  } = useForm<FormValues>({ defaultValues: { email: "" }, resolver: zodResolver(schema) });
 
   const onSubmit = async ({ email }: FormValues) => {
     setError(null);
     try {
       await requestPasswordReset(email);
-      setSentTo(email.trim());
+      setSentTo(email);
     } catch (err) {
       setError(errorMessage(err));
     }
@@ -74,32 +89,27 @@ const Page = () => {
         </p>
       </div>
 
-      <form className="flex flex-col gap-3" onSubmit={handleSubmit(onSubmit)} noValidate>
-        <div className="flex flex-col gap-1.5">
-          <AuthField
-            id="email"
-            label="Email address"
-            icon={Mail}
-            type="email"
-            autoComplete="email"
-            autoFocus
-            placeholder="you@example.com"
-            invalid={!!errors.email}
-            {...register("email")}
-          />
-          {errors.email && <p className="text-destructive text-xs">{errors.email.message}</p>}
-        </div>
-
-        {error && (
-          <p role="alert" className="text-destructive text-sm">
-            {error}
-          </p>
+      <Form
+        schema={schema}
+        defaultValues={{ email: "" }}
+        fields={fields}
+        onSubmit={onSubmit}
+        toastOnInvalid={false}
+      >
+        {({ field, isSubmitting }) => (
+          <div className="flex flex-col gap-3">
+            {field("email")}
+            {error && (
+              <p role="alert" className="text-destructive text-sm">
+                {error}
+              </p>
+            )}
+            <Button type="submit" disabled={isSubmitting} className="mt-2 h-12 text-sm">
+              {isSubmitting ? <CircleLoader radius={8} /> : "Send reset link"}
+            </Button>
+          </div>
         )}
-
-        <Button type="submit" disabled={isSubmitting} className="mt-2 h-12 text-sm">
-          {isSubmitting ? <CircleLoader radius={8} /> : "Send reset link"}
-        </Button>
-      </form>
+      </Form>
 
       <BackToSignIn />
     </div>

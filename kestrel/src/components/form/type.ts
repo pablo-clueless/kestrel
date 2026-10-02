@@ -35,6 +35,11 @@ export interface CustomFieldRenderProps<T extends FieldValues = FieldValues> {
 
 export type FormFieldBase = {
   label: string;
+  /** Keeps the label for screen readers but doesn't show it, for compact inline forms. */
+  hideLabel?: boolean;
+  /** Whether surrounding whitespace is trimmed before validating and submitting. Defaults to true,
+   * except for `password` fields; set it to false on a custom field that holds a password. */
+  trim?: boolean;
   className?: string;
   description?: string;
   disabled?: boolean | ((values: FieldValues) => boolean);
@@ -51,6 +56,9 @@ export type StandardFormField = FormFieldBase & {
   accept?: string;
   array?: never;
   allowCustom?: boolean | ((values: FieldValues) => boolean);
+  /** Overrides the type's default, e.g. `current-password` / `new-password` for password managers. */
+  autoComplete?: string;
+  autoFocus?: boolean;
   custom?: never;
   dateMode?: RangeType;
   disabledDates?: Date[];

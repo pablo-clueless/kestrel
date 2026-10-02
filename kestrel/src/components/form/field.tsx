@@ -100,6 +100,7 @@ const StandardControl = ({
     disabled,
     readOnly,
     placeholder: config.placeholder,
+    autoFocus: config.autoFocus,
     minLength: config.minLength,
     maxLength: config.maxLength,
   };
@@ -114,7 +115,7 @@ const StandardControl = ({
         <Input
           {...text}
           type={INPUT_TYPES[config.type]}
-          autoComplete={AUTOCOMPLETE[config.type]}
+          autoComplete={config.autoComplete ?? AUTOCOMPLETE[config.type]}
           value={(value as string | undefined) ?? ""}
           onChange={(e) => onChange(e.target.value)}
         />
@@ -307,7 +308,7 @@ export const Field = <T extends FieldValues>({
     const inline = field.type === "toggle" || (field.type === "checkbox" && !field.options);
 
     const label = (
-      <Label htmlFor={id} className={cn(inline && "font-normal")}>
+      <Label htmlFor={id} className={cn(inline && "font-normal", field.hideLabel && "sr-only")}>
         {field.label}
         {required && <span className="text-destructive">*</span>}
       </Label>
