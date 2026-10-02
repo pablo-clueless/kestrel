@@ -8,8 +8,8 @@ import { MethodBadge } from "@/components/shared/method-badge";
 import { useWorkspaceStore } from "@/stores/workspace-store";
 import type { Endpoint } from "@/types/engine/Endpoint";
 import { useSendStore } from "@/stores/send-store";
-import { cn } from "@/lib/utils";
 import { CircleLoader } from "../shared";
+import { cn } from "@/lib/utils";
 
 /** A tab's full width; keep in step with `basis-56` on the tab. */
 const TAB_REM = 14;

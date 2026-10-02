@@ -1,20 +1,20 @@
 "use client";
 
-import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { zodResolver } from "@hookform/resolvers/zod";
 import { Laptop, Smartphone } from "lucide-react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { z } from "zod";
 
-import { PASSWORD_MAX, PASSWORD_MESSAGE, PASSWORD_MIN } from "@/config/string";
 import { changePassword, errorMessage, listSessions, revokeSession } from "@/lib/client";
+import { PASSWORD_MAX, PASSWORD_MESSAGE, PASSWORD_MIN } from "@/config/string";
 import type { SessionInfo } from "@/types/engine/SessionInfo";
 import { useMe } from "@/hooks/use-me";
 import { Button } from "../ui/button";
+import { TabPanel } from "../shared";
 import { Input } from "../ui/input";
 import { Label } from "../ui/label";
-import { TabPanel } from "../shared";
 
 interface Props {
   selected: string;

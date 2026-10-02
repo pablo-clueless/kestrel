@@ -3,7 +3,25 @@
 import { useDeferredValue, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Save, Send } from "lucide-react";
+import { toast } from "sonner";
 
+import { errorMessage, looksLikeCurl, parseCurl, renderRequest } from "@/lib/client";
+import { useSendEntry, useSendStore } from "@/stores/send-store";
+import type { HttpMethod } from "@/types/engine/HttpMethod";
+import type { FormField } from "@/types/engine/FormField";
+import type { Endpoint } from "@/types/engine/Endpoint";
+import { FormFieldEditor } from "./form-field-editor";
+import { Textarea } from "@/components/ui/textarea";
+import { KeyValueEditor } from "./key-value-editor";
+import { ExtractEditor } from "./extract-editor";
+import type { Auth } from "@/types/engine/Auth";
+import { Button } from "@/components/ui/button";
+import type { Body } from "@/types/engine/Body";
+import { Input } from "@/components/ui/input";
+import { GroupPicker } from "./group-picker";
+import { JsonEditor } from "./json-editor";
+import { Label, Tabs } from "./fields";
+import { cn } from "@/lib/utils";
 import {
   useActiveCollection,
   useSelectedEndpoint,
@@ -11,23 +29,6 @@ import {
   useWorkspaceStore,
   groupsOf,
 } from "@/stores/workspace-store";
-import type { HttpMethod } from "@/types/engine/HttpMethod";
-import { errorMessage, renderRequest } from "@/lib/client";
-import type { FormField } from "@/types/engine/FormField";
-import type { Endpoint } from "@/types/engine/Endpoint";
-import { FormFieldEditor } from "./form-field-editor";
-import { Textarea } from "@/components/ui/textarea";
-import { KeyValueEditor } from "./key-value-editor";
-import { useSendEntry, useSendStore } from "@/stores/send-store";
-import { ExtractEditor } from "./extract-editor";
-import { JsonEditor } from "./json-editor";
-import { GroupPicker } from "./group-picker";
-import type { Auth } from "@/types/engine/Auth";
-import { Button } from "@/components/ui/button";
-import type { Body } from "@/types/engine/Body";
-import { Input } from "@/components/ui/input";
-import { Label, Tabs } from "./fields";
-import { cn } from "@/lib/utils";
 import {
   Select,
   SelectContent,
@@ -51,6 +52,17 @@ const CONTENT_TYPES = [
   "text/plain",
 ];
 
+/** Names new endpoints start with, which a pasted curl may replace. */
+const PLACEHOLDER_NAMES = new Set(["", "Untitled request", "New endpoint"]);
+
+/** `https://api.x.io/users` → `{{base}}/users` when the collection's `base` is `https://api.x.io`. */
+const relativeToBase = (url: string, base: string | undefined) => {
+  const root = base?.replace(/\/+$/, "");
+  if (!root || !/^https?:\/\//.test(root) || !url.startsWith(root)) return url;
+  const rest = url.slice(root.length);
+  return rest === "" || rest.startsWith("/") ? `{{base}}${rest}` : url;
+};
+
 export const RequestEditor = () => {
   const endpoint = useSelectedEndpoint();
   const isDraft = useSelectedIsDraft();
@@ -72,6 +84,31 @@ export const RequestEditor = () => {
   }
   const patch = (p: Partial<Endpoint>) => update(endpoint.id, p);
   const groups = collection ? groupsOf(collection) : [];
+
+  /** A curl pasted into the URL fills in the whole request (undoably). */
+  const pasteCurl = async (command: string) => {
+    const before = endpoint;
+    try {
+      const { endpoint: parsed, warnings } = await parseCurl(command);
+      patch({
+        method: parsed.method,
+        url: relativeToBase(parsed.url, collection?.vars.base),
+        query: parsed.query,
+        headers: parsed.headers,
+        body: parsed.body,
+        auth: parsed.auth,
+        // A name you chose stays; a placeholder one gives way to the URL's path.
+        ...(PLACEHOLDER_NAMES.has(before.name.trim()) ? { name: parsed.name } : {}),
+      });
+      toast.success("Filled in from curl", {
+        description: warnings.length ? warnings.join(" ") : undefined,
+        duration: warnings.length ? 10_000 : 4_000,
+        action: { label: "Undo", onClick: () => update(before.id, before) },
+      });
+    } catch (err) {
+      toast.error(`Couldn't read the curl command: ${errorMessage(err)}`);
+    }
+  };
 
   return (
     <div className="flex flex-col gap-3 text-xs">
@@ -115,8 +152,14 @@ export const RequestEditor = () => {
         <Input
           className={cn("flex-1 font-mono", XS)}
           value={endpoint.url}
-          placeholder="{{base}}/path"
+          placeholder="{{base}}/path, or paste a curl command"
           onChange={(e) => patch({ url: e.target.value })}
+          onPaste={(e) => {
+            const text = e.clipboardData.getData("text");
+            if (!looksLikeCurl(text)) return;
+            e.preventDefault();
+            void pasteCurl(text);
+          }}
           onKeyDown={(e) => e.key === "Enter" && send(endpoint, environment)}
         />
         <Button className={XS} onClick={() => send(endpoint, environment)} disabled={pending}>

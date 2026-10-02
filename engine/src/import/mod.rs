@@ -1,10 +1,12 @@
-//! Spec → collection. OpenAPI 3.0 / 3.1 and Swagger 2.0, in JSON or YAML.
+//! Spec → collection. OpenAPI 3.0 / 3.1 and Swagger 2.0, in JSON or YAML, and curl commands
+//! (`curl.rs`).
 //! HANDOFF → Inputs.
 //!
 //! Works on `serde_json::Value` rather than typed models so one code path covers all three
 //! versions, and so response schemas can be kept verbatim (with their `$ref`s) for contract checks.
 //! Only local `$ref`s (`#/…`) are supported.
 
+pub mod curl;
 mod schema;
 
 use std::collections::BTreeMap;
@@ -70,6 +72,9 @@ enum Version {
 }
 
 pub fn import(text: &str, name: Option<&str>) -> Result<ImportResult, String> {
+    if curl::looks_like_curl(text) {
+        return curl::import(text, name);
+    }
     let root = parse(text)?;
     let (version, format) = detect(&root)?;
     let mut ctx = Ctx { root: &root, version, warnings: Vec::new(), vars: BTreeMap::new() };

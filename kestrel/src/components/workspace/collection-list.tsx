@@ -5,8 +5,8 @@ import { AnimatePresence, motion } from "framer-motion";
 import { useEffect, useRef } from "react";
 
 import { activeCollectionOf, useWorkspaceStore } from "@/stores/workspace-store";
-import { useLayoutStore } from "@/stores/layout-store";
 import type { Collection } from "@/types/engine/Collection";
+import { useLayoutStore } from "@/stores/layout-store";
 import { Button } from "@/components/ui/button";
 import { EndpointList } from "./endpoint-list";
 import { ImportDialog } from "./import-dialog";

@@ -1,23 +1,24 @@
 import axios from "axios";
 
+import type { ChangePasswordRequest } from "@/types/engine/ChangePasswordRequest";
+import type { PasswordResetConfirm } from "@/types/engine/PasswordResetConfirm";
 import type { WorkspaceResponse } from "@/types/engine/WorkspaceResponse";
 import type { SetSecretRequest } from "@/types/engine/SetSecretRequest";
 import type { StartRunResponse } from "@/types/engine/StartRunResponse";
+import type { CurlParseResult } from "@/types/engine/CurlParseResult";
+import type { ImportRequest } from "@/types/engine/ImportRequest";
+import type { ImportResult } from "@/types/engine/ImportResult";
+import type { SendResponse } from "@/types/engine/SendResponse";
+import type { AuthRequest } from "@/types/engine/AuthRequest";
 import type { SentRequest } from "@/types/engine/SentRequest";
-import type { TryRequest } from "@/types/engine/TryRequest";
+import type { SessionInfo } from "@/types/engine/SessionInfo";
+import type { MeResponse } from "@/types/engine/MeResponse";
 import type { RunSummary } from "@/types/engine/RunSummary";
+import type { TryRequest } from "@/types/engine/TryRequest";
 import type { RunConfig } from "@/types/engine/RunConfig";
 import type { RunReport } from "@/types/engine/RunReport";
 import type { Workspace } from "@/types/engine/Workspace";
-import type { SendResponse } from "@/types/engine/SendResponse";
 import type { FileRef } from "@/types/engine/FileRef";
-import type { ImportRequest } from "@/types/engine/ImportRequest";
-import type { ImportResult } from "@/types/engine/ImportResult";
-import type { MeResponse } from "@/types/engine/MeResponse";
-import type { AuthRequest } from "@/types/engine/AuthRequest";
-import type { ChangePasswordRequest } from "@/types/engine/ChangePasswordRequest";
-import type { SessionInfo } from "@/types/engine/SessionInfo";
-import type { PasswordResetConfirm } from "@/types/engine/PasswordResetConfirm";
 
 // Build-time values, used by `pnpm dev` (the UI on :3000 talks to the engine on :7070).
 const BUILD_TOKEN = process.env.NEXT_PUBLIC_KESTREL_TOKEN ?? "";
@@ -105,7 +106,7 @@ export const getMe = async () => {
 
 /** Signs in or creates an account. Sends this browser's existing workspace, which a first sign-in
  * adopts if nobody owns it, so work done before signing up isn't lost. */
-export const authenticate = async (mode: "login" | "signup", email: string, password: string) => {
+export const authenticate = async (mode: "signin" | "signup", email: string, password: string) => {
   const req: AuthRequest = { email, password, workspace: storedWorkspaceId() };
   const me = (await engine.post<MeResponse>(`/auth/${mode}`, req)).data;
   if (me.workspaceId) setWorkspaceId(me.workspaceId);
@@ -205,6 +206,13 @@ export const importSpec = async (req: ImportRequest) =>
   (await engine.post<ImportResult>("/import", req)).data;
 
 /** Hosts confirmed for load testing this engine session. */
+/** Whether pasted text is a curl command (rather than a URL), so it can fill in a request. */
+export const looksLikeCurl = (text: string) => /^\s*(\$\s*)?curl(\.exe)?(\s|\^|$)/i.test(text);
+
+/** Reads a curl command into an endpoint. Nothing is saved; the caller applies it. */
+export const parseCurl = async (command: string) =>
+  (await engine.post<CurlParseResult>("/import/curl", { command })).data;
+
 export const listHosts = async () => (await engine.get<string[]>("/hosts")).data;
 
 /** Records "I own or am authorised to test this host". */

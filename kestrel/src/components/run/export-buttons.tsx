@@ -5,8 +5,8 @@ import { useState } from "react";
 import { toast } from "sonner";
 
 import { errorMessage, getReportCsv } from "@/lib/client";
-import { useRunStore } from "@/stores/run-store";
 import type { RunReport } from "@/types/engine/RunReport";
+import { useRunStore } from "@/stores/run-store";
 import { Button } from "../ui/button";
 
 /** `kestrel-load-1f2e3d4c.json`, matching the engine's CSV file names. */
