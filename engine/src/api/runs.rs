@@ -74,12 +74,50 @@ async fn prepare(state: &AppState, scope: &Scope, config: &RunConfig) -> Result<
             Ok(Prepared::Latency(Box::new(prepared)))
         }
         RunConfig::Load(cfg) => {
-            in_range("durationMs", cfg.duration_ms, 1, max_duration_ms)?;
+            // A breakpoint run is as long as its steps; past the cap it stops there and says so.
+            let breakpoint = matches!(cfg.mode, LoadMode::Breakpoint(_) | LoadMode::RateLimit(_));
+            if !breakpoint {
+                in_range("durationMs", cfg.duration_ms, 1, max_duration_ms)?;
+            }
+            if let LoadMode::Spike(ref m) = cfg.mode {
+                in_range("baseRate", m.base_rate, 1, caps.max_rps)?;
+                in_range("spikeRate", m.spike_rate, m.base_rate, caps.max_rps)?;
+                in_range("beforeMs", m.before_ms, 2_000, max_duration_ms)?;
+                in_range("spikeMs", m.spike_ms, 1_000, max_duration_ms)?;
+                in_range("afterMs", m.after_ms, 1_000, max_duration_ms)?;
+                if m.total_ms() > u64::from(max_duration_ms) {
+                    return Err(ApiError::BadRequest(format!(
+                        "the spike run would last {} s, over the {} s duration cap (raised in local config)",
+                        m.total_ms() / 1000,
+                        max_duration_ms / 1000
+                    )));
+                }
+            }
             in_range("rampUpMs", cfg.ramp_up_ms, 0, cfg.duration_ms)?;
             in_range("timeoutMs", cfg.timeout_ms, 1, max_timeout_ms)?;
             match cfg.mode {
                 LoadMode::Closed { concurrency } => in_range("concurrency", concurrency, 1, caps.max_in_flight)?,
                 LoadMode::Open { rate } => in_range("rate", rate, 1, caps.max_rps)?,
+                // Checked above.
+                LoadMode::Spike(_) => {}
+                LoadMode::RateLimit(ref m) => {
+                    in_range("startRate", m.start_rate, 1, caps.max_rps)?;
+                    in_range("maxRate", m.max_rate, m.start_rate, caps.max_rps)?;
+                    in_range("stepPercent", m.step_percent, 1, 1_000)?;
+                    in_range("stepMs", m.step_ms, 1_000, max_duration_ms)?;
+                }
+                LoadMode::Breakpoint(ref m) => {
+                    in_range("startRate", m.start_rate, 1, caps.max_rps)?;
+                    in_range("maxRate", m.max_rate, m.start_rate, caps.max_rps)?;
+                    in_range("stepPercent", m.step_percent, 1, 1_000)?;
+                    in_range("stepMs", m.step_ms, 1_000, max_duration_ms)?;
+                    if !(0.0..=100.0).contains(&m.max_error_pct) {
+                        return Err(ApiError::BadRequest("maxErrorPct must be between 0 and 100".into()));
+                    }
+                    if let Some(p99) = m.max_p99_ms {
+                        in_range("maxP99Ms", p99, 1, max_timeout_ms)?;
+                    }
+                }
             }
             if let Some(n) = cfg.max_in_flight {
                 in_range("maxInFlight", n, 1, caps.max_in_flight)?;
@@ -87,6 +125,9 @@ async fn prepare(state: &AppState, scope: &Scope, config: &RunConfig) -> Result<
             let (request, contract) = compile_endpoint(scope, cfg.endpoint_id, cfg.environment.as_deref()).await?;
             let mut cfg = cfg.clone();
             cfg.ok_statuses.extend(contract::ok_statuses_from(contract.as_ref()));
+            if breakpoint {
+                cfg.duration_ms = cfg.duration_ms.clamp(1, max_duration_ms);
+            }
             let mut prepared =
                 load::prepare(cfg, request, &scope.store.confirmed_hosts(), caps.max_in_flight, caps.max_rps)
                     .await

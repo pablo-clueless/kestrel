@@ -16,7 +16,6 @@ use axum::{
     middleware,
     routing::{get, post, put},
 };
-use serde_json::{Value, json};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use crate::{auth::Accounts, config::Config, db::Db, engine::registry::RunRegistry, model::workspaces::Workspaces};
@@ -50,7 +49,8 @@ pub fn router(state: AppState) -> Router {
         .route("/render", post(workspace::render))
         .route("/send", post(workspace::send))
         .route("/files", post(workspace::upload_file).layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES)))
-        .route("/import", post(import::import))
+        // Specs and HAR files can be well over axum's 2 MB default (the handler checks the text).
+        .route("/import", post(import::import).layer(DefaultBodyLimit::max(import::MAX_REQUEST_BYTES)))
         .route("/import/curl", post(import::curl))
         .route("/hosts", get(hosts::list))
         .route("/hosts/confirm", post(hosts::confirm))
@@ -102,8 +102,19 @@ fn cors(config: &Config) -> CorsLayer {
         ])
 }
 
-async fn health() -> Json<Value> {
-    Json(json!({ "ok": true, "version": env!("CARGO_PKG_VERSION") }))
+/// `GET /api/health`. Public (no session), like the version; the caps aren't secret, and the UI uses
+/// them to say what's allowed before the engine has to refuse it.
+#[derive(Debug, serde::Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct HealthResponse {
+    pub ok: bool,
+    pub version: String,
+    pub caps: crate::config::CapsInfo,
+}
+
+async fn health(axum::extract::State(state): axum::extract::State<AppState>) -> Json<HealthResponse> {
+    Json(HealthResponse { ok: true, version: env!("CARGO_PKG_VERSION").into(), caps: state.config.caps.info() })
 }
 
 #[cfg(test)]
@@ -175,6 +186,30 @@ mod tests {
     #[tokio::test]
     async fn accepts_a_valid_request() {
         assert_eq!(status(&app(), get("/api/health").body(Body::empty()).unwrap()).await, StatusCode::OK);
+    }
+
+    /// The UI reads the caps from health, to say what's allowed before the engine refuses it.
+    #[tokio::test]
+    async fn health_reports_the_caps() {
+        let res = app().oneshot(get("/api/health").body(Body::empty()).unwrap()).await.unwrap();
+        let body: serde_json::Value = json_body(res).await;
+        assert_eq!(body["caps"]["maxRps"], 1000);
+        assert_eq!(body["caps"]["maxDurationS"], 60);
+        assert_eq!(body["caps"]["maxTimeoutMs"], 60_000);
+    }
+
+    /// Specs and HAR files are often bigger than axum's 2 MB default body limit.
+    #[tokio::test]
+    async fn imports_bodies_over_two_megabytes() {
+        let padding = "x".repeat(3 * 1024 * 1024);
+        let har = serde_json::json!({ "log": { "entries": [{ "_resourceType": "fetch", "request": {
+            "method": "GET", "url": "https://a.io/x", "headers": [{ "name": "X-Pad", "value": padding }]
+        } }] } });
+        let body = serde_json::json!({ "source": { "type": "text", "content": har.to_string() } }).to_string();
+        let res = app().oneshot(post_json("/api/import", body)).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let result: serde_json::Value = json_body(res).await;
+        assert_eq!(result["format"], "HAR");
     }
 
     #[tokio::test]
@@ -336,6 +371,7 @@ mod tests {
         let id = uuid::Uuid::new_v4();
         let workspace = Workspace {
             collections: vec![Collection {
+                headers: Vec::new(),
                 id: uuid::Uuid::new_v4(),
                 name: "echo".into(),
                 source: None,
@@ -566,6 +602,7 @@ mod tests {
         let id = uuid::Uuid::new_v4();
         let workspace = Workspace {
             collections: vec![Collection {
+                headers: Vec::new(),
                 id: uuid::Uuid::new_v4(),
                 name: "pets".into(),
                 vars: [("base".to_string(), base)].into(),
@@ -651,6 +688,7 @@ mod tests {
         };
         let workspace = Workspace {
             collections: vec![Collection {
+                headers: Vec::new(),
                 id: uuid::Uuid::new_v4(),
                 name: "c".into(),
                 vars: [("base".to_string(), base)].into(),

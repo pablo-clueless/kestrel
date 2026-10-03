@@ -165,7 +165,37 @@ const CAP_VARS: &[(&str, u64)] = &[
     ("KESTREL_MAX_POINTS", 200),
 ];
 
+/// The caps as the UI shows them (`GET /api/health`), in the units its forms use.
+#[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct CapsInfo {
+    pub max_rps: u32,
+    pub max_in_flight: u32,
+    pub max_duration_s: u32,
+    pub max_timeout_ms: u32,
+    pub max_samples: u32,
+    pub max_warmup: u32,
+    pub max_sweep_s: u32,
+    pub max_n: u32,
+    pub max_points: u32,
+}
+
 impl Caps {
+    pub fn info(&self) -> CapsInfo {
+        CapsInfo {
+            max_rps: self.max_rps,
+            max_in_flight: self.max_in_flight,
+            max_duration_s: self.max_duration.as_secs() as u32,
+            max_timeout_ms: self.max_timeout.as_millis() as u32,
+            max_samples: self.max_samples,
+            max_warmup: self.max_warmup,
+            max_sweep_s: self.max_sweep_duration.as_secs() as u32,
+            max_n: self.max_n,
+            max_points: self.max_points,
+        }
+    }
+
     /// The defaults, with any `KESTREL_MAX_*` variable applied. Raised or lowered only here, by
     /// whoever runs the engine; never through the API (HANDOFF → Safety rails → Caps).
     pub fn from_env() -> anyhow::Result<Self> {

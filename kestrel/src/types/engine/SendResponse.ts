@@ -7,7 +7,11 @@ import type { SentRequest } from "./SentRequest";
 /**
  * `POST /api/send`: the sample, plus what the endpoint's extract rules saved.
  */
-export type SendResponse = { saved: Array<Saved>, request: SentRequest, status: number | null, error: string | null, errorClass: ErrorClass | null, ttfbMs: number, totalMs: number, responseHeaders: Array<[string, string]>, 
+export type SendResponse = { saved: Array<Saved>, request: SentRequest, status: number | null, error: string | null, errorClass: ErrorClass | null, ttfbMs: number, totalMs: number, 
+/**
+ * Opening a new connection (TCP + TLS), part of `ttfb_ms`. None when a pooled one was reused.
+ */
+connectMs: number | null, responseHeaders: Array<[string, string]>, 
 /**
  * UTF-8 (lossy), truncated.
  */

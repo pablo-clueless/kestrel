@@ -12,6 +12,80 @@ No version has been tagged yet (engine and UI are both `0.1.0`), so the entries 
 
 ### Added
 
+- **HAR import.** Drop a `.har` file (saved from a browser's dev tools, or from a proxy) into
+  **Import**, and its API calls become a collection.
+  - **Skipped:** page assets (scripts, styles, images, fonts, media), CORS preflights, non-HTTP URLs
+    (`data:`, `blob:`, `ws:`), and repeats of the same method, URL and body (polling). The review
+    step says how many of each were left out.
+  - **Headers:** ones the browser or client sets itself (`:authority`, `sec-fetch-*`, `sec-ch-*`,
+    `Host`, `Content-Length`, `Accept-Encoding`…) are dropped.
+  - **Requests:** an `Authorization` header becomes Bearer or Basic auth. Bodies become JSON, form,
+    multipart or raw. File fields need their files attached again.
+  - **Collection:** the most common origin becomes `base`. With several hosts, endpoints are grouped
+    by host.
+  - **Upload:** the UI strips response bodies and initiator stack traces before uploading, since they
+    are most of a HAR's size.
+- **Collection headers.** Collection settings now has **Variables** and **Headers** tabs. Headers
+  set there are sent with every endpoint in the collection, on Send and in runs.
+  - Values can use `{{variables}}`.
+  - Collection headers are sent before the endpoint's own.
+  - If an endpoint has its own enabled header with the same name (in any case), or its auth sets
+    `Authorization`, the endpoint's version wins.
+  - An endpoint's Headers tab lists the collection headers it will also send.
+  - Collections are stored as JSON, so existing ones need no migration; they just start with no
+    headers.
+- **Download a response body.** The response view has **Copy** and **Download JSON** buttons beside
+  **Save to Env**. Download pretty-prints the body to `response.json` and shows a spinner while it
+  works. If the body isn't JSON or YAML (plain text, HTML), a toast says why, instead of saving a
+  quoted string or an `undefined` file.
+- **Responses the engine cut short.** A JSON body over the engine's cap (256 KB for Send) used to
+  show as unformatted raw text. It's now indented as far as it goes, then marked "… truncated".
+  - **Copy** still copies the partial text, and now warns how much of the body that was (for
+    example "256.0 KB of 1.2 MB"). Response sizes of 1 MB and over now show in MB.
+  - The download button reads **Export partial** and saves the text that arrived as
+    `response.partial.txt`, rather than refusing.
+  - Bodies are indented without being re-encoded, so values show exactly as sent. For example, big
+    integers are no longer rounded the way `JSON.parse` rounds them. js-yaml is now loaded only when a
+  download starts, so it no longer comes with every import of `cn`. The file's temporary URL is
+  released after a delay, because releasing it immediately can cancel the download in Firefox and
+  Safari.
+- **Caps in the UI.** The run panel shows this engine's limits (req/s, in flight, run length,
+  timeout). Settings over a cap are named before you run, and **Run** stays disabled until they
+  fit, instead of the engine refusing the run. Breakpoint and rate-limit runs longer than the
+  duration cap say how many steps they'll get through. `GET /api/health` now includes `caps`.
+
+- **Rate-limit discovery.** Load Test → Model → **Rate limit** steps the rate up until more than
+  1% of a step's requests get 429, then stops. Results show where 429s started, the highest rate
+  that went through, each step's share of 429s, and the rate-limit headers the API sent
+  (`Retry-After`, `X-RateLimit-*`, `RateLimit-*`) on the first 429 and on normal responses.
+
+- **Spike load test.** Load Test → Model → **Spike** runs a base rate, a burst at a higher rate,
+  then the base rate again. Results show before / during / after (requests, achieved rate,
+  p50/p99, errors) and **how long the target took to recover**: when its p99 and errors were back
+  near the baseline and stayed there, or that it hadn't by the end of the run.
+
+- **Breakpoint load test.** Load Test → Model → **Breakpoint** steps the rate up (start rate, +N%
+  every step, up to a max) until a step breaks a limit: more than X% errors (drops at the
+  in-flight cap count) or p99 over Y ms. The run stops at the first step that breaks. Results show
+  the rate that **held**, where it **broke** and why, and every step's achieved rate, p50/p99
+  (with the limit marked) and errors. The form shows the planned steps and their total length.
+  Runs longer than the duration cap stop there and say so. Reports have a new `breakpoint` field.
+
+- **Postman import.** **Import** accepts a Postman collection (v2.0 / v2.1 JSON). Folders become
+  groups ("Folder / Subfolder"), collection variables become the collection's variables, `:id`
+  path variables become `{{id}}`, and auth is inherited from folders and the collection as in
+  Postman (Bearer, Basic, API key). Disabled headers and query rows come in switched off.
+  `{{$guid}}` / `{{$randomUUID}}` become `{{uuid}}` and `{{$randomInt}}` becomes `{{int:0..1000}}`;
+  other dynamic values, file bodies, unsupported auth and scripts (which aren't run) are listed to
+  fix by hand. A Postman environment file gets a clear message instead of an error about specs.
+
+- **Phase timings.** Latency and load results have a **Where the time went** section: DNS (once
+  per run), connect (TCP + TLS) for the requests that opened a connection, waiting for the server,
+  and download, as p50/p99 and a bar of an average request. It counts how many requests opened a
+  new connection, and suggests keep-alive when connecting costs more than the server. A single
+  Send shows the connect time next to TTFB when it opened a connection. Reports have a new
+  `phases` field (and samples `connectMs`).
+
 - **curl import.** Paste a curl command into a request's URL field and it fills in the method, URL,
   query, headers, auth and body (Undo is in the notice). Paste one or more commands into **Import**
   (e.g. DevTools' "Copy all as cURL") and they become a collection; when they share an origin it
@@ -88,6 +162,11 @@ No version has been tagged yet (engine and UI are both `0.1.0`), so the entries 
 
 ### Changed
 
+- Endpoints in the sidebar are listed alphabetically within each group (by name, or URL when
+  unnamed), the same way groups are sorted: ignoring case, with numbers in order.
+- Endpoint groups in the sidebar can be collapsed: click a group's name (it shows how many
+  endpoints it holds). Groups start open; filtering shows every group with a match open; adding an
+  endpoint to a closed group opens it.
 - Every form uses the shared `Form` component (`components/form`): sign-in, forgot and reset
   password, change password, and the inline forms for new collections, groups, environments,
   variables and secrets. `Form` gained `autoComplete`/`autoFocus` and `hideLabel` for fields,
@@ -136,6 +215,9 @@ No version has been tagged yet (engine and UI are both `0.1.0`), so the entries 
 
 ### Fixed
 
+- **Imports over 2 MB.** `POST /api/import` used axum's 2 MB default body limit, so specs between
+  2 and 10 MB were refused even though the handler, and its "larger than 10 MB" message, allow them.
+  The route now takes up to 20 MB, which leaves room for the JSON escaping of the text.
 - **Add endpoint** in the sidebar (and the + on a group) adds an endpoint again; it had only been
   making the collection active.
 - Choosing **No environment** no longer breaks sending and runs. It used to be saved as an

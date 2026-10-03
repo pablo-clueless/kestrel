@@ -186,10 +186,11 @@ impl CompiledRequest {
             }
             None => None,
         };
+        let collection = workspace.collection_of(endpoint.id);
         let scope = Scope {
             vars: env.map(|e| &e.vars),
             secrets: env_name.as_ref().and_then(|n| secrets.get(n)),
-            collection_vars: workspace.collection_of(endpoint.id).map(|c| &c.vars),
+            collection_vars: collection.map(|c| &c.vars),
             mask_secrets,
         };
 
@@ -238,6 +239,19 @@ impl CompiledRequest {
                 api_key_header = Some(name.clone());
             }
             Auth::ApiKey { location: ApiKeyLocation::Query, name, value } => query.push((name.clone(), bind(value)?)),
+        }
+
+        // Collection headers go first. The endpoint's own headers and its auth win on the same name
+        // (case-insensitive); Basic auth's Authorization header is added later, by the client.
+        if let Some(collection) = collection {
+            let own: std::collections::HashSet<String> = headers
+                .iter()
+                .map(|(k, _)| k.to_ascii_lowercase())
+                .chain(basic.is_some().then(|| "authorization".to_owned()))
+                .collect();
+            let shared = bind_pairs(&collection.headers, &mut bind)?;
+            headers =
+                shared.into_iter().filter(|(k, _)| !own.contains(&k.to_ascii_lowercase())).chain(headers).collect();
         }
 
         if !missing.is_empty() {
@@ -476,6 +490,7 @@ mod tests {
         let (mut ws, secrets) = workspace();
         let ep = endpoint("{{base}}/{{path}}", Auth::None);
         ws.collections.push(Collection {
+            headers: Vec::new(),
             id: uuid::Uuid::new_v4(),
             name: "api".into(),
             source: None,
@@ -496,6 +511,52 @@ mod tests {
             .render()
             .unwrap();
         assert_eq!(req.url.as_str(), "http://collection-default/from-collection?page=1");
+    }
+
+    #[test]
+    fn collection_headers_are_sent_unless_the_endpoint_overrides_them() {
+        use crate::model::Collection;
+        let (ws, secrets) = workspace();
+        let mut ep = endpoint("{{base}}/x", Auth::Bearer { token: "mine".into() });
+        ep.headers.push(KeyValue { key: "x-team".into(), value: "endpoint".into(), enabled: true });
+        let header = |key: &str, value: &str, enabled| KeyValue { key: key.into(), value: value.into(), enabled };
+        let collection = Collection {
+            id: uuid::Uuid::new_v4(),
+            name: "api".into(),
+            source: None,
+            groups: Vec::new(),
+            schema_defs: None,
+            vars: BTreeMap::from([("tenant".into(), "acme".into())]),
+            headers: vec![
+                header("X-Tenant", "{{tenant}}", true),
+                header("X-Team", "collection", true),
+                header("Authorization", "Bearer shared", true),
+                header("X-Off", "no", false),
+            ],
+            endpoints: vec![ep.clone()],
+        };
+        let ws = Workspace { collections: vec![collection], ..ws };
+        let req = CompiledRequest::compile(&ep, &ws, &secrets, None, false).unwrap().render().unwrap();
+        let get = |name: &str| {
+            req.headers
+                .iter()
+                .filter(|(k, _)| k.eq_ignore_ascii_case(name))
+                .map(|(_, v)| v.as_str())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(get("X-Tenant"), ["acme"], "templated from the collection's vars");
+        assert_eq!(get("X-Team"), ["endpoint"], "the endpoint's header wins, whatever its case");
+        assert_eq!(get("Authorization"), ["Bearer mine"], "the endpoint's auth wins");
+        assert!(get("X-Off").is_empty(), "disabled collection headers aren't sent");
+        assert_eq!(req.headers[0].0, "X-Tenant", "collection headers come first");
+
+        // With no auth of its own, the endpoint gets the collection's Authorization header.
+        let mut plain = ep.clone();
+        plain.auth = Auth::None;
+        let mut ws = ws;
+        ws.collections[0].endpoints = vec![plain.clone()];
+        let req = CompiledRequest::compile(&plain, &ws, &secrets, None, false).unwrap().render().unwrap();
+        assert!(req.headers.iter().any(|(k, v)| k == "Authorization" && v == "Bearer shared"));
     }
 
     #[test]

@@ -1,13 +1,24 @@
 //! HTTP client construction and single-request execution with timing.
+//!
+//! Phases: DNS is looked up once per run (the address is then pinned), so it's timed in [`connect`].
+//! Opening a connection (TCP + TLS) is timed by [`TimeConnect`], a layer around reqwest's connector,
+//! and credited to the request whose task asked for it, through a task-local slot that [`execute`]
+//! sets up. A request that reused a pooled connection has no connect time.
 
 use std::{
+    future::Future,
     net::{IpAddr, SocketAddr},
+    pin::Pin,
+    sync::{Arc, Mutex},
+    task::{Context, Poll},
     time::Duration,
 };
 
 use bytes::Bytes;
 use reqwest::{Client, redirect};
 use tokio::time::Instant;
+use tower_layer::Layer;
+use tower_service::Service;
 use url::{Host, Url};
 
 use super::types::ErrorClass;
@@ -27,6 +38,8 @@ pub struct Target {
     pub client: Client,
     /// The IP every request in this run goes to.
     pub pinned: IpAddr,
+    /// How long resolving the host took. None for an IP address in the URL.
+    pub dns: Option<Duration>,
 }
 
 /// Resolves the target host once and pins it for the client's lifetime, so the address that was
@@ -35,15 +48,19 @@ pub async fn connect(url: &Url, opts: &ClientOptions) -> Result<Target, String> 
     let host = url.host_str().ok_or_else(|| format!("URL `{url}` has no host"))?.to_owned();
     let port = url.port_or_known_default().unwrap_or(80);
 
-    let pinned = match url.host() {
-        Some(Host::Ipv4(ip)) => IpAddr::V4(ip),
-        Some(Host::Ipv6(ip)) => IpAddr::V6(ip),
-        _ => tokio::net::lookup_host((host.as_str(), port))
-            .await
-            .map_err(|e| format!("couldn't resolve `{host}`: {e}"))?
-            .next()
-            .ok_or_else(|| format!("`{host}` resolved to no addresses"))?
-            .ip(),
+    let (pinned, dns) = match url.host() {
+        Some(Host::Ipv4(ip)) => (IpAddr::V4(ip), None),
+        Some(Host::Ipv6(ip)) => (IpAddr::V6(ip), None),
+        _ => {
+            let started = Instant::now();
+            let ip = tokio::net::lookup_host((host.as_str(), port))
+                .await
+                .map_err(|e| format!("couldn't resolve `{host}`: {e}"))?
+                .next()
+                .ok_or_else(|| format!("`{host}` resolved to no addresses"))?
+                .ip();
+            (ip, Some(started.elapsed()))
+        }
     };
 
     let redirects = if opts.follow_redirects {
@@ -57,9 +74,65 @@ pub async fn connect(url: &Url, opts: &ClientOptions) -> Result<Target, String> 
         .resolve(&host, SocketAddr::new(pinned, port))
         .redirect(redirects)
         // Keep-alive off = no idle connections, so every request opens a new one.
-        .pool_max_idle_per_host(if opts.keep_alive { usize::MAX } else { 0 });
+        .pool_max_idle_per_host(if opts.keep_alive { usize::MAX } else { 0 })
+        .connector_layer(TimeConnect);
     let client = builder.build().map_err(|e| format!("couldn't build HTTP client: {e}"))?;
-    Ok(Target { client, pinned })
+    Ok(Target { client, pinned, dns })
+}
+
+tokio::task_local! {
+    /// Where [`TimeConnect`] writes the connect time for the request [`execute`] is sending.
+    static CONNECT_TIME: Arc<Mutex<Option<Duration>>>;
+}
+
+/// Times each new connection (TCP + TLS) the client opens. reqwest gives no finer split between
+/// TCP and TLS, so they're one phase.
+#[derive(Clone)]
+pub struct TimeConnect;
+
+impl<S> Layer<S> for TimeConnect {
+    type Service = Timed<S>;
+
+    fn layer(&self, inner: S) -> Timed<S> {
+        Timed(inner)
+    }
+}
+
+#[derive(Clone)]
+pub struct Timed<S>(S);
+
+impl<S, R> Service<R> for Timed<S>
+where
+    S: Service<R>,
+    S::Future: Send + 'static,
+{
+    type Response = S::Response;
+    type Error = S::Error;
+    type Future = Pin<Box<dyn Future<Output = Result<S::Response, S::Error>> + Send>>;
+
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.0.poll_ready(cx)
+    }
+
+    fn call(&mut self, req: R) -> Self::Future {
+        // hyper starts the connect from the request's own task, so its slot is visible here. (If
+        // the request then gets a pooled connection instead, the new one is finished in the
+        // background and its time lands in a slot nobody reads.)
+        let slot = CONNECT_TIME.try_with(Arc::clone).ok();
+        let connecting = self.0.call(req);
+        Box::pin(async move {
+            let started = Instant::now();
+            let result = connecting.await;
+            if result.is_ok()
+                && let Some(slot) = slot
+            {
+                // Redirects can open more than one connection; count them all.
+                let mut time = slot.lock().unwrap();
+                *time = Some(time.unwrap_or_default() + started.elapsed());
+            }
+            result
+        })
+    }
 }
 
 /// Follows up to 5 redirects, only to `allowed` hosts (the original one plus confirmed ones) or to
@@ -92,6 +165,8 @@ pub struct Outcome {
     pub response_headers: Vec<(String, String)>,
     pub body: Bytes,
     pub error: Option<(ErrorClass, String)>,
+    /// Opening a new connection (TCP + TLS), part of `ttfb`. None when a pooled one was reused.
+    pub connect: Option<Duration>,
 }
 
 impl Outcome {
@@ -123,6 +198,8 @@ pub async fn execute(client: &Client, req: &RenderedRequest, timeout: Duration) 
 
     let start = Instant::now();
     let deadline = start + timeout;
+    let slot = Arc::new(Mutex::new(None));
+    let connect = || *slot.lock().unwrap();
     let failed = |class, msg: String, ttfb: Option<Duration>| Outcome {
         status: None,
         ttfb: ttfb.unwrap_or_else(|| start.elapsed()),
@@ -130,13 +207,15 @@ pub async fn execute(client: &Client, req: &RenderedRequest, timeout: Duration) 
         response_headers: vec![],
         body: Bytes::new(),
         error: Some((class, msg)),
+        connect: connect(),
     };
     let timed_out = |ttfb: Option<Duration>| Outcome {
         total: timeout,
         ..failed(ErrorClass::Timeout, format!("timed out after {} ms", timeout.as_millis()), ttfb.or(Some(timeout)))
     };
 
-    let response = match tokio::time::timeout_at(deadline, builder.send()).await {
+    let sending = CONNECT_TIME.scope(Arc::clone(&slot), builder.send());
+    let response = match tokio::time::timeout_at(deadline, sending).await {
         Err(_) => return timed_out(None),
         Ok(Err(err)) => {
             let (class, msg) = classify(&err);
@@ -166,7 +245,7 @@ pub async fn execute(client: &Client, req: &RenderedRequest, timeout: Duration) 
         400..=599 => Some((ErrorClass::Http, format!("HTTP {status}"))),
         _ => None,
     };
-    Outcome { status: Some(status), ttfb, total: start.elapsed(), response_headers, body, error }
+    Outcome { status: Some(status), ttfb, total: start.elapsed(), response_headers, body, error, connect: connect() }
 }
 
 fn classify(err: &reqwest::Error) -> (ErrorClass, String) {
