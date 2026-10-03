@@ -38,8 +38,33 @@ const INITIAL = {
   dragging: false,
 };
 
-/** OpenAPI 3.0/3.1 or Swagger 2.0 (JSON or YAML), or curl commands → a new collection. Two steps:
- * source, then review. */
+/** The engine's limit on what it imports. */
+const MAX_IMPORT_BYTES = 10 * 1024 * 1024;
+
+/**
+ * A HAR file without what the engine doesn't use: response bodies and Chrome's initiator stack
+ * traces, which are most of a HAR's size. Anything that isn't a HAR comes back unchanged.
+ */
+const slimHar = (text: string): string => {
+  if (!/^\s*\{/.test(text) || !text.includes('"log"')) return text;
+  let root: { log?: { entries?: unknown } };
+  try {
+    root = JSON.parse(text);
+  } catch {
+    return text;
+  }
+  const entries = root.log?.entries;
+  if (!Array.isArray(entries)) return text;
+  for (const entry of entries as Record<string, unknown>[]) {
+    delete entry._initiator;
+    const content = (entry.response as { content?: Record<string, unknown> } | undefined)?.content;
+    if (content) delete content.text;
+  }
+  return JSON.stringify(root);
+};
+
+/** OpenAPI 3.0/3.1 or Swagger 2.0 (JSON or YAML), a Postman collection, a HAR file, or curl
+ * commands → a new collection. Two steps: source, then review. */
 export const ImportDialog = ({ open, onClose }: { open: boolean; onClose: () => void }) => {
   const addImportedCollection = useWorkspaceStore((s) => s.addImportedCollection);
   const { values, set, patch, reset } = useValues({ initialValue: INITIAL });
@@ -60,8 +85,12 @@ export const ImportDialog = ({ open, onClose }: { open: boolean; onClose: () => 
   const run = async () => {
     patch({ pending: true, error: null });
     try {
+      const content = tab === "url" ? "" : slimHar(text);
+      if (new Blob([content]).size > MAX_IMPORT_BYTES) {
+        throw new Error("This is larger than 10 MB, which is the most the engine imports.");
+      }
       const source =
-        tab === "url" ? { type: "url" as const, url } : { type: "text" as const, content: text };
+        tab === "url" ? { type: "url" as const, url } : { type: "text" as const, content };
       set("result", await importSpec({ source, name: name.trim() || null }));
     } catch (err) {
       set("error", errorMessage(err));
@@ -79,11 +108,11 @@ export const ImportDialog = ({ open, onClose }: { open: boolean; onClose: () => 
     <Dialog open={open} onOpenChange={(o) => !o && close()}>
       <DialogContent className="sm:max-w-200">
         <DialogHeader>
-          <DialogTitle>{result ? "Review import" : "Import API spec"}</DialogTitle>
+          <DialogTitle>{result ? "Review import" : "Import"}</DialogTitle>
           <DialogDescription>
             {result
               ? "Check what was found, then add it as a new collection."
-              : "OpenAPI 3.0 / 3.1 or Swagger 2.0 (JSON or YAML), or curl commands. Each import becomes a collection."}
+              : "OpenAPI 3.0 / 3.1 or Swagger 2.0 (JSON or YAML), a Postman collection (v2.0 / v2.1), a HAR file from your browser's dev tools, or curl commands. Each import becomes a collection."}
           </DialogDescription>
         </DialogHeader>
 
@@ -121,11 +150,11 @@ export const ImportDialog = ({ open, onClose }: { open: boolean; onClose: () => 
                 {fileName ? (
                   <span className="text-foreground font-medium">{fileName}</span>
                 ) : (
-                  <span>Drop a .json, .yaml or .yml file, or click to choose</span>
+                  <span>Drop a .json, .yaml, .yml or .har file, or click to choose</span>
                 )}
                 <input
                   type="file"
-                  accept=".json,.yaml,.yml,application/json,application/yaml,text/yaml"
+                  accept=".json,.yaml,.yml,.har,application/json,application/yaml,text/yaml"
                   className="hidden"
                   onChange={(e) => void readFile(e.target.files?.[0])}
                 />
@@ -156,7 +185,7 @@ export const ImportDialog = ({ open, onClose }: { open: boolean; onClose: () => 
             <label className="flex flex-col gap-1.5">
               <Label>Collection name (optional)</Label>
               <Input
-                placeholder="Defaults to the spec's title (or the host, for curl)"
+                placeholder="Defaults to the spec's title (or the host, for curl and HAR)"
                 value={name}
                 onChange={(e) => set("name", e.target.value)}
               />

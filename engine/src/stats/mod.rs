@@ -26,6 +26,19 @@ impl Recorder {
         self.hist.saturating_record((d.as_micros() as u64).max(1));
     }
 
+    /// Adds everything recorded in `other`.
+    pub fn merge(&mut self, other: &Recorder) {
+        // Same bounds on both sides, so this can't fail; saturate rather than panic if it did.
+        let _ = self.hist.add(&other.hist);
+    }
+
+    /// Records `d` `n` times.
+    pub fn record_n(&mut self, d: Duration, n: u64) {
+        if n > 0 {
+            self.hist.saturating_record_n((d.as_micros() as u64).max(1), n);
+        }
+    }
+
     pub fn len(&self) -> u64 {
         self.hist.len()
     }

@@ -32,7 +32,7 @@ import {
 } from "@/lib/client";
 
 type TestKind = RunConfig["kind"];
-type LoadModeType = "closed" | "open";
+type LoadModeType = "closed" | "open" | "breakpoint" | "spike" | "ratelimit";
 
 const TESTS: { kind: TestKind; label: string }[] = [
   { kind: "latency", label: "Latency Probe" },
@@ -70,6 +70,16 @@ const bodyTexts = ({ body }: Endpoint): string[] => {
 /** Methods that don't send a body, so there's no input to grow for a Big-O sweep. */
 const BODYLESS_METHODS: Endpoint["method"][] = ["GET", "HEAD", "OPTIONS", "DELETE"];
 
+/** The rate of each breakpoint step: start, then +percent (at least +1) up to max. Same as the engine. */
+const breakpointRates = (start: number, percent: number, max: number) => {
+  const rates = [Math.max(1, start)];
+  while (rates.at(-1)! < max && rates.length < 1000) {
+    const last = rates.at(-1)!;
+    rates.push(Math.min(max, Math.max(last + 1, Math.ceil(last * (1 + percent / 100)))));
+  }
+  return rates;
+};
+
 /** "404, 409" → [404, 409] */
 const parseStatuses = (s: string) =>
   s
@@ -91,6 +101,20 @@ const DEFAULTS = {
   rampS: 0,
   maxInFlight: 1000,
   okStatuses: "",
+  // Breakpoint
+  startRate: 10,
+  stepPercent: 50,
+  stepS: 10,
+  maxRate: 500,
+  maxErrorPct: 5,
+  /** 0 = no p99 limit. */
+  maxP99Ms: 1000,
+  // Spike
+  baseRate: 20,
+  spikeRate: 200,
+  beforeS: 10,
+  spikeS: 5,
+  afterS: 20,
   // Big-O
   minN: 1,
   maxN: 16_384,
@@ -139,6 +163,17 @@ export const RunControls = () => {
     rampS,
     maxInFlight,
     okStatuses,
+    startRate,
+    stepPercent,
+    stepS,
+    maxRate,
+    maxErrorPct,
+    maxP99Ms,
+    baseRate,
+    spikeRate,
+    beforeS,
+    spikeS,
+    afterS,
     minN,
     maxN,
     sizes,
@@ -198,6 +233,60 @@ export const RunControls = () => {
         budgetMs: Math.round(budgetS * 1000),
       };
     }
+    if (mode === "ratelimit") {
+      const steps = breakpointRates(startRate, stepPercent, maxRate).length;
+      return {
+        kind,
+        ...common,
+        mode: {
+          type: "rateLimit",
+          startRate,
+          stepPercent,
+          stepMs: Math.round(stepS * 1000),
+          maxRate,
+        },
+        durationMs: Math.round(steps * stepS * 1000),
+        rampUpMs: 0,
+        maxInFlight,
+      };
+    }
+    if (mode === "spike") {
+      return {
+        kind,
+        ...common,
+        mode: {
+          type: "spike",
+          baseRate,
+          spikeRate,
+          beforeMs: Math.round(beforeS * 1000),
+          spikeMs: Math.round(spikeS * 1000),
+          afterMs: Math.round(afterS * 1000),
+        },
+        durationMs: Math.round((beforeS + spikeS + afterS) * 1000),
+        rampUpMs: 0,
+        maxInFlight,
+      };
+    }
+    if (mode === "breakpoint") {
+      const steps = breakpointRates(startRate, stepPercent, maxRate).length;
+      return {
+        kind,
+        ...common,
+        mode: {
+          type: "breakpoint",
+          startRate,
+          stepPercent,
+          stepMs: Math.round(stepS * 1000),
+          maxRate,
+          maxErrorPct,
+          maxP99Ms: maxP99Ms > 0 ? maxP99Ms : null,
+        },
+        // The engine stops at its duration cap if the steps would run longer.
+        durationMs: Math.round(steps * stepS * 1000),
+        rampUpMs: 0,
+        maxInFlight,
+      };
+    }
     return {
       kind,
       ...common,
@@ -207,6 +296,62 @@ export const RunControls = () => {
       maxInFlight: mode === "open" ? maxInFlight : null,
     };
   };
+
+  const plan = breakpointRates(startRate, stepPercent, maxRate);
+
+  const caps = health.data?.caps;
+  /** Settings over this engine's caps, which the engine would refuse. Empty until caps are known. */
+  const overCaps: string[] = [];
+  if (caps && kind !== "fake") {
+    const check = (value: number, cap: number, what: string, unit = "") => {
+      if (value > cap)
+        overCaps.push(
+          `${what} ${value.toLocaleString()}${unit} (cap ${cap.toLocaleString()}${unit})`,
+        );
+    };
+    const shaped =
+      kind === "load" && (mode === "breakpoint" || mode === "ratelimit" || mode === "spike");
+    check(timeoutMs, caps.maxTimeoutMs, "timeout", " ms");
+    if (kind === "latency") {
+      check(samples, caps.maxSamples, "samples");
+      check(warmup, caps.maxWarmup, "warm-up");
+    }
+    if (kind === "complexity") {
+      check(rounds, caps.maxSamples, "rounds");
+      check(warmup, caps.maxWarmup, "warm-up");
+      check(maxN, caps.maxN, "largest n");
+      check(sizes, caps.maxPoints, "sizes");
+      check(budgetS, caps.maxSweepS, "time budget", " s");
+      check(slowMs, caps.maxTimeoutMs, "slow limit", " ms");
+    }
+    if (kind === "load") {
+      if (mode === "open") check(rate, caps.maxRps, "rate", " req/s");
+      if (mode === "closed") check(concurrency, caps.maxInFlight, "users");
+      if (mode === "breakpoint" || mode === "ratelimit") {
+        check(startRate, caps.maxRps, "start rate", " req/s");
+        check(maxRate, caps.maxRps, "max rate", " req/s");
+      }
+      if (mode === "spike") {
+        check(baseRate, caps.maxRps, "base rate", " req/s");
+        check(spikeRate, caps.maxRps, "spike rate", " req/s");
+        check(beforeS + spikeS + afterS, caps.maxDurationS, "total length", " s");
+      }
+      if (mode !== "closed") check(maxInFlight, caps.maxInFlight, "max in flight");
+      if (!shaped) check(durationS, caps.maxDurationS, "duration", " s");
+    }
+  }
+  if (caps && kind === "fake") {
+    if (durationS > caps.maxDurationS)
+      overCaps.push(`duration ${durationS} s (cap ${caps.maxDurationS} s)`);
+  }
+  /** Breakpoint and rate-limit runs stop at the duration cap rather than being refused. */
+  const cappedSteps =
+    caps &&
+    kind === "load" &&
+    (mode === "breakpoint" || mode === "ratelimit") &&
+    plan.length * stepS > caps.maxDurationS
+      ? Math.max(1, Math.floor(caps.maxDurationS / stepS))
+      : null;
 
   const start = useMutation({
     mutationFn: async () => {
@@ -330,19 +475,58 @@ export const RunControls = () => {
                 <SelectContent>
                   <SelectItem value="open">Open: fixed arrival rate</SelectItem>
                   <SelectItem value="closed">Closed: fixed number of users</SelectItem>
+                  <SelectItem value="breakpoint">Breakpoint: step up until it breaks</SelectItem>
+                  <SelectItem value="spike">Spike: a burst, then see it recover</SelectItem>
+                  <SelectItem value="ratelimit">Rate limit: find where 429s start</SelectItem>
                 </SelectContent>
               </Select>
             </Field>
-            <div className="grid grid-cols-2 gap-3">
-              {mode === "open" ? (
-                <>
-                  <Field label="Rate (req/s)">
+            {mode === "spike" ? (
+              <>
+                <div className="grid grid-cols-2 gap-3">
+                  <Field label="Base rate (req/s)">
                     <Input
                       type="number"
                       min={1}
-                      value={rate}
+                      value={baseRate}
                       disabled={running}
-                      onChange={num("rate")}
+                      onChange={num("baseRate")}
+                    />
+                  </Field>
+                  <Field label="Spike rate (req/s)">
+                    <Input
+                      type="number"
+                      min={1}
+                      value={spikeRate}
+                      disabled={running}
+                      onChange={num("spikeRate")}
+                    />
+                  </Field>
+                  <Field label="Before (s)">
+                    <Input
+                      type="number"
+                      min={2}
+                      value={beforeS}
+                      disabled={running}
+                      onChange={num("beforeS")}
+                    />
+                  </Field>
+                  <Field label="Spike (s)">
+                    <Input
+                      type="number"
+                      min={1}
+                      value={spikeS}
+                      disabled={running}
+                      onChange={num("spikeS")}
+                    />
+                  </Field>
+                  <Field label="After (s)">
+                    <Input
+                      type="number"
+                      min={1}
+                      value={afterS}
+                      disabled={running}
+                      onChange={num("afterS")}
                     />
                   </Field>
                   <Field label="Max in flight">
@@ -354,38 +538,151 @@ export const RunControls = () => {
                       onChange={num("maxInFlight")}
                     />
                   </Field>
-                </>
-              ) : (
-                <Field label="Users">
+                </div>
+                <p className="text-muted-foreground text-xs">
+                  {beforeS} s at {baseRate} req/s, {spikeS} s at {spikeRate} req/s, then {afterS} s
+                  at {baseRate} req/s ({beforeS + spikeS + afterS} s in all). Recovery is measured
+                  in the last part, so give it enough time.
+                </p>
+              </>
+            ) : mode === "breakpoint" || mode === "ratelimit" ? (
+              <>
+                <div className="grid grid-cols-2 gap-3">
+                  <Field label="Start rate (req/s)">
+                    <Input
+                      type="number"
+                      min={1}
+                      value={startRate}
+                      disabled={running}
+                      onChange={num("startRate")}
+                    />
+                  </Field>
+                  <Field label="Max rate (req/s)">
+                    <Input
+                      type="number"
+                      min={1}
+                      value={maxRate}
+                      disabled={running}
+                      onChange={num("maxRate")}
+                    />
+                  </Field>
+                  <Field label="Step (+%)">
+                    <Input
+                      type="number"
+                      min={1}
+                      value={stepPercent}
+                      disabled={running}
+                      onChange={num("stepPercent")}
+                    />
+                  </Field>
+                  <Field label="Step length (s)">
+                    <Input
+                      type="number"
+                      min={1}
+                      value={stepS}
+                      disabled={running}
+                      onChange={num("stepS")}
+                    />
+                  </Field>
+                  {mode === "breakpoint" && (
+                    <Field label="Max errors (%)">
+                      <Input
+                        type="number"
+                        min={0}
+                        max={100}
+                        step="any"
+                        value={maxErrorPct}
+                        disabled={running}
+                        onChange={num("maxErrorPct")}
+                      />
+                    </Field>
+                  )}
+                  {mode === "breakpoint" && (
+                    <Field label="Max p99 (ms, 0 = off)">
+                      <Input
+                        type="number"
+                        min={0}
+                        value={maxP99Ms}
+                        disabled={running}
+                        onChange={num("maxP99Ms")}
+                      />
+                    </Field>
+                  )}
+                  <Field label="Max in flight">
+                    <Input
+                      type="number"
+                      min={1}
+                      value={maxInFlight}
+                      disabled={running}
+                      onChange={num("maxInFlight")}
+                    />
+                  </Field>
+                </div>
+                <p className="text-muted-foreground text-xs">
+                  {plan.length} steps: {plan.slice(0, 4).join(" → ")}
+                  {plan.length > 4 ? ` → … → ${plan.at(-1)}` : ""} req/s, up to{" "}
+                  {Math.round(plan.length * stepS)} s.{" "}
+                  {mode === "ratelimit"
+                    ? "Stops at the first step where more than 1% of requests get 429."
+                    : "Stops at the first step over a limit."}{" "}
+                  The run also stops at the engine&apos;s duration cap.
+                </p>
+              </>
+            ) : (
+              <div className="grid grid-cols-2 gap-3">
+                {mode === "open" ? (
+                  <>
+                    <Field label="Rate (req/s)">
+                      <Input
+                        type="number"
+                        min={1}
+                        value={rate}
+                        disabled={running}
+                        onChange={num("rate")}
+                      />
+                    </Field>
+                    <Field label="Max in flight">
+                      <Input
+                        type="number"
+                        min={1}
+                        value={maxInFlight}
+                        disabled={running}
+                        onChange={num("maxInFlight")}
+                      />
+                    </Field>
+                  </>
+                ) : (
+                  <Field label="Users">
+                    <Input
+                      type="number"
+                      min={1}
+                      value={concurrency}
+                      disabled={running}
+                      onChange={num("concurrency")}
+                    />
+                  </Field>
+                )}
+                <Field label="Duration (s)">
                   <Input
                     type="number"
                     min={1}
-                    value={concurrency}
+                    max={caps?.maxDurationS}
+                    value={durationS}
                     disabled={running}
-                    onChange={num("concurrency")}
+                    onChange={num("durationS")}
                   />
                 </Field>
-              )}
-              <Field label="Duration (s)">
-                <Input
-                  type="number"
-                  min={1}
-                  max={60}
-                  value={durationS}
-                  disabled={running}
-                  onChange={num("durationS")}
-                />
-              </Field>
-              <Field label="Ramp-up (s)">
-                <Input
-                  type="number"
-                  min={0}
-                  value={rampS}
-                  disabled={running}
-                  onChange={num("rampS")}
-                />
-              </Field>
-            </div>
+                <Field label="Ramp-up (s)">
+                  <Input
+                    type="number"
+                    min={0}
+                    value={rampS}
+                    disabled={running}
+                    onChange={num("rampS")}
+                  />
+                </Field>
+              </div>
+            )}
           </>
         )}
 
@@ -394,7 +691,7 @@ export const RunControls = () => {
             <Input
               type="number"
               min={1}
-              max={60}
+              max={caps?.maxDurationS}
               value={durationS}
               disabled={running}
               onChange={num("durationS")}
@@ -435,7 +732,7 @@ export const RunControls = () => {
                 <Input
                   type="number"
                   min={3}
-                  max={40}
+                  max={caps?.maxPoints}
                   value={sizes}
                   disabled={running}
                   onChange={num("sizes")}
@@ -463,7 +760,7 @@ export const RunControls = () => {
                 <Input
                   type="number"
                   min={1}
-                  max={300}
+                  max={caps?.maxSweepS}
                   value={budgetS}
                   disabled={running}
                   onChange={num("budgetS")}
@@ -541,6 +838,29 @@ export const RunControls = () => {
           </>
         )}
 
+        {overCaps.length > 0 && (
+          <div
+            role="alert"
+            className="rounded-xs bg-amber-50 p-3 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-300"
+          >
+            Over this engine&apos;s limits: {overCaps.join(", ")}. Lower them, or raise the{" "}
+            <code>KESTREL_MAX_*</code> settings where the engine runs.
+          </div>
+        )}
+        {cappedSteps !== null && caps && (
+          <p className="bg-muted text-muted-foreground rounded-xs p-3 text-xs">
+            The {plan.length} steps would take {Math.round(plan.length * stepS)} s; this engine
+            stops runs at {caps.maxDurationS} s, so it will get through about {cappedSteps} (up to{" "}
+            {plan[cappedSteps - 1]} req/s) unless a step breaks first.
+          </p>
+        )}
+        {caps && kind !== "fake" && (
+          <p className="text-muted-foreground text-xs">
+            This engine allows up to {caps.maxRps.toLocaleString()} req/s,{" "}
+            {caps.maxInFlight.toLocaleString()} in flight, {caps.maxDurationS} s per run and{" "}
+            {caps.maxTimeoutMs / 1000} s timeouts.
+          </p>
+        )}
         {kind === "load" && mode === "closed" && (
           <p className="bg-muted text-muted-foreground rounded-xs p-3 text-xs">
             Closed model: throughput falls when the server slows, so it understates how bad a stall
@@ -590,6 +910,7 @@ export const RunControls = () => {
             running ||
             start.isPending ||
             !health.isSuccess ||
+            overCaps.length > 0 ||
             (needsEndpoint && (!endpoint || isDraft))
           }
         >

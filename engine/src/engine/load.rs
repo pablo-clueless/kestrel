@@ -5,6 +5,9 @@
 //! histograms and emits a bucket every 250 ms. In the open model, latency is measured from the
 //! **scheduled** send time, so scheduler lateness and a stalled server both show up in the numbers
 //! (no coordinated omission), and sends beyond the in-flight cap are counted as dropped.
+//!
+//! The breakpoint mode is the open model with a rate that steps up; `breakpoint.rs` judges each
+//! step, and stops the schedule once one breaks a limit.
 
 use std::{
     collections::BTreeMap,
@@ -23,14 +26,17 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
+use super::phases::{PhaseTimes, Phases};
 use super::{
     BUCKET_INTERVAL,
+    breakpoint::StepJudge,
     client::{self, ClientOptions, Target},
     registry::{Run, now_ms},
     sample,
+    spike::SpikeAnalyzer,
     types::{
-        Bucket, ErrorClass, ErrorCounts, LoadConfig, LoadMode, RunEvent, RunReport, RunStatus, Sample, StartedEvent,
-        StatusCount, TargetInfo,
+        BreakpointResult, Bucket, ErrorClass, ErrorCounts, LoadConfig, LoadMode, RateLimitResult, RunEvent, RunReport,
+        RunStatus, Sample, SpikeResult, StartedEvent, StatusCount, TargetInfo,
     },
 };
 use crate::{
@@ -99,8 +105,14 @@ enum Msg {
 }
 
 struct Record {
+    /// When the request was scheduled, from the start of the run.
+    offset: Duration,
     latency: Duration,
     ttfb: Duration,
+    /// None when the request was never sent (it couldn't be rendered).
+    phases: Option<PhaseTimes>,
+    /// Rate-limit discovery only: the response's rate-limit headers, if it had any.
+    rate_headers: Option<Vec<(String, String)>>,
     status: Option<u16>,
     error: Option<ErrorClass>,
     sample: Option<Box<Sample>>,
@@ -109,6 +121,10 @@ struct Record {
 
 /// Shared by every request task. The channel closes when the last clone is dropped.
 struct Shared {
+    /// When the run started; records carry their offset from it.
+    started: Instant,
+    /// Keep responses' rate-limit headers (rate-limit discovery).
+    rate_headers: bool,
     client: Client,
     request: CompiledRequest,
     timeout: Duration,
@@ -141,8 +157,11 @@ impl Shared {
             Err(msg) => {
                 tracing::warn!("render failed mid-run: {msg}");
                 let _ = self.tx.send(Msg::Done(Record {
+                    offset: Instant::now().saturating_duration_since(self.started),
                     latency: Duration::ZERO,
                     ttfb: Duration::ZERO,
+                    phases: None,
+                    rate_headers: None,
                     status: None,
                     error: Some(ErrorClass::InvalidRequest),
                     sample: None,
@@ -174,8 +193,11 @@ impl Shared {
         });
 
         let _ = self.tx.send(Msg::Done(Record {
+            offset: scheduled.saturating_duration_since(self.started),
             latency,
             ttfb: outcome.ttfb,
+            phases: Some((&outcome).into()),
+            rate_headers: self.rate_headers.then(|| rate_limit_headers(&outcome.response_headers)).flatten(),
             status: outcome.status,
             error: outcome.error.map(|(class, _)| class),
             sample,
@@ -243,15 +265,48 @@ pub async fn run(run: Arc<Run>, p: Prepared) {
     }));
 
     let timeout = Duration::from_millis(p.cfg.timeout_ms.into());
-    let duration = Duration::from_millis(p.cfg.duration_ms.into());
+    let mut duration = Duration::from_millis(p.cfg.duration_ms.into());
+    // A breakpoint run lasts as long as its steps, within the requested duration.
+    let planned = match &p.cfg.mode {
+        LoadMode::RateLimit(mode) => {
+            let planned = Duration::from_millis(u64::from(mode.step_ms) * mode.as_breakpoint().rates().len() as u64);
+            duration = duration.min(planned);
+            Some(planned)
+        }
+        LoadMode::Breakpoint(mode) => {
+            let planned = Duration::from_millis(u64::from(mode.step_ms) * mode.rates().len() as u64);
+            duration = duration.min(planned);
+            Some(planned)
+        }
+        LoadMode::Spike(mode) => {
+            duration = duration.min(Duration::from_millis(mode.total_ms()));
+            None
+        }
+        _ => None,
+    };
     let ramp = Duration::from_millis(p.cfg.ramp_up_ms.into()).min(duration);
     let (tx, rx) = mpsc::unbounded_channel();
     let in_flight = Arc::new(AtomicU32::new(0));
     let started = Instant::now();
+    // Ends the schedule early: a breakpoint step broke (or the user cancelled).
+    let stop = run.cancel.child_token();
+    let watch = match &p.cfg.mode {
+        LoadMode::Breakpoint(mode) => Some(Watch::Breakpoint(StepJudge::new(mode.clone(), timeout, stop.clone()))),
+        LoadMode::Spike(mode) => Some(Watch::Spike(SpikeAnalyzer::new(mode.clone(), timeout))),
+        LoadMode::RateLimit(mode) => Some(Watch::RateLimit {
+            judge: StepJudge::new(mode.as_breakpoint(), timeout, stop.clone()).counting("429s"),
+            limited_headers: None,
+            ok_headers: None,
+        }),
+        _ => None,
+    };
 
-    let aggregator = tokio::spawn(aggregate(Arc::clone(&run), rx, Arc::clone(&in_flight), started, timeout));
+    let aggregator = tokio::spawn(aggregate(Arc::clone(&run), rx, Arc::clone(&in_flight), started, timeout, watch));
+    let dns = p.target.dns;
 
     let shared = Arc::new(Shared {
+        started,
+        rate_headers: matches!(p.cfg.mode, LoadMode::RateLimit(_)),
         client: p.target.client,
         request: p.request,
         timeout,
@@ -270,7 +325,29 @@ pub async fn run(run: Arc<Run>, p: Prepared) {
         }
         LoadMode::Open { rate } => {
             let cap = p.cfg.max_in_flight.unwrap_or(p.max_in_flight).clamp(1, p.max_in_flight);
-            open(shared, rate, duration, ramp, cap as usize, &run.cancel).await
+            open(shared, Rates::Ramp { rate, ramp }, duration, cap as usize, &stop, &run.cancel).await
+        }
+        LoadMode::Breakpoint(ref mode) => {
+            let cap = p.cfg.max_in_flight.unwrap_or(p.max_in_flight).clamp(1, p.max_in_flight);
+            let step = Duration::from_millis(mode.step_ms.into());
+            let rates = Rates::Segments(mode.rates().into_iter().map(|r| (step, r)).collect());
+            open(shared, rates, duration, cap as usize, &stop, &run.cancel).await
+        }
+        LoadMode::RateLimit(ref mode) => {
+            let cap = p.cfg.max_in_flight.unwrap_or(p.max_in_flight).clamp(1, p.max_in_flight);
+            let step = Duration::from_millis(mode.step_ms.into());
+            let rates = Rates::Segments(mode.as_breakpoint().rates().into_iter().map(|r| (step, r)).collect());
+            open(shared, rates, duration, cap as usize, &stop, &run.cancel).await
+        }
+        LoadMode::Spike(ref mode) => {
+            let cap = p.cfg.max_in_flight.unwrap_or(p.max_in_flight).clamp(1, p.max_in_flight);
+            let ms = |v: u32| Duration::from_millis(v.into());
+            let rates = Rates::Segments(vec![
+                (ms(mode.before_ms), mode.base_rate),
+                (ms(mode.spike_ms), mode.spike_rate),
+                (ms(mode.after_ms), mode.base_rate),
+            ]);
+            open(shared, rates, duration, cap as usize, &stop, &run.cancel).await
         }
     };
     let active = started.elapsed().min(duration.max(Duration::from_millis(1)));
@@ -278,6 +355,23 @@ pub async fn run(run: Arc<Run>, p: Prepared) {
     let totals = aggregator.await.expect("aggregator task panicked");
 
     let mut notes = Vec::new();
+    if let (Some(result), Some(planned)) = (&totals.breakpoint, planned) {
+        notes.extend(breakpoint_note(result, planned, duration));
+    }
+    if let (Some(result), Some(planned)) = (&totals.rate_limit, planned) {
+        notes.push(rate_limit_note(result, planned, duration));
+    }
+    if let (Some(result), LoadMode::Spike(mode)) = (&totals.spike, &p.cfg.mode) {
+        notes.push(match result.recovery_ms {
+            Some(0) => "The burst didn't knock the target off its baseline.".into(),
+            Some(ms) => format!("Back to normal {:.0} s after the burst.", f64::from(ms) / 1000.0),
+            None => format!(
+                "Not back to normal {:.0} s after the burst (the end of the run). Lengthen \"after\" to see \
+                 when it recovers.",
+                f64::from(mode.after_ms) / 1000.0
+            ),
+        });
+    }
     if totals.dropped > 0 {
         notes.push(format!(
             "{} scheduled sends were dropped at the in-flight cap. The target couldn't keep up with the rate; \
@@ -322,6 +416,7 @@ pub async fn run(run: Arc<Run>, p: Prepared) {
         latency: totals.all.summary(),
         latency_success: totals.success.summary(),
         ttfb: totals.ttfb.summary(),
+        phases: totals.phases.summary(dns),
         histogram: totals.all.bins(),
         status_counts: totals.statuses.into_iter().map(|(status, count)| StatusCount { status, count }).collect(),
         error_counts: totals.errors,
@@ -330,6 +425,9 @@ pub async fn run(run: Arc<Run>, p: Prepared) {
         dropped: totals.dropped,
         generator_lag: totals.lag.summary(),
         contract: totals.contract,
+        breakpoint: totals.breakpoint,
+        spike: totals.spike,
+        rate_limit: totals.rate_limit,
         ..RunReport::base(run.id, run.config.clone(), status, run.started_at_ms, now_ms())
     });
 }
@@ -366,33 +464,64 @@ async fn closed(
     join_or_cancel(users, cancel).await
 }
 
-/// Sends at `rate`/s (ramping linearly over `ramp`), never more than `max_in_flight` at once.
+/// The open model's send rate over time.
+enum Rates {
+    /// `rate`/s, reached linearly over `ramp`.
+    Ramp { rate: u32, ramp: Duration },
+    /// Each rate for its duration, in order; the last one is held (breakpoint steps, spike phases).
+    Segments(Vec<(Duration, u32)>),
+}
+
+impl Rates {
+    fn at(&self, elapsed: Duration) -> f64 {
+        match self {
+            Self::Ramp { rate, ramp } => {
+                let fraction = if ramp.is_zero() { 1.0 } else { (elapsed.as_secs_f64() / ramp.as_secs_f64()).min(1.0) };
+                (f64::from(*rate) * fraction).max(1.0)
+            }
+            Self::Segments(segments) => {
+                let mut end = Duration::ZERO;
+                for &(length, rate) in segments {
+                    end += length;
+                    if elapsed < end {
+                        return f64::from(rate.max(1));
+                    }
+                }
+                f64::from(segments.last().map_or(1, |&(_, rate)| rate.max(1)))
+            }
+        }
+    }
+}
+
+/// Sends at `rates`, never more than `max_in_flight` at once, until `duration` or `stop`.
 ///
 /// The schedule runs on a blocking thread rather than a tokio timer: tokio's timer wheel has 1 ms
 /// resolution, which made every send ~1 ms late, and in the open model that lateness is latency.
 async fn open(
     shared: Arc<Shared>,
-    rate: u32,
+    rates: Rates,
     duration: Duration,
-    ramp: Duration,
     max_in_flight: usize,
+    stop: &CancellationToken,
     cancel: &CancellationToken,
 ) -> RunStatus {
-    let token = cancel.clone();
-    let scheduler = tokio::task::spawn_blocking(move || schedule(shared, rate, duration, ramp, max_in_flight, &token));
-    match scheduler.await.expect("scheduler thread panicked") {
-        Some(requests) => join_or_cancel(requests, cancel).await,
-        None => RunStatus::Cancelled,
+    let token = stop.clone();
+    let scheduler = tokio::task::spawn_blocking(move || schedule(shared, rates, duration, max_in_flight, &token));
+    if let Some(requests) = scheduler.await.expect("scheduler thread panicked") {
+        // Wait for the last requests, unless a step breaks meanwhile: then they're past the
+        // breaking point and needn't finish.
+        join_or_cancel(requests, stop).await;
     }
+    // Stopping because a step broke is how a breakpoint run is meant to end.
+    if cancel.is_cancelled() { RunStatus::Cancelled } else { RunStatus::Completed }
 }
 
 /// Returns the in-flight requests when the schedule completes, or `None` if cancelled (after
 /// aborting them).
 fn schedule(
     shared: Arc<Shared>,
-    rate: u32,
+    rates: Rates,
     duration: Duration,
-    ramp: Duration,
     max_in_flight: usize,
     cancel: &CancellationToken,
 ) -> Option<JoinSet<()>> {
@@ -404,9 +533,7 @@ fn schedule(
 
     loop {
         let elapsed = scheduled - start;
-        let ramp_fraction = if ramp.is_zero() { 1.0 } else { (elapsed.as_secs_f64() / ramp.as_secs_f64()).min(1.0) };
-        let current_rate = (f64::from(rate) * ramp_fraction).max(1.0);
-        scheduled += Duration::from_secs_f64(1.0 / current_rate);
+        scheduled += Duration::from_secs_f64(1.0 / rates.at(elapsed));
         if scheduled >= deadline {
             break;
         }
@@ -473,6 +600,7 @@ struct Totals {
     all: Recorder,
     success: Recorder,
     ttfb: Recorder,
+    phases: Phases,
     lag: Recorder,
     statuses: BTreeMap<u16, u64>,
     errors: ErrorCounts,
@@ -481,6 +609,79 @@ struct Totals {
     max_p99_ms: f64,
     samples: Vec<Sample>,
     contract: Option<ContractSummary>,
+    breakpoint: Option<BreakpointResult>,
+    spike: Option<SpikeResult>,
+    rate_limit: Option<RateLimitResult>,
+}
+
+/// What watches a shaped open-model run as results come in.
+enum Watch {
+    Breakpoint(StepJudge),
+    Spike(SpikeAnalyzer),
+    /// Only 429s count as failures; the first rate-limit headers of each kind are kept.
+    RateLimit {
+        judge: StepJudge,
+        limited_headers: Option<Vec<(String, String)>>,
+        ok_headers: Option<Vec<(String, String)>>,
+    },
+}
+
+impl Watch {
+    fn scheduled(&mut self, at: Duration) {
+        match self {
+            Self::Breakpoint(j) | Self::RateLimit { judge: j, .. } => j.scheduled(at),
+            Self::Spike(a) => a.scheduled(at),
+        }
+    }
+
+    fn dropped(&mut self, at: Duration) {
+        match self {
+            Self::Breakpoint(j) => j.dropped(at),
+            Self::Spike(a) => a.dropped(at),
+            // A drop at the in-flight cap is the engine's limit, not the target's 429. It counts as
+            // answered-without-429 so it doesn't hold the step open as "pending".
+            Self::RateLimit { judge, .. } => judge.done(at, Duration::ZERO, false),
+        }
+    }
+
+    fn done(&mut self, rec: &Record) {
+        let failed = rec.error.is_some();
+        match self {
+            Self::Breakpoint(j) => j.done(rec.offset, rec.latency, failed),
+            Self::Spike(a) => a.done(rec.offset, rec.latency, failed),
+            Self::RateLimit { judge, limited_headers, ok_headers } => {
+                let limited = rec.status == Some(429);
+                judge.done(rec.offset, rec.latency, limited);
+                let slot = if limited { limited_headers } else { ok_headers };
+                if slot.is_none() {
+                    slot.clone_from(&rec.rate_headers);
+                }
+            }
+        }
+    }
+
+    fn tick(&mut self, now: Duration) {
+        if let Self::Breakpoint(j) | Self::RateLimit { judge: j, .. } = self {
+            j.tick(now);
+        }
+    }
+
+    fn finish(self, t: &mut Totals) {
+        match self {
+            Self::Breakpoint(j) => t.breakpoint = Some(j.finish()),
+            Self::Spike(a) => t.spike = Some(a.finish()),
+            Self::RateLimit { judge, limited_headers, ok_headers } => {
+                let result = judge.finish();
+                t.rate_limit = Some(RateLimitResult {
+                    held_rate: result.held_rate,
+                    limited_at_rate: result.broke_at_rate,
+                    steps: result.steps,
+                    limited_headers: limited_headers.unwrap_or_default(),
+                    ok_headers: ok_headers.unwrap_or_default(),
+                });
+            }
+        }
+    }
 }
 
 async fn aggregate(
@@ -489,11 +690,13 @@ async fn aggregate(
     in_flight: Arc<AtomicU32>,
     started: Instant,
     timeout: Duration,
+    mut watch: Option<Watch>,
 ) -> Totals {
     let mut t = Totals {
         all: Recorder::new(timeout),
         success: Recorder::new(timeout),
         ttfb: Recorder::new(timeout),
+        phases: Phases::new(timeout),
         lag: Recorder::new(timeout),
         statuses: BTreeMap::new(),
         errors: ErrorCounts::default(),
@@ -502,6 +705,9 @@ async fn aggregate(
         max_p99_ms: 0.0,
         samples: Vec::new(),
         contract: None,
+        breakpoint: None,
+        spike: None,
+        rate_limit: None,
     };
     let mut window = Recorder::new(timeout);
     let (mut w_errors, mut w_dropped, mut w_lag) = (0u32, 0u32, Duration::ZERO);
@@ -540,14 +746,27 @@ async fn aggregate(
                 Some(Msg::Dropped) => {
                     t.dropped += 1;
                     w_dropped += 1;
+                    if let Some(watch) = watch.as_mut() {
+                        watch.dropped(started.elapsed());
+                    }
                 }
                 Some(Msg::Lag(lag)) => {
                     t.lag.record(lag);
                     w_lag = w_lag.max(lag);
+                    // One per scheduled send, sent or dropped.
+                    if let Some(watch) = watch.as_mut() {
+                        watch.scheduled(started.elapsed().saturating_sub(lag));
+                    }
                 }
                 Some(Msg::Done(rec)) => {
+                    if let Some(watch) = watch.as_mut() {
+                        watch.done(&rec);
+                    }
                     t.all.record(rec.latency);
                     t.ttfb.record(rec.ttfb);
+                    if let Some(phases) = rec.phases {
+                        t.phases.record(phases);
+                    }
                     window.record(rec.latency);
                     if let Some(code) = rec.status {
                         *t.statuses.entry(code).or_default() += 1;
@@ -569,11 +788,81 @@ async fn aggregate(
                     }
                 }
             },
-            _ = ticks.tick() => flush(&mut t, &mut window, &mut w_errors, &mut w_dropped, &mut w_lag),
+            _ = ticks.tick() => {
+                flush(&mut t, &mut window, &mut w_errors, &mut w_dropped, &mut w_lag);
+                if let Some(watch) = watch.as_mut() {
+                    watch.tick(started.elapsed());
+                }
+            }
         }
     }
     flush(&mut t, &mut window, &mut w_errors, &mut w_dropped, &mut w_lag);
+    if let Some(watch) = watch {
+        watch.finish(&mut t);
+    }
     t
+}
+
+/// A response's rate-limit headers, or None if it had none.
+fn rate_limit_headers(headers: &[(String, String)]) -> Option<Vec<(String, String)>> {
+    let found: Vec<(String, String)> = headers
+        .iter()
+        .filter(|(name, _)| {
+            let name = name.to_ascii_lowercase();
+            name == "retry-after"
+                || name.starts_with("x-ratelimit")
+                || name.starts_with("x-rate-limit")
+                || name.starts_with("ratelimit")
+        })
+        .cloned()
+        .collect();
+    (!found.is_empty()).then_some(found)
+}
+
+/// The headline of a rate-limit discovery run, for the notes.
+fn rate_limit_note(result: &RateLimitResult, planned: Duration, ran: Duration) -> String {
+    let limited = result.steps.iter().find(|s| !s.passed);
+    match (limited, result.steps.last()) {
+        (Some(step), _) => format!(
+            "429s started at {} req/s ({:.1}% of that step).{}",
+            step.rate,
+            step.error_pct,
+            match result.held_rate {
+                Some(held) => format!(" {held} req/s went through without them."),
+                None => " Even the first step got them; start lower.".into(),
+            }
+        ),
+        (None, Some(last)) if ran < planned => format!(
+            "No 429s up to {} req/s, where the duration cap stopped the run. Raise KESTREL_MAX_DURATION_S, or \
+             use bigger or shorter steps, to go further.",
+            last.rate
+        ),
+        (None, Some(last)) => format!("No 429s up to {} req/s: no rate limit at or below that rate.", last.rate),
+        (None, None) => "No requests were sent.".into(),
+    }
+}
+
+/// The headline of a breakpoint run, for the notes.
+fn breakpoint_note(result: &BreakpointResult, planned: Duration, ran: Duration) -> Option<String> {
+    let broke = result.steps.iter().find(|s| !s.passed);
+    Some(match (broke, result.steps.last()) {
+        (Some(step), _) => format!(
+            "Broke at {} req/s ({}).{}",
+            step.rate,
+            step.reason.as_deref().unwrap_or("over a limit"),
+            match result.held_rate {
+                Some(held) => format!(" The last step that held was {held} req/s."),
+                None => " Even the first step broke; start lower.".into(),
+            }
+        ),
+        (None, Some(last)) if ran < planned => format!(
+            "Stopped at the duration cap at {} req/s without breaking. Raise KESTREL_MAX_DURATION_S, or use \
+             bigger or shorter steps, to go further.",
+            last.rate
+        ),
+        (None, Some(last)) => format!("Didn't break: every step held, up to {} req/s.", last.rate),
+        (None, None) => return None,
+    })
 }
 
 #[cfg(test)]
@@ -616,6 +905,50 @@ mod tests {
                 }),
             )
             .route("/redir", get(|| async { Redirect::to("/ok") }))
+            // 30 requests per second, then 429s; announces the limit on every response.
+            .route(
+                "/limited",
+                get({
+                    let window: Arc<std::sync::Mutex<(std::time::Instant, u32)>> =
+                        Arc::new(std::sync::Mutex::new((std::time::Instant::now(), 0)));
+                    move || {
+                        let window = Arc::clone(&window);
+                        async move {
+                            use axum::{http::StatusCode, response::IntoResponse};
+                            let over = {
+                                let mut w = window.lock().unwrap();
+                                if w.0.elapsed() >= Duration::from_secs(1) {
+                                    *w = (std::time::Instant::now(), 0);
+                                }
+                                w.1 += 1;
+                                w.1 > 30
+                            };
+                            let limit = [("X-RateLimit-Limit", "30")];
+                            if over {
+                                (StatusCode::TOO_MANY_REQUESTS, limit, [("Retry-After", "1")], "slow down")
+                                    .into_response()
+                            } else {
+                                (limit, "ok").into_response()
+                            }
+                        }
+                    }
+                }),
+            )
+            // Serves one request at a time, 50 ms each: about 20 req/s before requests queue up.
+            .route(
+                "/capacity",
+                get({
+                    let one = Arc::new(tokio::sync::Semaphore::new(1));
+                    move || {
+                        let one = Arc::clone(&one);
+                        async move {
+                            let _permit = one.acquire().await.unwrap();
+                            tokio::time::sleep(Duration::from_millis(50)).await;
+                            "ok"
+                        }
+                    }
+                }),
+            )
             .route("/ok", get(|| async { "ok" }));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -681,6 +1014,84 @@ mod tests {
         assert!(open.p90_ms >= 400.0, "open p90 should show the stall: {open:?}");
         assert!(closed.p99_ms < 200.0, "closed p99 hides the stall (that's the bias): {closed:?}");
         assert!(closed.max_ms >= 900.0, "the one stalled request is still recorded: {closed:?}");
+    }
+
+    /// Phases: with keep-alive, connections are reused and nearly all the time is waiting; without
+    /// it, every request opens its own connection and pays for it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn phases_split_connect_from_waiting() {
+        let base = server().await;
+        let kept = run_load(format!("{base}/slow"), config(LoadMode::Closed { concurrency: 2 }, 1_000)).await;
+        let p = kept.phases.unwrap();
+        assert!(p.requests >= 4, "{p:?}");
+        assert!(p.new_connections >= 1 && p.new_connections <= 3, "reused: {p:?}");
+        assert!(p.connect.as_ref().unwrap().count == p.new_connections, "{p:?}");
+        let waiting = p.waiting.unwrap();
+        assert!(waiting.p50_ms >= 290.0 && waiting.p50_ms < 600.0, "the server's 300 ms: {waiting:?}");
+        assert_eq!(p.dns_ms, None, "an IP in the URL needs no lookup");
+
+        let mut cfg = config(LoadMode::Closed { concurrency: 2 }, 1_000);
+        cfg.keep_alive = false;
+        let fresh = run_load(format!("{base}/slow"), cfg).await.phases.unwrap();
+        assert_eq!(fresh.new_connections, fresh.requests, "no keep-alive: every request connects: {fresh:?}");
+    }
+
+    /// Breakpoint: steps up until queueing pushes p99 over the limit, then stops early.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn breakpoint_stops_at_the_step_the_target_cannot_keep_up_with() {
+        use crate::engine::types::BreakpointMode;
+        let base = server().await;
+        let mode = BreakpointMode {
+            start_rate: 5,
+            step_percent: 100,
+            step_ms: 1_000,
+            max_rate: 80,
+            max_error_pct: 5.0,
+            max_p99_ms: Some(250),
+        };
+        let report = run_load(format!("{base}/capacity"), config(LoadMode::Breakpoint(mode), 30_000)).await;
+        let result = report.breakpoint.as_ref().unwrap();
+        let rates: Vec<u32> = result.steps.iter().map(|s| s.rate).collect();
+        assert!(matches!(result.broke_at_rate, Some(20 | 40)), "breaks around its ~20 req/s capacity: {result:?}");
+        assert!(result.held_rate.is_some_and(|r| r >= 10), "{result:?}");
+        assert!(rates.len() < 5, "stopped before the last step: {rates:?}");
+        assert_eq!(report.status, RunStatus::Completed, "breaking is the expected end, not a cancel");
+        assert!(report.notes.iter().any(|n| n.starts_with("Broke at")), "{:?}", report.notes);
+        let elapsed_s = (report.finished_at_ms - report.started_at_ms) as f64 / 1000.0;
+        assert!(elapsed_s < 8.0, "didn't run all five steps: {elapsed_s} s");
+    }
+
+    /// Spike: a burst over the target's capacity builds a queue; the baseline after it shows how
+    /// long the queue takes to drain.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn spike_measures_recovery_after_the_burst() {
+        use crate::engine::types::SpikeMode;
+        let base = server().await;
+        let mode = SpikeMode { base_rate: 5, spike_rate: 60, before_ms: 3_000, spike_ms: 1_000, after_ms: 8_000 };
+        let report = run_load(format!("{base}/capacity"), config(LoadMode::Spike(mode), 12_000)).await;
+        let r = report.spike.as_ref().unwrap();
+        let (baseline, spike) = (r.baseline.as_ref().unwrap(), r.spike.as_ref().unwrap());
+        assert!(spike.p99_ms > baseline.p99_ms * 4.0, "the burst queues up: {r:?}");
+        let recovery = r.recovery_ms.expect("drains well within 8 s");
+        assert!((1_000..=6_000).contains(&recovery), "~40 queued at ~15/s net: {r:?}");
+        assert!(report.notes.iter().any(|n| n.starts_with("Back to normal")), "{:?}", report.notes);
+    }
+
+    /// Rate-limit discovery: finds where 429s start and what the API says about its limit.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rate_limit_discovery_finds_the_threshold_and_headers() {
+        use crate::engine::types::RateLimitMode;
+        let base = server().await;
+        let mode = RateLimitMode { start_rate: 10, step_percent: 100, step_ms: 1_000, max_rate: 80 };
+        let report = run_load(format!("{base}/limited"), config(LoadMode::RateLimit(mode), 30_000)).await;
+        let r = report.rate_limit.as_ref().unwrap();
+        assert_eq!((r.held_rate, r.limited_at_rate), (Some(20), Some(40)), "{r:?}");
+        let has = |hs: &[(String, String)], name: &str| hs.iter().any(|(k, _)| k.eq_ignore_ascii_case(name));
+        assert!(has(&r.limited_headers, "retry-after") && has(&r.limited_headers, "x-ratelimit-limit"), "{r:?}");
+        assert!(has(&r.ok_headers, "x-ratelimit-limit") && !has(&r.ok_headers, "retry-after"), "{r:?}");
+        let limited = r.steps.iter().find(|s| !s.passed).unwrap();
+        assert!(limited.reason.as_deref().unwrap().starts_with("429s"), "{limited:?}");
+        assert!(report.notes.iter().any(|n| n.starts_with("429s started at 40 req/s")), "{:?}", report.notes);
     }
 
     #[tokio::test(flavor = "multi_thread")]

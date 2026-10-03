@@ -1,10 +1,13 @@
+pub mod breakpoint;
 pub mod client;
 pub mod complexity;
 pub mod fake;
 pub mod latency;
 pub mod load;
+pub mod phases;
 pub mod registry;
 pub mod sample;
+pub mod spike;
 pub mod types;
 
 use std::{sync::Arc, time::Duration};

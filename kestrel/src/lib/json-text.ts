@@ -159,6 +159,61 @@ export function checkJson(text: string): JsonProblem | null {
   }
 }
 
+/**
+ * Re-indents JSON-looking text without checking it, for showing a response: it copes with a body
+ * the engine cut off mid-value, and keeps every value exactly as sent (big integers aren't
+ * rounded the way `JSON.parse` would). Strings are copied as is, including an unclosed last one.
+ */
+export function indentJsonLoose(text: string, indent = "  "): string {
+  let out = "";
+  let depth = 0;
+  let inString = false;
+  const newline = () => "\n" + indent.repeat(depth);
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inString) {
+      out += ch;
+      if (ch === "\\" && i + 1 < text.length) out += text[++i];
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    switch (ch) {
+      case '"':
+        inString = true;
+        out += ch;
+        break;
+      case "{":
+      case "[": {
+        const close = ch === "{" ? "}" : "]";
+        let j = i + 1;
+        while (j < text.length && /\s/.test(text[j])) j++;
+        if (text[j] === close) {
+          out += ch + close;
+          i = j;
+        } else {
+          depth++;
+          out += ch + newline();
+        }
+        break;
+      }
+      case "}":
+      case "]":
+        depth = Math.max(0, depth - 1);
+        out += newline() + ch;
+        break;
+      case ",":
+        out += "," + newline();
+        break;
+      case ":":
+        out += ": ";
+        break;
+      default:
+        if (!/\s/.test(ch)) out += ch;
+    }
+  }
+  return out;
+}
+
 /** Re-indents a valid JSON body with `indent`, keeping every value as written. `null` if invalid. */
 export function formatJson(text: string, indent = "  "): string | null {
   if (checkJson(text) !== null || text.trim() === "") return null;

@@ -20,6 +20,7 @@ pub fn build(req: &RenderedRequest, outcome: &Outcome, redactor: &Redactor, max_
         error_class: outcome.error.as_ref().map(|(class, _)| *class),
         ttfb_ms: outcome.ttfb.as_secs_f64() * 1000.0,
         total_ms: outcome.total.as_secs_f64() * 1000.0,
+        connect_ms: outcome.connect.map(|d| d.as_secs_f64() * 1000.0),
         response_headers: redactor.headers(outcome.response_headers.iter().map(|(k, v)| (k.as_str(), v.as_str()))),
         body: redactor.text(&String::from_utf8_lossy(kept)),
         body_bytes: body_bytes as u64,

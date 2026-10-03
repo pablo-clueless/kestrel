@@ -81,6 +81,7 @@ pub fn import(text: &str, name: Option<&str>) -> Result<ImportResult, String> {
     let host = shared.as_deref().and_then(|o| Url::parse(o).ok()).and_then(|u| u.host_str().map(str::to_owned));
     let count = endpoints.len();
     let collection = Collection {
+        headers: Vec::new(),
         id: Uuid::new_v4(),
         name: name
             .map(str::trim)
@@ -99,7 +100,7 @@ pub fn import(text: &str, name: Option<&str>) -> Result<ImportResult, String> {
 }
 
 /// `scheme://host[:port]` of a URL, if it has one.
-fn origin_of(url: &str) -> Option<String> {
+pub(super) fn origin_of(url: &str) -> Option<String> {
     let parsed = Url::parse(url).ok()?;
     parsed.host_str()?;
     let origin = parsed.origin().ascii_serialization();
@@ -748,21 +749,9 @@ impl Parsed {
         } else if let Some(user) = self.user.take() {
             let (username, password) = user.split_once(':').unwrap_or((&user, ""));
             auth = Auth::Basic { username: username.to_owned(), password: password.to_owned() };
-        } else if let Some(value) = self.header_value("authorization") {
-            let (scheme, rest) = value.split_once(' ').unwrap_or((&value, ""));
-            let rest = rest.trim();
-            if scheme.eq_ignore_ascii_case("bearer") && !rest.is_empty() {
-                auth = Auth::Bearer { token: rest.to_owned() };
-            } else if scheme.eq_ignore_ascii_case("basic") {
-                let decoded =
-                    base64::engine::general_purpose::STANDARD.decode(rest).ok().and_then(|b| String::from_utf8(b).ok());
-                if let Some((username, password)) = decoded.as_deref().and_then(|d| d.split_once(':')) {
-                    auth = Auth::Basic { username: username.to_owned(), password: password.to_owned() };
-                }
-            }
-            if !matches!(auth, Auth::None) {
-                self.remove_header("authorization", |_| true);
-            }
+        } else if let Some(found) = self.header_value("authorization").as_deref().and_then(auth_from_header) {
+            auth = found;
+            self.remove_header("authorization", |_| true);
         }
         let secret_headers = ["authorization", "cookie", "x-api-key", "api-key", "proxy-authorization"];
         let credentials = !matches!(auth, Auth::None)
@@ -789,6 +778,22 @@ impl Parsed {
     }
 }
 
+/// An `Authorization` header's value as Bearer or Basic auth, if it's one of those.
+pub(super) fn auth_from_header(value: &str) -> Option<Auth> {
+    let (scheme, rest) = value.split_once(' ').unwrap_or((value, ""));
+    let rest = rest.trim();
+    if scheme.eq_ignore_ascii_case("bearer") && !rest.is_empty() {
+        return Some(Auth::Bearer { token: rest.to_owned() });
+    }
+    if scheme.eq_ignore_ascii_case("basic") {
+        let decoded =
+            base64::engine::general_purpose::STANDARD.decode(rest).ok().and_then(|b| String::from_utf8(b).ok())?;
+        let (username, password) = decoded.split_once(':')?;
+        return Some(Auth::Basic { username: username.to_owned(), password: password.to_owned() });
+    }
+    None
+}
+
 fn method_name(m: HttpMethod) -> &'static str {
     match m {
         HttpMethod::Get => "GET",
@@ -801,19 +806,19 @@ fn method_name(m: HttpMethod) -> &'static str {
     }
 }
 
-fn kv(key: &str, value: &str) -> KeyValue {
+pub(super) fn kv(key: &str, value: &str) -> KeyValue {
     KeyValue { key: key.to_owned(), value: value.to_owned(), enabled: true }
 }
 
 /// `a=1&b=2`: every part is a `key=value` pair (or a bare key) with no spaces or newlines.
-fn is_form(data: &str) -> bool {
+pub(super) fn is_form(data: &str) -> bool {
     !data.is_empty()
         && data.contains('=')
         && data.split('&').all(|part| !part.is_empty() && !part.contains(char::is_whitespace))
 }
 
 /// The URL's path (`/users/42`), or its host for the root.
-fn endpoint_name(url: &str) -> String {
+pub(super) fn endpoint_name(url: &str) -> String {
     match Url::parse(url) {
         Ok(u) if u.path() != "/" && !u.path().is_empty() => u.path().to_owned(),
         Ok(u) => u.host_str().unwrap_or(url).to_owned(),
