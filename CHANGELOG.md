@@ -12,6 +12,26 @@ No version has been tagged yet (engine and UI are both `0.1.0`), so the entries 
 
 ### Added
 
+- **Concurrency test** ("Concurrency (race)" in the run panel). It sends the same request several
+  times at once (2 to 1,000 per round, 1 to 50 rounds, with a pause between), then explains what came
+  back.
+  - **How it sends:** every request in a round waits on one barrier, so they reach the server
+    together. The request is rendered once per round, so `{{uuid}}` and `{{seq}}` change between
+    rounds but not within one.
+  - **Each round shows:** the status codes, how many succeeded, how many distinct bodies the
+    successes returned, and how long all the requests were in flight at once.
+  - **Findings depend on the method:**
+    - 5xx responses are a problem for any method.
+    - Several successful POSTs mean duplicates got through, and differing bodies mean separate
+      records were made. One success with the rest refused (409, 422 and similar) is good.
+    - PUT and PATCH are good when some writes are refused with 409 or 412.
+    - DELETE is good with one success and the rest 404 or 410.
+    - A GET is flagged as a read.
+  - **Also flagged:** rounds where the requests didn't actually overlap, and outcomes that changed
+    from round to round.
+  - **Errors:** only 5xx responses and requests with no answer count. A 409 is often the right
+    answer here.
+  - **Safety:** like a load test, it needs the host confirmed unless the target is this machine.
 - **HAR import.** Drop a `.har` file (saved from a browser's dev tools, or from a proxy) into
   **Import**, and its API calls become a collection.
   - **Skipped:** page assets (scripts, styles, images, fonts, media), CORS preflights, non-HTTP URLs
@@ -215,6 +235,9 @@ No version has been tagged yet (engine and UI are both `0.1.0`), so the entries 
 
 ### Fixed
 
+- The browser console no longer warns about `scroll-behavior: smooth` on every load. `<html>` now
+  has `data-scroll-behavior="smooth"`, which tells Next.js to turn smooth scrolling off during route
+  changes.
 - **Imports over 2 MB.** `POST /api/import` used axum's 2 MB default body limit, so specs between
   2 and 10 MB were refused even though the handler, and its "larger than 10 MB" message, allow them.
   The route now takes up to 20 MB, which leaves room for the JSON escaping of the text.

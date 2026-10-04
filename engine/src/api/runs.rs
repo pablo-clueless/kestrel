@@ -18,7 +18,7 @@ use super::{AppState, Scope};
 use crate::{
     contract::{self, Contract},
     engine::{
-        self, Prepared, complexity, latency, load,
+        self, Prepared, complexity, concurrency, latency, load,
         registry::Envelope,
         types::{LoadMode, RunConfig, RunEvent, RunStatus, RunSummary, StartRunResponse},
     },
@@ -153,6 +153,21 @@ async fn prepare(state: &AppState, scope: &Scope, config: &RunConfig) -> Result<
                     .await
                     .map_err(ApiError::BadRequest)?;
             Ok(Prepared::Complexity(Box::new(prepared)))
+        }
+        RunConfig::Concurrency(cfg) => {
+            in_range("requests", cfg.requests, 2, caps.max_in_flight.min(concurrency::MAX_BURST))?;
+            in_range("rounds", cfg.rounds, 1, concurrency::MAX_ROUNDS)?;
+            in_range("pauseMs", cfg.pause_ms, 0, 60_000)?;
+            in_range("timeoutMs", cfg.timeout_ms, 1, max_timeout_ms)?;
+            let (request, _) = compile_endpoint(scope, cfg.endpoint_id, cfg.environment.as_deref()).await?;
+            let prepared =
+                concurrency::prepare(cfg.clone(), request, &scope.store.confirmed_hosts(), caps.max_duration)
+                    .await
+                    .map_err(|e| match e {
+                        load::PrepareError::Invalid(msg) => ApiError::BadRequest(msg),
+                        load::PrepareError::HostNotConfirmed(host) => ApiError::HostNotConfirmed(host),
+                    })?;
+            Ok(Prepared::Concurrency(Box::new(prepared)))
         }
     }
 }

@@ -27,6 +27,8 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
     <html
       lang="en"
       className={`${dm_sans.variable} ${jetbrains_mono.variable} h-full antialiased`}
+      // globals.css scrolls smoothly; this tells Next to turn that off during route changes.
+      data-scroll-behavior="smooth"
       // next-themes sets the theme class and color-scheme on <html> before React hydrates.
       suppressHydrationWarning
     >

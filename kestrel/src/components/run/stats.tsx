@@ -1,12 +1,21 @@
 "use client";
 
-import { ShieldAlert, ShieldCheck } from "lucide-react";
+import {
+  CircleAlert,
+  CircleCheck,
+  Info,
+  ShieldAlert,
+  ShieldCheck,
+  TriangleAlert,
+} from "lucide-react";
 
 import type { ContractSummary } from "@/types/engine/ContractSummary";
 import type { PhaseSummary } from "@/types/engine/PhaseSummary";
 import type { BreakpointResult } from "@/types/engine/BreakpointResult";
 import type { SpikeResult } from "@/types/engine/SpikeResult";
 import type { RateLimitResult } from "@/types/engine/RateLimitResult";
+import type { ConcurrencyResult } from "@/types/engine/ConcurrencyResult";
+import type { FindingLevel } from "@/types/engine/FindingLevel";
 import { StatGrid, StatTile } from "@/components/shared/stat-tile";
 import { ComplexityLive, ComplexityResults } from "./complexity";
 import { StatusBadge } from "@/components/shared/method-badge";
@@ -21,6 +30,8 @@ export const LiveSummary = () => {
   const isLoad = useRunStore((s) => s.config?.kind === "load");
   const errPct = last && last.requests > 0 ? (last.errors / last.requests) * 100 : undefined;
   const isComplexity = useRunStore((s) => s.config?.kind === "complexity");
+  const isConcurrency = useRunStore((s) => s.config?.kind === "concurrency");
+  const roundsDone = useRunStore((s) => s.buckets.length);
   if (isComplexity) return <ComplexityLive />;
 
   return (
@@ -30,15 +41,23 @@ export const LiveSummary = () => {
           label="p50 latency"
           value={ms(last?.p50Ms)}
           unit="ms"
-          info="Median of the last 250 ms window"
+          info={isConcurrency ? "Median of the last round" : "Median of the last 250 ms window"}
         />
         <StatTile
           label="p99 latency"
           value={ms(last?.p99Ms)}
           unit="ms"
-          info="99th percentile of the last window"
+          info={
+            isConcurrency
+              ? "99th percentile of the last round"
+              : "99th percentile of the last window"
+          }
         />
-        <StatTile label="Throughput" value={int(last?.rps)} unit="req/s" />
+        {isConcurrency ? (
+          <StatTile label="Rounds done" value={int(roundsDone)} />
+        ) : (
+          <StatTile label="Throughput" value={int(last?.rps)} unit="req/s" />
+        )}
         <StatTile
           label="Errors"
           value={errPct === undefined ? "–" : errPct.toFixed(1)}
@@ -98,6 +117,7 @@ export const ResultsSummary = () => {
 
   return (
     <div className="flex flex-col gap-6">
+      {report.concurrency && <ConcurrencySection result={report.concurrency} />}
       {report.spike && <SpikeSection result={report.spike} />}
       {report.rateLimit && <RateLimitSection result={report.rateLimit} />}
       {report.breakpoint && (
@@ -202,6 +222,83 @@ export const ResultsSummary = () => {
     </div>
   );
 };
+
+const FINDING_STYLE: Record<FindingLevel, { icon: typeof Info; className: string }> = {
+  bad: { icon: CircleAlert, className: "bg-red-50 text-red-800 dark:bg-red-950 dark:text-red-300" },
+  warn: {
+    icon: TriangleAlert,
+    className: "bg-amber-50 text-amber-800 dark:bg-amber-950 dark:text-amber-300",
+  },
+  good: {
+    icon: CircleCheck,
+    className: "bg-green-50 text-green-800 dark:bg-green-950 dark:text-green-300",
+  },
+  info: { icon: Info, className: "bg-muted text-muted-foreground" },
+};
+
+/** Concurrency runs: what the server made of identical simultaneous requests, round by round. */
+const ConcurrencySection = ({ result }: { result: ConcurrencyResult }) => (
+  <div className="flex flex-col gap-4">
+    <ul className="flex flex-col gap-2">
+      {result.findings.map((f) => {
+        const { icon: Icon, className } = FINDING_STYLE[f.level];
+        return (
+          <li key={f.message} className={cn("flex gap-2 rounded-xs p-3 text-xs", className)}>
+            <Icon className="mt-0.5 size-3.5 shrink-0" />
+            {f.message}
+          </li>
+        );
+      })}
+    </ul>
+    <table className="w-full max-w-2xl text-sm tabular-nums">
+      <thead className="text-muted-foreground text-xs">
+        <tr className="border-b">
+          <th className="py-2 text-left font-normal">Round</th>
+          <th className="py-2 text-left font-normal">Responses</th>
+          <th className="py-2 text-right font-normal" title="2xx responses">
+            Succeeded
+          </th>
+          <th
+            className="py-2 text-right font-normal"
+            title="Different bodies among the 2xx responses"
+          >
+            Distinct
+          </th>
+          <th
+            className="py-2 text-right font-normal"
+            title="How long every request was in flight at once"
+          >
+            Overlap
+          </th>
+        </tr>
+      </thead>
+      <tbody>
+        {result.rounds.map((r) => (
+          <tr key={r.round} className="border-b last:border-0">
+            <td className="py-1.5 font-medium">{r.round}</td>
+            <td className="py-1.5">
+              <span className="flex flex-wrap gap-1">
+                {r.statuses.map((s) => (
+                  <StatusBadge key={s.status} status={s.status}>
+                    <span className="ml-1 font-normal opacity-70">×{s.count}</span>
+                  </StatusBadge>
+                ))}
+                {r.failed > 0 && (
+                  <span className="text-destructive text-xs">{r.failed} no response</span>
+                )}
+              </span>
+            </td>
+            <td className="py-1.5 text-right">{int(r.succeeded)}</td>
+            <td className="py-1.5 text-right">{int(r.distinctBodies)}</td>
+            <td className={cn("py-1.5 text-right", r.overlapMs <= 0 && "text-amber-600")}>
+              {ms(r.overlapMs)} ms
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  </div>
+);
 
 /** Rate-limit discovery: where 429s started, and what the API says about its limit. */
 const RateLimitSection = ({ result }: { result: RateLimitResult }) => {
