@@ -1,29 +1,53 @@
 "use client";
 
-import { BookmarkPlus, Check, Copy, KeyRound, ShieldAlert, ShieldCheck, X } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
+import {
+  BookmarkPlus,
+  Check,
+  Copy,
+  Download,
+  KeyRound,
+  Loader2,
+  ShieldAlert,
+  ShieldCheck,
+  X,
+} from "lucide-react";
 
 import { SaveValueDialog, type SaveValueSeed } from "./save-value-dialog";
 import { StatusBadge } from "@/components/shared/method-badge";
 import { useWorkspaceStore } from "@/stores/workspace-store";
+import { indentJsonLoose } from "@/lib/json-text";
+import { cn, downloadJsonOrYaml, downloadText } from "@/lib/utils";
 import { useSendEntry } from "@/stores/send-store";
 import type { Saved } from "@/types/engine/Saved";
 import { BarLoader } from "../shared";
-import { cn } from "@/lib/utils";
 import { Tabs } from "./fields";
 
 type Tab = "body" | "headers" | "request";
 
-const formatBody = (body: string) => {
-  try {
-    return JSON.stringify(JSON.parse(body), null, 2);
-  } catch {
-    return body;
+/**
+ * A JSON body indented, with values as sent. A body the engine cut short can't be valid JSON, so
+ * it's indented as far as it goes; anything else (or broken JSON that wasn't cut) shows as is.
+ */
+const formatBody = (body: string, truncated: boolean) => {
+  if (!/^\s*[[{]/.test(body)) return body;
+  if (!truncated) {
+    try {
+      JSON.parse(body);
+    } catch {
+      return body;
+    }
   }
+  return indentJsonLoose(body);
 };
 
-const formatBytes = (n: number) => (n < 1024 ? `${n} B` : `${(n / 1024).toFixed(1)} KB`);
+const formatBytes = (n: number) =>
+  n < 1024
+    ? `${n} B`
+    : n < 1024 ** 2
+      ? `${(n / 1024).toFixed(1)} KB`
+      : `${(n / 1024 ** 2).toFixed(1)} MB`;
 
 /** Result of the last "Send". Secrets are already redacted by the engine. */
 export const ResponseView = () => {
@@ -31,18 +55,45 @@ export const ResponseView = () => {
   const { result, error, pending } = useSendEntry(endpointId);
   const [tab, setTab] = useState<Tab>("body");
   const [seed, setSeed] = useState<SaveValueSeed | null>(null);
+  const [downloading, setDownloading] = useState(false);
 
   if (pending) return <BarLoader />;
   if (error) return <p className="text-destructive text-sm">{error}</p>;
   if (!result)
     return <p className="text-muted-foreground text-sm">Press Send to try the request once.</p>;
 
+  /** How much of the body we have, for telling people a cut-short body is partial. */
+  const partOf = () =>
+    `${formatBytes(new TextEncoder().encode(result.body).length)} of ${formatBytes(result.bodyBytes)}`;
+
   const handleCopy = (value?: string) => {
     if (!value) return;
     window.navigator.clipboard
       .writeText(value)
-      .then(() => toast.success("Copied"))
+      .then(() =>
+        result.bodyTruncated
+          ? toast.warning(`Copied part of the body (${partOf()}); the rest was cut off`)
+          : toast.success("Copied"),
+      )
       .catch(() => toast.error("Copy failed"));
+  };
+
+  const handleDownload = async (value?: string) => {
+    if (!value || downloading) return;
+    // Partial JSON can't be parsed or re-encoded, so save the text that arrived, as text.
+    if (result.bodyTruncated) {
+      downloadText(value, "response.partial.txt");
+      toast.warning(`Saved part of the body (${partOf()}); the rest was cut off`);
+      return;
+    }
+    setDownloading(true);
+    try {
+      await downloadJsonOrYaml(value, { fileName: "response" });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Download failed");
+    } finally {
+      setDownloading(false);
+    }
   };
 
   return (
@@ -87,32 +138,47 @@ export const ResponseView = () => {
           ]}
         />
         {result.status !== null && (
-          <button
-            className="text-muted-foreground hover:text-primary flex items-center gap-1 text-xs"
-            onClick={() => setSeed({ source: tab === "headers" ? "header" : "body", path: "" })}
-          >
-            <BookmarkPlus className="size-3.5" /> Save value
-          </button>
+          <div className="flex items-center gap-4">
+            <button
+              className="text-muted-foreground hover:text-primary flex items-center gap-1 text-xs"
+              onClick={() => setSeed({ source: tab === "headers" ? "header" : "body", path: "" })}
+              aria-label="Save value"
+            >
+              <BookmarkPlus className="size-3.5" /> Save to Env
+            </button>
+            <button
+              className="text-muted-foreground hover:text-primary flex items-center gap-1 text-xs"
+              aria-label="Copy body"
+              onClick={() => handleCopy(result.body)}
+            >
+              <Copy className="size-4" /> Copy
+            </button>
+            <button
+              className="text-muted-foreground hover:text-primary flex items-center gap-1 text-xs"
+              aria-label="Download body"
+              aria-busy={downloading}
+              disabled={downloading}
+              onClick={() => handleDownload(result.body)}
+            >
+              {downloading ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <Download className="size-4" />
+              )}{" "}
+              {result.bodyTruncated ? "Export Partial" : "Export JSON"}
+            </button>
+          </div>
         )}
       </div>
       {tab === "body" && (
         // The copy button sits outside the scrolling <pre>, so it stays in the corner while the body scrolls.
         <div className="relative">
-          <pre className="bg-muted max-h-80 overflow-auto rounded-xs p-3 pr-9 font-mono text-xs whitespace-pre-wrap select-text">
-            {formatBody(result.body)}
+          <pre className="bg-muted max-h-100 overflow-auto scroll-smooth rounded-xs p-3 pr-9 font-mono text-xs whitespace-pre-wrap select-text">
+            {formatBody(result.body, result.bodyTruncated)}
             {result.bodyTruncated && (
               <span className="text-muted-foreground">{"\n"}… truncated</span>
             )}
           </pre>
-          {result.body !== "" && (
-            <button
-              className="text-muted-foreground hover:text-primary absolute top-2 right-2"
-              aria-label="Copy body"
-              onClick={() => handleCopy(result.body)}
-            >
-              <Copy className="size-4" />
-            </button>
-          )}
         </div>
       )}
       {tab === "headers" && (

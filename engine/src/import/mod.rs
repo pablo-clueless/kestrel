@@ -1,5 +1,5 @@
-//! Spec → collection. OpenAPI 3.0 / 3.1 and Swagger 2.0, in JSON or YAML, and curl commands
-//! (`curl.rs`).
+//! Spec → collection. OpenAPI 3.0 / 3.1 and Swagger 2.0, in JSON or YAML; curl commands
+//! (`curl.rs`); Postman collections (`postman.rs`); HAR files (`har.rs`).
 //! HANDOFF → Inputs.
 //!
 //! Works on `serde_json::Value` rather than typed models so one code path covers all three
@@ -7,6 +7,8 @@
 //! Only local `$ref`s (`#/…`) are supported.
 
 pub mod curl;
+mod har;
+mod postman;
 mod schema;
 
 use std::collections::BTreeMap;
@@ -76,6 +78,15 @@ pub fn import(text: &str, name: Option<&str>) -> Result<ImportResult, String> {
         return curl::import(text, name);
     }
     let root = parse(text)?;
+    if har::is_har(&root) {
+        return har::import(&root, name);
+    }
+    if postman::is_collection(&root) {
+        return postman::import(&root, name);
+    }
+    if postman::is_environment(&root) {
+        return Err("this is a Postman environment, not a collection; add its variables under Environments".into());
+    }
     let (version, format) = detect(&root)?;
     let mut ctx = Ctx { root: &root, version, warnings: Vec::new(), vars: BTreeMap::new() };
 
@@ -101,6 +112,7 @@ pub fn import(text: &str, name: Option<&str>) -> Result<ImportResult, String> {
     let title = info.and_then(|i| i.get("title")).and_then(Value::as_str).unwrap_or("Imported API");
     let spec_version = info.and_then(|i| i.get("version")).and_then(Value::as_str);
     let collection = Collection {
+        headers: Vec::new(),
         id: Uuid::new_v4(),
         name: name.map(str::trim).filter(|n| !n.is_empty()).unwrap_or(title).to_owned(),
         vars: ctx.vars.clone(),
@@ -140,10 +152,9 @@ fn detect(root: &Value) -> Result<(Version, String), String> {
     if root.get("swagger").and_then(Value::as_str) == Some("2.0") {
         return Ok((Version::Swagger2, "Swagger 2.0".into()));
     }
-    if root.get("info").and_then(|i| i.get("_postman_id")).is_some() {
-        return Err("this looks like a Postman collection; Postman import isn't supported yet".into());
-    }
-    Err("not an OpenAPI 3.x or Swagger 2.0 document (no `openapi` or `swagger` field)".into())
+    Err("not an OpenAPI 3.x or Swagger 2.0 document (no `openapi` or `swagger` field), a Postman collection, \
+         a HAR file or curl commands"
+        .into())
 }
 
 struct Ctx<'a> {

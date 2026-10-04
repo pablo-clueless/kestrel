@@ -639,6 +639,8 @@ dependencies = [
  "tokio-util",
  "tower",
  "tower-http 0.7.1",
+ "tower-layer",
+ "tower-service",
  "tracing",
  "tracing-subscriber",
  "ts-rs",

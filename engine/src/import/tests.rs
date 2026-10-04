@@ -124,7 +124,10 @@ fn rejects_what_it_cannot_import() {
     assert!(import("", None).unwrap_err().contains("empty"));
     assert!(import("{ nope", None).unwrap_err().contains("JSON"));
     assert!(import("openapi: 2.5.0\n", None).unwrap_err().contains("isn't supported"));
-    assert!(import(r#"{"info":{"_postman_id":"x"}}"#, None).unwrap_err().contains("Postman"));
+    // Postman collections import (see `postman.rs`); environments are refused with a pointer.
+    assert_eq!(import(r#"{"info":{"_postman_id":"x","name":"P"},"item":[]}"#, None).unwrap().format, "Postman v2.1");
+    let env = r#"{"name":"Prod","values":[],"_postman_variable_scope":"environment"}"#;
+    assert!(import(env, None).unwrap_err().contains("Postman environment"));
     assert!(import("title: hello\n", None).unwrap_err().contains("not an OpenAPI"));
 }
 

@@ -5,6 +5,7 @@ use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use tokio::time::Instant;
 
+use super::phases::Phases;
 use super::{
     BUCKET_INTERVAL,
     client::{self, ClientOptions, Outcome, Target},
@@ -65,6 +66,7 @@ pub async fn run(run: Arc<Run>, p: Prepared) {
     let mut all = Recorder::new(timeout);
     let mut success = Recorder::new(timeout);
     let mut ttfb = Recorder::new(timeout);
+    let mut phases = Phases::new(timeout);
     let mut window = Window::new(timeout);
     let mut statuses: BTreeMap<u16, u64> = BTreeMap::new();
     let mut errors = ErrorCounts::default();
@@ -119,6 +121,7 @@ pub async fn run(run: Arc<Run>, p: Prepared) {
 
         all.record(outcome.total);
         ttfb.record(outcome.ttfb);
+        phases.record((&outcome).into());
         window.record(&outcome);
         if let Some(code) = outcome.status {
             *statuses.entry(code).or_default() += 1;
@@ -179,6 +182,7 @@ pub async fn run(run: Arc<Run>, p: Prepared) {
         latency: all.summary(),
         latency_success: success.summary(),
         ttfb: ttfb.summary(),
+        phases: phases.summary(p.target.dns),
         histogram: all.bins(),
         cold_ms,
         status_counts: statuses.into_iter().map(|(status, count)| StatusCount { status, count }).collect(),
