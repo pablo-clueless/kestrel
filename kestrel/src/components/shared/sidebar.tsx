@@ -1,11 +1,13 @@
 "use client";
 
-import { Feather, Folder, RotateCcwClock, type LucideIcon } from "lucide-react";
+import { Folder, RotateCcwClock, type LucideIcon } from "lucide-react";
+import Image from "next/image";
 
 import { useLayoutStore, type SidebarTab } from "@/stores/layout-store";
 import { CollectionList, History } from "../workspace";
 import { cn } from "cn";
 
+const IMAGE = "/assets/logo.png";
 const TABS: { id: SidebarTab; label: string; icon: LucideIcon }[] = [
   { id: "collections", label: "Collections", icon: Folder },
   { id: "history", label: "History", icon: RotateCcwClock },
@@ -34,7 +36,9 @@ export const Sidebar = () => {
         )}
       >
         <div className="flex h-14 shrink-0 items-center gap-2 border-b px-4 font-semibold">
-          <Feather className="text-primary size-5" /> Kestrel
+          <div className="relative aspect-[4.2/1] w-1/3">
+            <Image alt="Kestrel" className="" fill src={IMAGE} />
+          </div>
         </div>
         <div role="tablist" aria-label="Sidebar" className="flex shrink-0">
           {TABS.map(({ id, label, icon: Icon }) => (

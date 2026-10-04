@@ -13,6 +13,7 @@ const nextConfig: NextConfig = {
   // Static export so the engine can serve the UI itself later (single-binary mode). This rules out
   // server actions and route handlers: all data comes from the engine.
   output: "export",
+  images: { unoptimized: true },
   env: {
     NEXT_PUBLIC_KESTREL_TOKEN: process.env.KESTREL_TOKEN ?? "",
     NEXT_PUBLIC_ENGINE_URL: process.env.KESTREL_ENGINE_URL ?? `http://127.0.0.1:${enginePort}`,

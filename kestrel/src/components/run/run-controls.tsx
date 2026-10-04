@@ -38,8 +38,16 @@ const TESTS: { kind: TestKind; label: string }[] = [
   { kind: "latency", label: "Latency Probe" },
   { kind: "load", label: "Load Test" },
   { kind: "complexity", label: "Big-O (complexity)" },
+  { kind: "concurrency", label: "Concurrency (race)" },
   { kind: "fake", label: "Fake (no traffic)" },
 ];
+
+/** The engine's limits on one concurrency run, whatever the in-flight cap. */
+const MAX_BURST = 1_000;
+const MAX_ROUNDS = 50;
+
+/** Methods that change something, which is what a concurrency test is for. */
+const WRITE_METHODS = ["POST", "PUT", "PATCH", "DELETE"];
 
 /** Above this rate with keep-alive off, the client can run out of ephemeral ports (TIME_WAIT). */
 const PORT_EXHAUSTION_RPS = 200;
@@ -115,6 +123,10 @@ const DEFAULTS = {
   beforeS: 10,
   spikeS: 5,
   afterS: 20,
+  // Concurrency
+  burst: 10,
+  burstRounds: 3,
+  pauseMs: 500,
   // Big-O
   minN: 1,
   maxN: 16_384,
@@ -180,6 +192,9 @@ export const RunControls = () => {
     rounds,
     slowMs,
     budgetS,
+    burst,
+    burstRounds,
+    pauseMs,
   } = values;
   const [pendingHost, setPendingHost] = useState<string | null>(null);
 
@@ -212,6 +227,17 @@ export const RunControls = () => {
   const buildConfig = (): RunConfig => {
     if (kind === "fake") return { kind, durationMs: Math.round(durationS * 1000) };
     if (!endpoint) throw new Error("Select an endpoint first.");
+    if (kind === "concurrency") {
+      return {
+        kind,
+        endpointId: endpoint.id,
+        environment,
+        requests: burst,
+        rounds: burstRounds,
+        pauseMs,
+        timeoutMs,
+      };
+    }
     const common = {
       endpointId: endpoint.id,
       environment,
@@ -312,6 +338,10 @@ export const RunControls = () => {
     const shaped =
       kind === "load" && (mode === "breakpoint" || mode === "ratelimit" || mode === "spike");
     check(timeoutMs, caps.maxTimeoutMs, "timeout", " ms");
+    if (kind === "concurrency") {
+      check(burst, Math.min(caps.maxInFlight, MAX_BURST), "requests per round");
+      check(burstRounds, MAX_ROUNDS, "rounds");
+    }
     if (kind === "latency") {
       check(samples, caps.maxSamples, "samples");
       check(warmup, caps.maxWarmup, "warm-up");
@@ -783,6 +813,55 @@ export const RunControls = () => {
           </>
         )}
 
+        {kind === "concurrency" && (
+          <>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Requests per round">
+                <Input
+                  type="number"
+                  min={2}
+                  max={caps ? Math.min(caps.maxInFlight, MAX_BURST) : MAX_BURST}
+                  value={burst}
+                  disabled={running}
+                  onChange={num("burst")}
+                />
+              </Field>
+              <Field label="Rounds">
+                <Input
+                  type="number"
+                  min={1}
+                  max={MAX_ROUNDS}
+                  value={burstRounds}
+                  disabled={running}
+                  onChange={num("burstRounds")}
+                />
+              </Field>
+              <Field label="Pause between (ms)">
+                <Input
+                  type="number"
+                  min={0}
+                  value={pauseMs}
+                  disabled={running}
+                  onChange={num("pauseMs")}
+                />
+              </Field>
+            </div>
+            {endpoint && !WRITE_METHODS.includes(endpoint.method) && (
+              <p className="bg-amber-50 p-3 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                This test is for requests that change something (POST, PUT, PATCH, DELETE). It will
+                still show whether simultaneous {endpoint.method} requests fail.
+              </p>
+            )}
+            <p className="text-muted-foreground text-xs">
+              Each round sends the same request {burst} times at once, then reads what came back:
+              one success and the rest refused (409 and similar) means the server lets one write
+              through; several successes or 5xx errors point to a race. Each round is rendered once,
+              so put <code>{"{{uuid}}"}</code> or <code>{"{{seq}}"}</code> in a unique field to make
+              each round a fresh attempt. This really sends these writes.
+            </p>
+          </>
+        )}
+
         {kind === "latency" && (
           <div className="grid grid-cols-2 gap-3">
             <Field label="Warm-up">
@@ -818,23 +897,27 @@ export const RunControls = () => {
                   onChange={num("timeoutMs")}
                 />
               </Field>
-              <Field label="OK statuses">
-                <Input
-                  placeholder="404, 409"
-                  value={okStatuses}
-                  disabled={running}
-                  onChange={(e) => set("okStatuses", e.target.value)}
-                />
-              </Field>
+              {kind !== "concurrency" && (
+                <Field label="OK statuses">
+                  <Input
+                    placeholder="404, 409"
+                    value={okStatuses}
+                    disabled={running}
+                    onChange={(e) => set("okStatuses", e.target.value)}
+                  />
+                </Field>
+              )}
             </div>
-            <label className="flex items-center justify-between">
-              <span>Keep-alive</span>
-              <Switch
-                checked={keepAlive}
-                disabled={running}
-                onCheckedChange={(checked) => set("keepAlive", !!checked)}
-              />
-            </label>
+            {kind !== "concurrency" && (
+              <label className="flex items-center justify-between">
+                <span>Keep-alive</span>
+                <Switch
+                  checked={keepAlive}
+                  disabled={running}
+                  onCheckedChange={(checked) => set("keepAlive", !!checked)}
+                />
+              </label>
+            )}
           </>
         )}
 

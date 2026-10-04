@@ -1,6 +1,7 @@
 pub mod breakpoint;
 pub mod client;
 pub mod complexity;
+pub mod concurrency;
 pub mod fake;
 pub mod latency;
 pub mod load;
@@ -26,6 +27,7 @@ pub enum Prepared {
     Latency(Box<latency::Prepared>),
     Load(Box<load::Prepared>),
     Complexity(Box<complexity::Prepared>),
+    Concurrency(Box<concurrency::Prepared>),
 }
 
 /// Spawns the runner for `run`. Once it finishes, saves the report and schedules the run's eviction
@@ -39,6 +41,7 @@ pub fn spawn(registry: &Arc<RunRegistry>, store: &Arc<WorkspaceStore>, run: Arc<
             Prepared::Latency(p) => latency::run(Arc::clone(&run), *p).await,
             Prepared::Load(p) => load::run(Arc::clone(&run), *p).await,
             Prepared::Complexity(p) => complexity::run(Arc::clone(&run), *p).await,
+            Prepared::Concurrency(p) => concurrency::run(Arc::clone(&run), *p).await,
         }
         if let Some(report) = run.report()
             && let Err(err) = store.save_run(&report).await

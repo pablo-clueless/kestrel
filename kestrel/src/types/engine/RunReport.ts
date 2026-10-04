@@ -2,6 +2,7 @@
 import type { BreakpointResult } from "./BreakpointResult";
 import type { Bucket } from "./Bucket";
 import type { ComplexityResult } from "./ComplexityResult";
+import type { ConcurrencyResult } from "./ConcurrencyResult";
 import type { ContractSummary } from "./ContractSummary";
 import type { ErrorCounts } from "./ErrorCounts";
 import type { HistogramBin } from "./HistogramBin";
@@ -84,4 +85,8 @@ spike: SpikeResult | null,
 /**
  * Rate-limit discovery runs only.
  */
-rateLimit: RateLimitResult | null, };
+rateLimit: RateLimitResult | null, 
+/**
+ * Concurrency runs only.
+ */
+concurrency: ConcurrencyResult | null, };

@@ -13,6 +13,7 @@ import {
   useSelectedIsDraft,
 } from "@/stores/workspace-store";
 import { LoggUser } from "./user";
+import { cn } from "cn";
 
 const Theme = ({
   theme,
@@ -37,6 +38,7 @@ const Theme = ({
 /** Breadcrumb (collection / endpoint) on the left, environment on the right. */
 export const Header = () => {
   const toggleSidebar = useLayoutStore((s) => s.toggleSidebar);
+  const sidebarOpen = useLayoutStore((s) => s.sidebarOpen);
   const collection = useActiveCollection();
   const endpoint = useSelectedEndpoint();
   const { setTheme, theme } = useTheme();
@@ -52,9 +54,13 @@ export const Header = () => {
           className="text-muted-foreground hover:text-foreground"
           aria-label="Toggle sidebar"
         >
-          <PanelLeft className="size-4" />
+          <PanelLeft
+            className={cn(
+              "size-4 transform transition-transform duration-300",
+              !sidebarOpen ? "rotate-180" : "",
+            )}
+          />
         </button>
-        {/* Only while a request is open; with nothing open the header stays blank. */}
         {endpoint && (
           <nav className="flex min-w-0 items-center gap-1.5" aria-label="Breadcrumb">
             <span className="text-muted-foreground truncate">

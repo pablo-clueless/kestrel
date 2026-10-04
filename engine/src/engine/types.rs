@@ -18,6 +18,9 @@ pub enum RunConfig {
     Load(LoadConfig),
     /// How latency grows with input size (HANDOFF → Test catalogue → Big-O).
     Complexity(ComplexityConfig),
+    /// The same request fired several times at once (HANDOFF → Test catalogue → v1.x →
+    /// Concurrency correctness).
+    Concurrency(ConcurrencyConfig),
 }
 
 impl RunConfig {
@@ -27,6 +30,7 @@ impl RunConfig {
             Self::Latency(_) => RunKind::Latency,
             Self::Load(_) => RunKind::Load,
             Self::Complexity(_) => RunKind::Complexity,
+            Self::Concurrency(_) => RunKind::Concurrency,
         }
     }
 
@@ -37,6 +41,7 @@ impl RunConfig {
             Self::Latency(c) => Some(c.endpoint_id),
             Self::Load(c) => Some(c.endpoint_id),
             Self::Complexity(c) => Some(c.endpoint_id),
+            Self::Concurrency(c) => Some(c.endpoint_id),
         }
     }
 }
@@ -262,6 +267,71 @@ pub struct LatencyConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
+pub struct ConcurrencyConfig {
+    pub endpoint_id: Uuid,
+    #[serde(default)]
+    pub environment: Option<String>,
+    /// Identical requests released together in each round.
+    pub requests: u32,
+    /// Bursts to fire. The request is rendered once per round, so `{{uuid}}` or `{{seq}}` differ
+    /// between rounds but not within one: each round is a fresh attempt at the same race.
+    pub rounds: u32,
+    /// Wait between rounds.
+    pub pause_ms: u32,
+    pub timeout_ms: u32,
+}
+
+/// Concurrency runs: what happened in each round, and what that suggests.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ConcurrencyResult {
+    pub rounds: Vec<ConcurrencyRound>,
+    /// Plain-language reading of the rounds, worst first.
+    pub findings: Vec<Finding>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ConcurrencyRound {
+    /// 1-based.
+    pub round: u32,
+    pub statuses: Vec<StatusCount>,
+    /// Requests that got no response: timeouts, connection errors.
+    pub failed: u32,
+    /// 2xx responses.
+    pub succeeded: u32,
+    /// Different bodies among the 2xx responses. Several usually means several records were made.
+    pub distinct_bodies: u32,
+    /// How long every request was in flight at once (from the last send to the first response).
+    /// 0 means some finished before others were sent, so they didn't all race.
+    pub overlap_ms: f64,
+    /// From the first response to the last.
+    pub spread_ms: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct Finding {
+    pub level: FindingLevel,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum FindingLevel {
+    Bad,
+    Warn,
+    Good,
+    Info,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
 pub struct FakeConfig {
     pub duration_ms: u32,
 }
@@ -274,6 +344,7 @@ pub enum RunKind {
     Latency,
     Load,
     Complexity,
+    Concurrency,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -460,6 +531,8 @@ pub struct RunReport {
     pub spike: Option<SpikeResult>,
     /// Rate-limit discovery runs only.
     pub rate_limit: Option<RateLimitResult>,
+    /// Concurrency runs only.
+    pub concurrency: Option<ConcurrencyResult>,
 }
 
 impl RunReport {
@@ -494,6 +567,7 @@ impl RunReport {
             breakpoint: None,
             spike: None,
             rate_limit: None,
+            concurrency: None,
         }
     }
 }
