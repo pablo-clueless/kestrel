@@ -6,6 +6,7 @@ import type { WorkspaceResponse } from "@/types/engine/WorkspaceResponse";
 import type { SetSecretRequest } from "@/types/engine/SetSecretRequest";
 import type { StartRunResponse } from "@/types/engine/StartRunResponse";
 import type { CurlParseResult } from "@/types/engine/CurlParseResult";
+import type { HealthResponse } from "@/types/engine/HealthResponse";
 import type { ImportRequest } from "@/types/engine/ImportRequest";
 import type { ImportResult } from "@/types/engine/ImportResult";
 import type { SendResponse } from "@/types/engine/SendResponse";
@@ -149,8 +150,8 @@ export const resendVerification = async () => {
   await engine.post("/auth/verify-email/resend");
 };
 
-export const getHealth = async () =>
-  (await engine.get<{ ok: boolean; version: string }>("/health")).data;
+/** Engine version and its caps (what runs may ask for). */
+export const getHealth = async () => (await engine.get<HealthResponse>("/health")).data;
 
 export const listRuns = async () => (await engine.get<RunSummary[]>("/runs")).data;
 

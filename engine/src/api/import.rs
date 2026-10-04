@@ -11,6 +11,8 @@ use crate::{
 };
 
 const MAX_SPEC_BYTES: usize = 10 * 1024 * 1024;
+/// The import request's size limit: the text plus room for JSON escaping (quotes, newlines).
+pub const MAX_REQUEST_BYTES: usize = 2 * MAX_SPEC_BYTES;
 const FETCH_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Parses a spec into a collection. Nothing is saved: the UI adds the collection to the workspace.

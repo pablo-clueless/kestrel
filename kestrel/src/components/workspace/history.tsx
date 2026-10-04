@@ -20,6 +20,7 @@ const KIND_LABEL: Record<RunKind, string> = {
   latency: "Latency",
   load: "Load",
   complexity: "Big-O",
+  concurrency: "Race",
   fake: "Fake",
 };
 

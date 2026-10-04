@@ -51,6 +51,10 @@ pub struct Collection {
     /// variables and secrets override these.
     #[serde(default)]
     pub vars: BTreeMap<String, String>,
+    /// Headers sent with every endpoint in the collection (templates, like endpoint headers). An
+    /// endpoint's own enabled header, or its auth, wins over one here with the same name.
+    #[serde(default)]
+    pub headers: Vec<KeyValue>,
     #[serde(default)]
     pub endpoints: Vec<Endpoint>,
     /// Groups made by hand, kept even while empty. The sidebar shows these and every endpoint's

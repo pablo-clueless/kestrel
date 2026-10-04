@@ -1,16 +1,28 @@
 "use client";
 
-import { ChevronRight, ChevronsDownUp, FileUp, Plus, Settings2, Trash, Trash2 } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import {
+  ChartNoAxesGantt,
+  ChevronRight,
+  ChevronsDownUp,
+  FileUp,
+  LucideIcon,
+  Plus,
+  Settings2,
+  Trash,
+  Trash2,
+  Variable,
+} from "lucide-react";
 
 import { activeCollectionOf, useWorkspaceStore } from "@/stores/workspace-store";
+import { InlineNameForm } from "@/components/shared/inline-name-form";
+import { AddPairForm } from "@/components/shared/add-pair-form";
 import type { Collection } from "@/types/engine/Collection";
 import { useLayoutStore } from "@/stores/layout-store";
 import { Button } from "@/components/ui/button";
-import { InlineNameForm } from "@/components/shared/inline-name-form";
-import { AddPairForm } from "@/components/shared/add-pair-form";
 import { EndpointList } from "./endpoint-list";
+import { KeyValueEditor } from "./key-value-editor";
 import { ImportDialog } from "./import-dialog";
 import { useValues } from "@/hooks/use-values";
 import { Input } from "@/components/ui/input";
@@ -36,6 +48,13 @@ const collapse = {
 /** Row actions that fade in on hover/focus instead of popping in (keeps row layout stable). */
 const hoverAction =
   "text-muted-foreground pointer-events-none opacity-0 transition-[opacity,color] duration-150 group-hover:pointer-events-auto group-hover:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100";
+
+type SettingsTab = "variables" | "headers";
+
+const TABS: { id: SettingsTab; label: string; icon: LucideIcon }[] = [
+  { id: "variables", label: "Variables", icon: Variable },
+  { id: "headers", label: "Headers", icon: ChartNoAxesGantt },
+];
 
 /** Sidebar: collections of endpoints. Clicking a collection opens or closes it, so any number can
  * be open, none included; it doesn't select anything. The active collection (in bold) is the one
@@ -199,7 +218,8 @@ export const CollectionList = () => {
   );
 };
 
-/** Rename, and variables that act as defaults for this collection's endpoints. */
+/** Rename, variables that act as defaults for this collection's endpoints, and headers sent with
+ * all of them. */
 const CollectionSettingsDialog = ({
   collection,
   onClose,
@@ -207,7 +227,9 @@ const CollectionSettingsDialog = ({
   collection: Collection | null;
   onClose: () => void;
 }) => {
-  const { renameCollection, setCollectionVar } = useWorkspaceStore();
+  const { renameCollection, setCollectionVar, setCollectionHeaders } = useWorkspaceStore();
+  const [tab, setTab] = useState<SettingsTab>("variables");
+
   // Read live values from the store so edits show immediately.
   const live = useWorkspaceStore(
     (s) => s.workspace?.collections.find((c) => c.id === collection?.id) ?? null,
@@ -219,8 +241,7 @@ const CollectionSettingsDialog = ({
         <DialogHeader>
           <DialogTitle>Collection settings</DialogTitle>
           <DialogDescription>
-            Variables here are defaults for this collection&apos;s endpoints. The active
-            environment&apos;s variables and secrets override them.
+            Settings shared by every endpoint in this collection.
           </DialogDescription>
         </DialogHeader>
         {live && (
@@ -232,34 +253,87 @@ const CollectionSettingsDialog = ({
                 onChange={(e) => renameCollection(live.id, e.target.value)}
               />
             </label>
-            <motion.div className="flex flex-col gap-1.5">
-              <Label>Variables</Label>
-              {Object.entries(live.vars).map(([k, v]) => (
-                <motion.div key={k} className="flex items-center gap-4">
-                  <span className="w-24 shrink-0 truncate font-mono text-xs" title={k}>
-                    {k}
-                  </span>
-                  <Input
-                    className="flex-1 font-mono"
-                    value={v}
-                    onChange={(e) => setCollectionVar(live.id, k, e.target.value)}
-                  />
+            <motion.div className="">
+              <div role="tablist" aria-label="Collection settings tabs" className="flex">
+                {TABS.map(({ id, label, icon: Icon }) => (
                   <button
-                    className="text-muted-foreground hover:text-red-500"
-                    onClick={() => setCollectionVar(live.id, k, null)}
-                    aria-label={`Remove ${k}`}
+                    key={id}
+                    role="tab"
+                    id={`tab-${id}`}
+                    aria-selected={tab === id}
+                    aria-controls={`tabpanel-${id}`}
+                    tabIndex={tab === id ? 0 : -1}
+                    onClick={() => setTab(id)}
+                    className={cn(
+                      "flex flex-1 items-center justify-center gap-1.5 px-2 py-2.5 text-xs transition-colors duration-150",
+                      tab === id
+                        ? "bg-background text-foreground font-medium"
+                        : "text-muted-foreground hover:text-foreground hover:bg-muted/60 border-b",
+                    )}
                   >
-                    <Trash className="size-4" />
+                    <Icon className="size-3.5" />
+                    {label}
                   </button>
-                </motion.div>
-              ))}
-              <AddPairForm
-                noun="Variable"
-                keyPlaceholder="base"
-                valuePlaceholder="https://api.example.com"
-                keyClassName="w-24"
-                onAdd={(key, value) => setCollectionVar(live.id, key, value)}
-              />
+                ))}
+              </div>
+              {tab === "variables" && (
+                <div
+                  role="tabpanel"
+                  id="tabpanel-variables"
+                  aria-labelledby="tab-variables"
+                  className="bg-background flex flex-col gap-1.5 p-2"
+                >
+                  <p className="text-muted-foreground text-xs">
+                    Defaults for <code>{"{{…}}"}</code> in this collection&apos;s endpoints. The
+                    active environment&apos;s variables and secrets override them.
+                  </p>
+                  {Object.entries(live.vars).map(([k, v]) => (
+                    <motion.div key={k} className="flex items-center gap-4">
+                      <span className="w-24 shrink-0 truncate font-mono text-xs" title={k}>
+                        {k}
+                      </span>
+                      <Input
+                        className="flex-1 font-mono"
+                        value={v}
+                        onChange={(e) => setCollectionVar(live.id, k, e.target.value)}
+                      />
+                      <button
+                        className="text-muted-foreground hover:text-red-500"
+                        onClick={() => setCollectionVar(live.id, k, null)}
+                        aria-label={`Remove ${k}`}
+                      >
+                        <Trash className="size-4" />
+                      </button>
+                    </motion.div>
+                  ))}
+                  <AddPairForm
+                    noun="Variable"
+                    keyPlaceholder="base"
+                    valuePlaceholder="https://api.example.com"
+                    keyClassName="w-24"
+                    onAdd={(key, value) => setCollectionVar(live.id, key, value)}
+                  />
+                </div>
+              )}
+              {tab === "headers" && (
+                <div
+                  role="tabpanel"
+                  id="tabpanel-headers"
+                  aria-labelledby="tab-headers"
+                  className="bg-background flex flex-col gap-1.5 p-2"
+                >
+                  <p className="text-muted-foreground text-xs">
+                    Sent with every endpoint in this collection, on Send and in runs. Values may use{" "}
+                    <code>{"{{variables}}"}</code>. An endpoint&apos;s own header or auth with the
+                    same name wins.
+                  </p>
+                  <KeyValueEditor
+                    rows={live.headers ?? []}
+                    onChange={(headers) => setCollectionHeaders(live.id, headers)}
+                    keyPlaceholder="X-Tenant"
+                  />
+                </div>
+              )}
             </motion.div>
           </motion.div>
         )}

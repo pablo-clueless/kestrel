@@ -6,7 +6,11 @@ import type { SentRequest } from "./SentRequest";
 /**
  * A redacted request/response pair.
  */
-export type Sample = { request: SentRequest, status: number | null, error: string | null, errorClass: ErrorClass | null, ttfbMs: number, totalMs: number, responseHeaders: Array<[string, string]>, 
+export type Sample = { request: SentRequest, status: number | null, error: string | null, errorClass: ErrorClass | null, ttfbMs: number, totalMs: number, 
+/**
+ * Opening a new connection (TCP + TLS), part of `ttfb_ms`. None when a pooled one was reused.
+ */
+connectMs: number | null, responseHeaders: Array<[string, string]>, 
 /**
  * UTF-8 (lossy), truncated.
  */

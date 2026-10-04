@@ -357,6 +357,7 @@ mod tests {
 
     fn collection(name: &str) -> Collection {
         Collection {
+            headers: Vec::new(),
             id: Uuid::new_v4(),
             name: name.into(),
             vars: Default::default(),

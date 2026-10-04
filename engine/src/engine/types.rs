@@ -18,6 +18,9 @@ pub enum RunConfig {
     Load(LoadConfig),
     /// How latency grows with input size (HANDOFF → Test catalogue → Big-O).
     Complexity(ComplexityConfig),
+    /// The same request fired several times at once (HANDOFF → Test catalogue → v1.x →
+    /// Concurrency correctness).
+    Concurrency(ConcurrencyConfig),
 }
 
 impl RunConfig {
@@ -27,6 +30,7 @@ impl RunConfig {
             Self::Latency(_) => RunKind::Latency,
             Self::Load(_) => RunKind::Load,
             Self::Complexity(_) => RunKind::Complexity,
+            Self::Concurrency(_) => RunKind::Concurrency,
         }
     }
 
@@ -37,6 +41,7 @@ impl RunConfig {
             Self::Latency(c) => Some(c.endpoint_id),
             Self::Load(c) => Some(c.endpoint_id),
             Self::Complexity(c) => Some(c.endpoint_id),
+            Self::Concurrency(c) => Some(c.endpoint_id),
         }
     }
 }
@@ -72,6 +77,173 @@ pub enum LoadMode {
     /// Requests scheduled at a fixed rate regardless of responses. Latency is measured from the
     /// scheduled send time, so a stalled server can't hide its own slowness.
     Open { rate: u32 },
+    /// Open model whose rate steps up (`start_rate`, then +`step_percent`% every `step_ms`) until a
+    /// step breaks a limit or `max_rate` is reached (HANDOFF → v1.x → Stress / breakpoint).
+    Breakpoint(BreakpointMode),
+    /// Open model at `base_rate`, a burst at `spike_rate`, then `base_rate` again, to see how the
+    /// target copes and how long it takes to recover (HANDOFF → v1.x → Spike).
+    Spike(SpikeMode),
+    /// Steps the rate up like `Breakpoint` until 429s appear, and reports the threshold and the
+    /// rate-limit headers seen (HANDOFF → v1.x → Rate-limit discovery).
+    RateLimit(RateLimitMode),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct RateLimitMode {
+    pub start_rate: u32,
+    pub step_percent: u32,
+    pub step_ms: u32,
+    pub max_rate: u32,
+}
+
+impl RateLimitMode {
+    /// A step is limited once more than this share of its requests get 429 (a stray one isn't a limit).
+    pub const LIMITED_PCT: f64 = 1.0;
+
+    /// The same steps as a breakpoint run that only counts 429s.
+    pub fn as_breakpoint(&self) -> BreakpointMode {
+        BreakpointMode {
+            start_rate: self.start_rate,
+            step_percent: self.step_percent,
+            step_ms: self.step_ms,
+            max_rate: self.max_rate,
+            max_error_pct: Self::LIMITED_PCT,
+            max_p99_ms: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct RateLimitResult {
+    /// `error_pct` is the share of 429s.
+    pub steps: Vec<BreakpointStep>,
+    /// The highest step without 429s (to within 1%).
+    pub held_rate: Option<u32>,
+    /// The first step with 429s. None if none had them.
+    pub limited_at_rate: Option<u32>,
+    /// Rate-limit headers (`Retry-After`, `X-RateLimit-*`, `RateLimit-*`) on the first 429.
+    pub limited_headers: Vec<(String, String)>,
+    /// The same headers on the first other response: many APIs announce their limits on every
+    /// response.
+    pub ok_headers: Vec<(String, String)>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct SpikeMode {
+    pub base_rate: u32,
+    pub spike_rate: u32,
+    /// Baseline before the burst. Its first second is warm-up and isn't part of "normal".
+    pub before_ms: u32,
+    pub spike_ms: u32,
+    /// Baseline after the burst: the window recovery is measured in.
+    pub after_ms: u32,
+}
+
+impl SpikeMode {
+    pub fn total_ms(&self) -> u64 {
+        u64::from(self.before_ms) + u64::from(self.spike_ms) + u64::from(self.after_ms)
+    }
+}
+
+/// Numbers for one part of a spike run.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct SpikePhase {
+    #[ts(type = "number")]
+    pub requests: u64,
+    /// Successful responses per second.
+    pub achieved_rps: f64,
+    /// Failures plus drops, as a percentage of everything scheduled.
+    pub error_pct: f64,
+    pub p50_ms: f64,
+    pub p99_ms: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct SpikeResult {
+    /// The baseline before the burst, without its first (warm-up) second.
+    pub baseline: Option<SpikePhase>,
+    pub spike: Option<SpikePhase>,
+    pub after: Option<SpikePhase>,
+    /// How long after the burst ended the target was back to normal (one-second windows with p99
+    /// within 1.5× the baseline's and no more than one point more errors) and stayed there. None if
+    /// it hadn't recovered by the end of the run.
+    pub recovery_ms: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct BreakpointMode {
+    pub start_rate: u32,
+    /// How much each step raises the rate, in percent (at least +1 req/s).
+    pub step_percent: u32,
+    /// How long each step lasts.
+    pub step_ms: u32,
+    /// The last step runs at this rate.
+    pub max_rate: u32,
+    /// A step breaks when more than this share of its requests fail (drops at the in-flight cap
+    /// count as failures).
+    pub max_error_pct: f64,
+    /// A step also breaks when its p99 is above this.
+    #[serde(default)]
+    pub max_p99_ms: Option<u32>,
+}
+
+impl BreakpointMode {
+    /// The rate of each step, from `start_rate` up to `max_rate`.
+    pub fn rates(&self) -> Vec<u32> {
+        let mut rates = vec![self.start_rate.max(1)];
+        while let Some(&last) = rates.last()
+            && last < self.max_rate
+        {
+            let next = (f64::from(last) * (1.0 + f64::from(self.step_percent) / 100.0)).ceil() as u32;
+            rates.push(next.max(last + 1).min(self.max_rate));
+        }
+        rates
+    }
+}
+
+/// One step of a breakpoint run.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct BreakpointStep {
+    /// Scheduled rate.
+    pub rate: u32,
+    /// What the target actually answered, per second.
+    pub achieved_rps: f64,
+    #[ts(type = "number")]
+    pub requests: u64,
+    /// Failed requests plus drops, as a percentage of everything scheduled.
+    pub error_pct: f64,
+    #[ts(type = "number")]
+    pub dropped: u64,
+    pub p50_ms: f64,
+    pub p99_ms: f64,
+    pub passed: bool,
+    /// Why it failed, e.g. "p99 812 ms > 500 ms".
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct BreakpointResult {
+    pub steps: Vec<BreakpointStep>,
+    /// The highest rate whose step passed.
+    pub held_rate: Option<u32>,
+    /// The rate of the first step that failed. None if none did.
+    pub broke_at_rate: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -95,6 +267,71 @@ pub struct LatencyConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
+pub struct ConcurrencyConfig {
+    pub endpoint_id: Uuid,
+    #[serde(default)]
+    pub environment: Option<String>,
+    /// Identical requests released together in each round.
+    pub requests: u32,
+    /// Bursts to fire. The request is rendered once per round, so `{{uuid}}` or `{{seq}}` differ
+    /// between rounds but not within one: each round is a fresh attempt at the same race.
+    pub rounds: u32,
+    /// Wait between rounds.
+    pub pause_ms: u32,
+    pub timeout_ms: u32,
+}
+
+/// Concurrency runs: what happened in each round, and what that suggests.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ConcurrencyResult {
+    pub rounds: Vec<ConcurrencyRound>,
+    /// Plain-language reading of the rounds, worst first.
+    pub findings: Vec<Finding>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ConcurrencyRound {
+    /// 1-based.
+    pub round: u32,
+    pub statuses: Vec<StatusCount>,
+    /// Requests that got no response: timeouts, connection errors.
+    pub failed: u32,
+    /// 2xx responses.
+    pub succeeded: u32,
+    /// Different bodies among the 2xx responses. Several usually means several records were made.
+    pub distinct_bodies: u32,
+    /// How long every request was in flight at once (from the last send to the first response).
+    /// 0 means some finished before others were sent, so they didn't all race.
+    pub overlap_ms: f64,
+    /// From the first response to the last.
+    pub spread_ms: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct Finding {
+    pub level: FindingLevel,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum FindingLevel {
+    Bad,
+    Warn,
+    Good,
+    Info,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
 pub struct FakeConfig {
     pub duration_ms: u32,
 }
@@ -107,6 +344,7 @@ pub enum RunKind {
     Latency,
     Load,
     Complexity,
+    Concurrency,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -263,6 +501,9 @@ pub struct RunReport {
     pub latency_success: Option<LatencySummary>,
     /// Time to first byte (response headers), all requests.
     pub ttfb: Option<LatencySummary>,
+    /// Where the time went: DNS, opening connections, waiting for the server, downloading.
+    /// Latency and load runs only.
+    pub phases: Option<PhaseSummary>,
     /// Distribution of all requests.
     pub histogram: Vec<HistogramBin>,
     /// The very first request of the run (a warm-up if any), reported apart from the rest.
@@ -284,6 +525,14 @@ pub struct RunReport {
     pub contract: Option<crate::contract::ContractSummary>,
     /// Big-O runs only.
     pub complexity: Option<ComplexityResult>,
+    /// Breakpoint load runs only.
+    pub breakpoint: Option<BreakpointResult>,
+    /// Spike load runs only.
+    pub spike: Option<SpikeResult>,
+    /// Rate-limit discovery runs only.
+    pub rate_limit: Option<RateLimitResult>,
+    /// Concurrency runs only.
+    pub concurrency: Option<ConcurrencyResult>,
 }
 
 impl RunReport {
@@ -303,6 +552,7 @@ impl RunReport {
             latency: None,
             latency_success: None,
             ttfb: None,
+            phases: None,
             histogram: vec![],
             cold_ms: None,
             status_counts: vec![],
@@ -314,8 +564,35 @@ impl RunReport {
             timeline: vec![],
             contract: None,
             complexity: None,
+            breakpoint: None,
+            spike: None,
+            rate_limit: None,
+            concurrency: None,
         }
     }
+}
+
+/// A request's time split into phases. Measured from when the request was sent, so in an open-model
+/// load run it leaves out time spent queued behind the in-flight cap.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct PhaseSummary {
+    /// Resolving the host, once per run (the address is then pinned). None for an IP in the URL.
+    pub dns_ms: Option<f64>,
+    /// Requests that opened a new connection, out of `requests`. With keep-alive this is usually
+    /// just the first few; without it, every request.
+    #[ts(type = "number")]
+    pub new_connections: u64,
+    #[ts(type = "number")]
+    pub requests: u64,
+    /// Opening a connection (TCP + TLS), for the requests that opened one.
+    pub connect: Option<LatencySummary>,
+    /// From sending (after any connect) until the response headers arrived: the server's work plus
+    /// a network round trip.
+    pub waiting: Option<LatencySummary>,
+    /// Reading the body after the headers arrived.
+    pub download: Option<LatencySummary>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -421,6 +698,8 @@ pub struct Sample {
     pub error_class: Option<ErrorClass>,
     pub ttfb_ms: f64,
     pub total_ms: f64,
+    /// Opening a new connection (TCP + TLS), part of `ttfb_ms`. None when a pooled one was reused.
+    pub connect_ms: Option<f64>,
     pub response_headers: Vec<(String, String)>,
     /// UTF-8 (lossy), truncated.
     pub body: String,

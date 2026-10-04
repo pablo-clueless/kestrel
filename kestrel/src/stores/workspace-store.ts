@@ -2,6 +2,7 @@ import { create } from "zustand";
 
 import { errorMessage, getWorkspace, putWorkspace, setSecret } from "@/lib/client";
 import type { Collection } from "@/types/engine/Collection";
+import type { KeyValue } from "@/types/engine/KeyValue";
 import type { Workspace } from "@/types/engine/Workspace";
 import type { Endpoint } from "@/types/engine/Endpoint";
 import type { Saved } from "@/types/engine/Saved";
@@ -42,6 +43,8 @@ interface WorkspaceState {
   renameCollection: (id: string, name: string) => void;
   removeCollection: (id: string) => void;
   setCollectionVar: (id: string, key: string, value: string | null) => void;
+  /** Headers sent with every endpoint in the collection; an endpoint's own header wins. */
+  setCollectionHeaders: (id: string, headers: KeyValue[]) => void;
   /** Adds a group to a collection; it stays listed while empty. No-op if the name is taken. */
   addGroup: (collectionId: string, name: string) => void;
   /** Removes a group; its endpoints stay in the collection, ungrouped. */
@@ -89,13 +92,15 @@ const newCollection = (name: string): Collection => ({
   id: crypto.randomUUID(),
   name,
   vars: {},
+  headers: [],
   endpoints: [],
   groups: [],
   source: null,
   schemaDefs: null,
 });
 
-const byName = new Intl.Collator(undefined, { sensitivity: "base", numeric: true });
+/** Name order for the sidebar: ignores case, and puts numbers in order (`v2` before `v10`). */
+export const byName = new Intl.Collator(undefined, { sensitivity: "base", numeric: true });
 
 /** A collection's groups, alphabetically (case-insensitive, `v2` before `v10`): those made by hand
  * (empty ones included) and any others its endpoints use, e.g. imported tags. */
@@ -281,6 +286,12 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => {
           else vars[key] = value;
           return { ...c, vars };
         }),
+      })),
+
+    setCollectionHeaders: (id, headers) =>
+      edit((ws) => ({
+        ...ws,
+        collections: ws.collections.map((c) => (c.id === id ? { ...c, headers } : c)),
       })),
 
     addGroup: (collectionId, name) =>

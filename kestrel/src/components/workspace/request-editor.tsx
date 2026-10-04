@@ -67,6 +67,10 @@ export const RequestEditor = () => {
   const endpoint = useSelectedEndpoint();
   const isDraft = useSelectedIsDraft();
   const collection = useActiveCollection();
+  /** Names of the collection's enabled headers, sent with this endpoint too. */
+  const sharedHeaders = (collection?.headers ?? [])
+    .filter((h) => h.enabled && h.key.trim() !== "")
+    .map((h) => h.key.trim());
   const saveDraft = useWorkspaceStore((s) => s.saveDraft);
   const update = useWorkspaceStore((s) => s.updateEndpoint);
   const addGroup = useWorkspaceStore((s) => s.addGroup);
@@ -193,7 +197,14 @@ export const RequestEditor = () => {
         <KeyValueEditor rows={endpoint.query} onChange={(query) => patch({ query })} />
       )}
       {tab === "headers" && (
-        <KeyValueEditor rows={endpoint.headers} onChange={(headers) => patch({ headers })} />
+        <div className="flex flex-col gap-2">
+          <KeyValueEditor rows={endpoint.headers} onChange={(headers) => patch({ headers })} />
+          {sharedHeaders.length > 0 && (
+            <p className="text-muted-foreground text-xs">
+              Also sends {sharedHeaders.join(", ")} from the collection settings, unless set here.
+            </p>
+          )}
+        </div>
       )}
       {tab === "body" && <BodyEditor body={endpoint.body} onChange={(body) => patch({ body })} />}
       {tab === "auth" && <AuthEditor auth={endpoint.auth} onChange={(auth) => patch({ auth })} />}
