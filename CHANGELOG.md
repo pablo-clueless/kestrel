@@ -12,6 +12,17 @@ No version has been tagged yet (engine and UI are both `0.1.0`), so the entries 
 
 ### Added
 
+- **Compare two runs side by side.** In **History**, choose **Compare**, tick two finished runs and
+  open the comparison. The older run is "before".
+  - **Metrics:** requests, error rate, throughput, p50/p90/p99/max/mean and TTFB p50, with each
+    change marked better or worse. Changes under 5% (or under 1 ms for latencies) show as ≈, since
+    they're within run-to-run noise.
+  - **Status codes:** listed for both runs.
+  - **Key results by test type:** the Big-O verdict and slope, payload MB/s and fixed cost, where a
+    breakpoint run broke, where 429s started, spike recovery, and the main finding of race, timeout
+    and soak runs.
+  - **Like-for-like warning:** shown when the runs differ in test type, endpoint, settings or target
+    address.
 - **A warning for very short secrets.** Saving a secret of 1 or 2 characters now shows a warning
   toast. Values that short aren't hidden in response bodies, because they'd match ordinary text, but
   they're still hidden in Authorization, Cookie and API-key headers. This covers the environment
@@ -335,6 +346,8 @@ No version has been tagged yet (engine and UI are both `0.1.0`), so the entries 
 
 ### Fixed
 
+- **Run history now updates when a run finishes.** Before, a new run only appeared after a reload,
+  because history refreshed only while a run it already knew about was in progress.
 - **Workspace isolation now has two more checks behind the `search_path` pin**, plus a warning:
   - **The pin:** the engine reads back the schema each transaction will use, in the same round trip
     as setting it. A missing schema, or a pin that didn't take, stops the transaction before
