@@ -706,6 +706,19 @@ mod tests {
         assert!(refused(format!("[{},{}]", entry(a, 1), entry(b, 0))).await.contains("weights"));
         assert!(refused(format!("[{},{}]", entry(a, 1), entry(other, 1))).await.contains("different host"));
 
+        // Token refresh is checked up front too.
+        let with_refresh = |every: u32| {
+            let base = config(&format!("[{},{}]", entry(a, 1), entry(b, 1)));
+            let base = base.strip_suffix('}').expect("a JSON object");
+            format!(r#"{base},"tokenRefresh":{{"endpointId":"{b}","everyMs":{every}}}}}"#)
+        };
+        for (every, expected) in [(1_000, "every 10 s"), (60_000, "environment")] {
+            let res = app.clone().oneshot(post_json("/api/runs", with_refresh(every))).await.unwrap();
+            assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+            let body: serde_json::Value = json_body(res).await;
+            assert!(body["error"].as_str().unwrap().contains(expected), "{body}");
+        }
+
         let res =
             app.clone().oneshot(post_json("/api/runs", config(&format!("[{},{}]", entry(a, 1), entry(b, 1))))).await;
         let StartRunResponse { run_id } = json_body(res.unwrap()).await;
