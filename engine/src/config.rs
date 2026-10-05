@@ -255,9 +255,14 @@ impl Caps {
 
 impl Config {
     pub fn from_env() -> anyhow::Result<Self> {
+        // `PORT` is what platforms like Render and Heroku assign, and they route only to that port:
+        // listening anywhere else makes the deploy time out waiting for it.
         let port = match std::env::var("KESTREL_PORT") {
             Ok(p) => p.parse().context("KESTREL_PORT must be a port number")?,
-            Err(_) => DEFAULT_PORT,
+            Err(_) => match std::env::var("PORT") {
+                Ok(p) if !p.trim().is_empty() => p.trim().parse().context("PORT must be a port number")?,
+                _ => DEFAULT_PORT,
+            },
         };
 
         let (token, token_generated) = match std::env::var("KESTREL_TOKEN") {
@@ -288,6 +293,12 @@ impl Config {
             for host in hosts.filter(|h| !h.is_empty()) {
                 config.allow_host(host);
             }
+        }
+        // Render sets this to the service's public hostname (`<name>.onrender.com`).
+        if let Ok(host) = std::env::var("RENDER_EXTERNAL_HOSTNAME")
+            && !host.trim().is_empty()
+        {
+            config.allow_host(host.trim());
         }
         config.workspace_dir = match std::env::var("KESTREL_WORKSPACE_DIR") {
             Ok(dir) if !dir.trim().is_empty() => PathBuf::from(dir.trim()),
