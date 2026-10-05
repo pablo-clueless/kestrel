@@ -79,6 +79,7 @@ const SizeChart = ({ points, fits }: { points: ComplexityPoint[]; fits?: ModelFi
         const row: Record<string, number | [number, number] | undefined> = {
           n,
           median: p?.medianMs,
+          baseline: p?.baselineMedianMs ?? undefined,
           band: p ? [Math.max(p.p25Ms, 1e-4), Math.max(p.p75Ms, 1e-4)] : undefined,
         };
         fits?.forEach((fit, i) => {
@@ -87,6 +88,7 @@ const SizeChart = ({ points, fits }: { points: ComplexityPoint[]; fits?: ModelFi
         return row;
       });
   }, [points, fits]);
+  const hasBaseline = points.some((p) => p.baselineMedianMs !== null);
 
   if (!points.length) {
     return (
@@ -161,6 +163,17 @@ const SizeChart = ({ points, fits }: { points: ComplexityPoint[]; fits?: ModelFi
               isAnimationActive={false}
             />
           ))}
+          {hasBaseline && (
+            <Line
+              dataKey="baseline"
+              name="echo baseline"
+              stroke="var(--muted-foreground)"
+              strokeWidth={1.5}
+              dot={{ r: 2 }}
+              connectNulls
+              isAnimationActive={false}
+            />
+          )}
           <Scatter dataKey="median" name="median" fill="var(--primary)" isAnimationActive={false} />
         </ComposedChart>
       </ResponsiveContainer>
@@ -286,6 +299,14 @@ export const ComplexityResults = ({ result }: { result: ComplexityResult }) => {
                 <th className="py-2 text-left font-normal">n</th>
                 <th className="py-2 text-right font-normal">Median</th>
                 <th className="py-2 text-right font-normal">IQR</th>
+                {points.some((p) => p.baselineMedianMs !== null) && (
+                  <th
+                    className="py-2 text-right font-normal"
+                    title="The same bodies to the echo endpoint"
+                  >
+                    Echo
+                  </th>
+                )}
                 <th className="py-2 text-right font-normal">Body</th>
               </tr>
             </thead>
@@ -297,6 +318,11 @@ export const ComplexityResults = ({ result }: { result: ComplexityResult }) => {
                   <td className="text-muted-foreground py-1.5 text-right">
                     {fmtMs(p.p75Ms - p.p25Ms)}
                   </td>
+                  {points.some((q) => q.baselineMedianMs !== null) && (
+                    <td className="text-muted-foreground py-1.5 text-right">
+                      {p.baselineMedianMs === null ? "–" : `${fmtMs(p.baselineMedianMs)} ms`}
+                    </td>
+                  )}
                   <td className="text-muted-foreground py-1.5 text-right">
                     {p.requestBytes ? `${(p.requestBytes / 1024).toFixed(1)} KB` : "–"}
                     {p.errors ? (

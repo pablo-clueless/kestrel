@@ -21,6 +21,12 @@ pub enum RunConfig {
     /// The same request fired several times at once (HANDOFF → Test catalogue → v1.x →
     /// Concurrency correctness).
     Concurrency(ConcurrencyConfig),
+    /// Probes, a burst of requests the client gives up on, then probes again (HANDOFF → Test
+    /// catalogue → v1.x → Timeout behaviour).
+    Timeout(TimeoutConfig),
+    /// Big-O's sweep with `n` driving the payload size, read as bytes: throughput (MB/s) and latency
+    /// against size (HANDOFF → Test catalogue → v1.x → Payload scaling).
+    Payload(ComplexityConfig),
 }
 
 impl RunConfig {
@@ -31,6 +37,8 @@ impl RunConfig {
             Self::Load(_) => RunKind::Load,
             Self::Complexity(_) => RunKind::Complexity,
             Self::Concurrency(_) => RunKind::Concurrency,
+            Self::Timeout(_) => RunKind::Timeout,
+            Self::Payload(_) => RunKind::Payload,
         }
     }
 
@@ -42,6 +50,8 @@ impl RunConfig {
             Self::Load(c) => Some(c.endpoint_id),
             Self::Complexity(c) => Some(c.endpoint_id),
             Self::Concurrency(c) => Some(c.endpoint_id),
+            Self::Timeout(c) => Some(c.endpoint_id),
+            Self::Payload(c) => Some(c.endpoint_id),
         }
     }
 }
@@ -66,6 +76,36 @@ pub struct LoadConfig {
     /// Status codes that count as success even though they're 4xx/5xx (e.g. an expected 404).
     #[serde(default)]
     pub ok_statuses: Vec<u16>,
+    /// Multi-endpoint mix (HANDOFF → v1.x → Multi-endpoint mix): each request goes to one of these,
+    /// chosen by weight. Empty means just `endpoint_id`. When set it must include `endpoint_id`, and
+    /// every endpoint must be on the same host, since a run pins one host's address.
+    #[serde(default)]
+    pub mix: Vec<MixEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct MixEntry {
+    pub endpoint_id: Uuid,
+    /// Relative share of requests: weights 3 and 1 send three quarters to the first.
+    pub weight: u32,
+}
+
+/// One endpoint's share of a multi-endpoint run.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct MixStats {
+    pub endpoint_id: Uuid,
+    pub name: String,
+    pub weight: u32,
+    #[ts(type = "number")]
+    pub requests: u64,
+    #[ts(type = "number")]
+    pub errors: u64,
+    pub latency: Option<LatencySummary>,
+    pub status_counts: Vec<StatusCount>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -86,6 +126,9 @@ pub enum LoadMode {
     /// Steps the rate up like `Breakpoint` until 429s appear, and reports the threshold and the
     /// rate-limit headers seen (HANDOFF → v1.x → Rate-limit discovery).
     RateLimit(RateLimitMode),
+    /// Open model at a steady `rate` for a long time, read for drift: latency or errors that grow,
+    /// and credentials that expire (HANDOFF → v1.x → Soak).
+    Soak { rate: u32 },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -281,6 +324,78 @@ pub struct ConcurrencyConfig {
     pub timeout_ms: u32,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct TimeoutConfig {
+    pub endpoint_id: Uuid,
+    #[serde(default)]
+    pub environment: Option<String>,
+    /// Sequential probes before the burst, and again after it.
+    pub samples: u32,
+    /// Requests in the burst, each given up on after `tight_ms`.
+    pub abandoned: u32,
+    /// Burst requests in flight at once.
+    pub concurrency: u32,
+    /// The burst's client timeout. 0 picks a quarter of the probes' median, so most are abandoned.
+    pub tight_ms: u32,
+    /// The probes' timeout: generous, so a request that reaches it means the server hung.
+    pub timeout_ms: u32,
+}
+
+/// Timeout runs: whether the server hangs or fails fast, and whether requests the client gave up on
+/// slowed the ones after them.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct TimeoutResult {
+    /// The burst's client timeout, as used (picked from the probes when the config said 0).
+    pub tight_ms: u32,
+    /// Probes before the burst.
+    pub before: Option<LatencySummary>,
+    /// Probes after the burst.
+    pub after: Option<LatencySummary>,
+    /// Burst requests sent, and how many of them were answered within `tight_ms` anyway.
+    pub abandoned: u32,
+    pub answered_in_time: u32,
+    /// Probes that ran into the generous timeout: the server never answered.
+    pub hung: u32,
+    /// Probes that failed (5xx or no response) well inside the timeout.
+    pub fast_failures: u32,
+    /// From the end of the burst until probes were back to normal for good. None if they never were
+    /// (or never slowed).
+    pub recovered_after_ms: Option<f64>,
+    pub findings: Vec<Finding>,
+}
+
+/// Soak runs: the run in windows, and what drifted.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct SoakResult {
+    /// Window width, sized from the run's length (1 s to 60 s).
+    pub window_ms: u32,
+    pub windows: Vec<SoakWindow>,
+    pub findings: Vec<Finding>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct SoakWindow {
+    /// Window start, from the run start (by scheduled time).
+    #[ts(type = "number")]
+    pub t_ms: u64,
+    #[ts(type = "number")]
+    pub requests: u64,
+    /// Failed or dropped, of those scheduled.
+    pub error_pct: f64,
+    /// 401 or 403, of those scheduled.
+    pub auth_failure_pct: f64,
+    pub p50_ms: f64,
+    pub p99_ms: f64,
+}
+
 /// Concurrency runs: what happened in each round, and what that suggests.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -345,6 +460,8 @@ pub enum RunKind {
     Load,
     Complexity,
     Concurrency,
+    Timeout,
+    Payload,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -533,6 +650,12 @@ pub struct RunReport {
     pub rate_limit: Option<RateLimitResult>,
     /// Concurrency runs only.
     pub concurrency: Option<ConcurrencyResult>,
+    /// Timeout behaviour runs only.
+    pub timeout: Option<TimeoutResult>,
+    /// Soak runs only.
+    pub soak: Option<SoakResult>,
+    /// Multi-endpoint load runs only: each endpoint's share, in the mix's order.
+    pub mix: Option<Vec<MixStats>>,
 }
 
 impl RunReport {
@@ -568,6 +691,9 @@ impl RunReport {
             spike: None,
             rate_limit: None,
             concurrency: None,
+            timeout: None,
+            soak: None,
+            mix: None,
         }
     }
 }
@@ -744,6 +870,11 @@ pub struct ComplexityConfig {
     pub slow_ms: u32,
     /// Total time for the sweep.
     pub budget_ms: u32,
+    /// Payload baseline (HANDOFF → Big-O, step 5): an echo endpoint on the same host. Each sample's
+    /// exact body is also sent there, so the report can show how much of the growth is transfer
+    /// and parsing rather than the endpoint's own work.
+    #[serde(default)]
+    pub baseline_endpoint_id: Option<Uuid>,
 }
 
 /// Latency at one size. Medians use successful requests only.
@@ -763,6 +894,9 @@ pub struct ComplexityPoint {
     pub request_bytes: u64,
     #[ts(type = "number")]
     pub response_bytes: u64,
+    /// Median latency of the same bodies sent to the baseline (echo) endpoint, when there is one.
+    #[serde(default)]
+    pub baseline_median_ms: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -780,4 +914,36 @@ pub struct ComplexityProgress {
 pub struct ComplexityResult {
     pub points: Vec<ComplexityPoint>,
     pub analysis: crate::stats::fit::Analysis,
+    /// Payload scaling runs only: the points read as bytes.
+    #[serde(default)]
+    pub payload: Option<PayloadResult>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct PayloadResult {
+    pub points: Vec<PayloadPoint>,
+    /// From a straight line through latency against bytes: what a request costs whatever its size,
+    /// and the effective throughput for the bytes on top. None when the payload didn't vary enough
+    /// (or, for the rate, when size made no difference).
+    pub fixed_ms: Option<f64>,
+    pub mb_per_s: Option<f64>,
+    /// The best MB/s at any one size.
+    pub peak_mb_per_s: Option<f64>,
+    pub findings: Vec<Finding>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct PayloadPoint {
+    #[ts(type = "number")]
+    pub n: u64,
+    /// Median request plus response body bytes at this size.
+    #[ts(type = "number")]
+    pub bytes: u64,
+    pub median_ms: f64,
+    /// `bytes` over the median latency.
+    pub mb_per_s: f64,
 }

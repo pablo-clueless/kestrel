@@ -5,10 +5,13 @@ pub mod concurrency;
 pub mod fake;
 pub mod latency;
 pub mod load;
+pub mod payload;
 pub mod phases;
 pub mod registry;
 pub mod sample;
+pub mod soak;
 pub mod spike;
+pub mod timeout;
 pub mod types;
 
 use std::{sync::Arc, time::Duration};
@@ -28,6 +31,7 @@ pub enum Prepared {
     Load(Box<load::Prepared>),
     Complexity(Box<complexity::Prepared>),
     Concurrency(Box<concurrency::Prepared>),
+    Timeout(Box<timeout::Prepared>),
 }
 
 /// Spawns the runner for `run`. Once it finishes, saves the report and schedules the run's eviction
@@ -42,6 +46,7 @@ pub fn spawn(registry: &Arc<RunRegistry>, store: &Arc<WorkspaceStore>, run: Arc<
             Prepared::Load(p) => load::run(Arc::clone(&run), *p).await,
             Prepared::Complexity(p) => complexity::run(Arc::clone(&run), *p).await,
             Prepared::Concurrency(p) => concurrency::run(Arc::clone(&run), *p).await,
+            Prepared::Timeout(p) => timeout::run(Arc::clone(&run), *p).await,
         }
         if let Some(report) = run.report()
             && let Err(err) = store.save_run(&report).await

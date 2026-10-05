@@ -7,4 +7,8 @@ export type ComplexityPoint = { n: number, medianMs: number, p25Ms: number, p75M
 /**
  * Median request body size at this n, to see how much growth is just transfer.
  */
-requestBytes: number, responseBytes: number, };
+requestBytes: number, responseBytes: number, 
+/**
+ * Median latency of the same bodies sent to the baseline (echo) endpoint, when there is one.
+ */
+baselineMedianMs: number | null, };

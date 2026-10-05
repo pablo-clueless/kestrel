@@ -15,6 +15,11 @@ import type { BreakpointResult } from "@/types/engine/BreakpointResult";
 import type { SpikeResult } from "@/types/engine/SpikeResult";
 import type { RateLimitResult } from "@/types/engine/RateLimitResult";
 import type { ConcurrencyResult } from "@/types/engine/ConcurrencyResult";
+import type { TimeoutResult } from "@/types/engine/TimeoutResult";
+import type { SoakResult } from "@/types/engine/SoakResult";
+import type { PayloadResult } from "@/types/engine/PayloadResult";
+import type { MixStats } from "@/types/engine/MixStats";
+import type { Finding } from "@/types/engine/Finding";
 import type { FindingLevel } from "@/types/engine/FindingLevel";
 import { StatGrid, StatTile } from "@/components/shared/stat-tile";
 import { ComplexityLive, ComplexityResults } from "./complexity";
@@ -29,8 +34,11 @@ export const LiveSummary = () => {
   const last = useRunStore((s) => s.buckets.at(-1));
   const isLoad = useRunStore((s) => s.config?.kind === "load");
   const errPct = last && last.requests > 0 ? (last.errors / last.requests) * 100 : undefined;
-  const isComplexity = useRunStore((s) => s.config?.kind === "complexity");
+  const isComplexity = useRunStore(
+    (s) => s.config?.kind === "complexity" || s.config?.kind === "payload",
+  );
   const isConcurrency = useRunStore((s) => s.config?.kind === "concurrency");
+  const isTimeout = useRunStore((s) => s.config?.kind === "timeout");
   const roundsDone = useRunStore((s) => s.buckets.length);
   if (isComplexity) return <ComplexityLive />;
 
@@ -53,8 +61,11 @@ export const LiveSummary = () => {
               : "99th percentile of the last window"
           }
         />
-        {isConcurrency ? (
-          <StatTile label="Rounds done" value={int(roundsDone)} />
+        {isConcurrency || isTimeout ? (
+          <StatTile
+            label={isTimeout ? "Probe phases done" : "Rounds done"}
+            value={int(roundsDone)}
+          />
         ) : (
           <StatTile label="Throughput" value={int(last?.rps)} unit="req/s" />
         )}
@@ -99,6 +110,7 @@ export const ResultsSummary = () => {
   if (report.complexity) {
     return (
       <div className="flex flex-col gap-6">
+        {report.complexity.payload && <PayloadSection result={report.complexity.payload} />}
         <ComplexityResults result={report.complexity} />
         <Notes notes={report.notes} />
       </div>
@@ -117,7 +129,10 @@ export const ResultsSummary = () => {
 
   return (
     <div className="flex flex-col gap-6">
+      {report.mix && <MixSection mix={report.mix} />}
       {report.concurrency && <ConcurrencySection result={report.concurrency} />}
+      {report.timeout && <TimeoutSection result={report.timeout} />}
+      {report.soak && <SoakSection result={report.soak} />}
       {report.spike && <SpikeSection result={report.spike} />}
       {report.rateLimit && <RateLimitSection result={report.rateLimit} />}
       {report.breakpoint && (
@@ -236,20 +251,185 @@ const FINDING_STYLE: Record<FindingLevel, { icon: typeof Info; className: string
   info: { icon: Info, className: "bg-muted text-muted-foreground" },
 };
 
+/** A test's plain-language findings, worst first, coloured by level. */
+const Findings = ({ findings }: { findings: Finding[] }) => (
+  <ul className="flex flex-col gap-2">
+    {findings.map((f) => {
+      const { icon: Icon, className } = FINDING_STYLE[f.level];
+      return (
+        <li key={f.message} className={cn("flex gap-2 rounded-xs p-3 text-xs", className)}>
+          <Icon className="mt-0.5 size-3.5 shrink-0" />
+          {f.message}
+        </li>
+      );
+    })}
+  </ul>
+);
+
+/** Multi-endpoint load runs: each endpoint's share and numbers. The rest of the report is combined. */
+const MixSection = ({ mix }: { mix: MixStats[] }) => {
+  const total = mix.reduce((sum, m) => sum + m.requests, 0);
+  return (
+    <table className="w-full text-sm tabular-nums">
+      <thead className="text-muted-foreground text-xs">
+        <tr className="border-b">
+          <th className="py-2 text-left font-normal">Endpoint</th>
+          <th className="py-2 text-right font-normal" title="Share of requests (weight)">
+            Share
+          </th>
+          <th className="py-2 text-right font-normal">Errors</th>
+          <th className="py-2 text-right font-normal">p50</th>
+          <th className="py-2 text-right font-normal">p99</th>
+          <th className="py-2 pl-4 text-left font-normal">Statuses</th>
+        </tr>
+      </thead>
+      <tbody>
+        {mix.map((m) => (
+          <tr key={m.endpointId} className="border-b last:border-0">
+            <td className="max-w-48 truncate py-1.5 font-medium" title={m.name}>
+              {m.name}
+            </td>
+            <td className="py-1.5 text-right">
+              {total ? ((m.requests / total) * 100).toFixed(0) : 0}%
+              <span className="text-muted-foreground"> ({m.weight})</span>
+            </td>
+            <td className={cn("py-1.5 text-right", m.errors > 0 && "text-destructive")}>
+              {m.requests ? ((m.errors / m.requests) * 100).toFixed(1) : "0.0"}%
+            </td>
+            <td className="py-1.5 text-right">{ms(m.latency?.p50Ms)}</td>
+            <td className="py-1.5 text-right">{ms(m.latency?.p99Ms)}</td>
+            <td className="py-1.5 pl-4">
+              <span className="flex flex-wrap gap-1">
+                {m.statusCounts.map((s) => (
+                  <StatusBadge key={s.status} status={s.status}>
+                    <span className="ml-1 font-normal opacity-70">×{s.count.toLocaleString()}</span>
+                  </StatusBadge>
+                ))}
+              </span>
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+};
+
+const bytes = (n: number) =>
+  n >= 1e6 ? `${(n / 1e6).toFixed(1)} MB` : n >= 1e3 ? `${(n / 1e3).toFixed(1)} kB` : `${n} B`;
+
+/** Payload scaling: the Big-O points read as bytes, with throughput at each size. */
+const PayloadSection = ({ result }: { result: PayloadResult }) => (
+  <div className="flex flex-col gap-4">
+    <Findings findings={result.findings} />
+    <StatGrid cols={3}>
+      <StatTile
+        label="Fixed cost"
+        value={ms(result.fixedMs ?? undefined)}
+        unit="ms"
+        info="What a request costs whatever its size"
+      />
+      <StatTile
+        label="Effective throughput"
+        value={result.mbPerS === null ? "–" : result.mbPerS.toFixed(1)}
+        unit={result.mbPerS === null ? undefined : "MB/s"}
+        info="For the bytes on top of the fixed cost, from a straight line through the sizes"
+      />
+      <StatTile
+        label="Best at one size"
+        value={result.peakMbPerS === null ? "–" : result.peakMbPerS.toFixed(1)}
+        unit={result.peakMbPerS === null ? undefined : "MB/s"}
+      />
+    </StatGrid>
+    <table className="w-full max-w-2xl text-sm tabular-nums">
+      <thead className="text-muted-foreground text-xs">
+        <tr className="border-b">
+          <th className="py-2 text-left font-normal">n</th>
+          <th className="py-2 text-right font-normal" title="Request plus response body, median">
+            Bytes
+          </th>
+          <th className="py-2 text-right font-normal">Median</th>
+          <th className="py-2 text-right font-normal">MB/s</th>
+        </tr>
+      </thead>
+      <tbody>
+        {result.points.map((p) => (
+          <tr key={p.n} className="border-b last:border-0">
+            <td className="py-1.5 font-medium">{int(p.n)}</td>
+            <td className="py-1.5 text-right">{bytes(p.bytes)}</td>
+            <td className="py-1.5 text-right">{ms(p.medianMs)} ms</td>
+            <td className="py-1.5 text-right">{p.mbPerS.toFixed(1)}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  </div>
+);
+
+/** Soak runs: what drifted. The windows are the report's timeline, so the chart covers the run. */
+const SoakSection = ({ result }: { result: SoakResult }) => {
+  const worst = Math.max(0, ...result.windows.map((w) => w.p99Ms));
+  return (
+    <div className="flex flex-col gap-4">
+      <Findings findings={result.findings} />
+      <StatGrid cols={3}>
+        <StatTile label="Windows" value={int(result.windows.length)} />
+        <StatTile label="Window" value={(result.windowMs / 1000).toFixed(0)} unit="s" />
+        <StatTile label="Worst window p99" value={ms(worst)} unit="ms" />
+      </StatGrid>
+      <p className="text-muted-foreground text-xs">
+        The timeline shows the whole run, one point per {(result.windowMs / 1000).toFixed(0)} s
+        window.
+      </p>
+    </div>
+  );
+};
+
+/** Timeout runs: probes before and after a burst of abandoned requests. */
+const TimeoutSection = ({ result }: { result: TimeoutResult }) => (
+  <div className="flex flex-col gap-4">
+    <Findings findings={result.findings} />
+    <StatGrid cols={4}>
+      <StatTile
+        label="p50 before → after"
+        value={`${ms(result.before?.p50Ms)} → ${ms(result.after?.p50Ms)}`}
+        unit="ms"
+      />
+      <StatTile
+        label="p99 before → after"
+        value={`${ms(result.before?.p99Ms)} → ${ms(result.after?.p99Ms)}`}
+        unit="ms"
+      />
+      <StatTile
+        label="Recovered after"
+        value={result.recoveredAfterMs === null ? "–" : (result.recoveredAfterMs / 1000).toFixed(1)}
+        unit={result.recoveredAfterMs === null ? undefined : "s"}
+        info="From the end of the burst until probes were back to normal for good"
+      />
+      <StatTile
+        label="Hung"
+        value={int(result.hung)}
+        tone={result.hung ? "bad" : "default"}
+        info="Probes that got no answer before the timeout"
+      />
+      <StatTile
+        label="Abandoned"
+        value={int(result.abandoned - result.answeredInTime)}
+        info={`Of ${result.abandoned} burst requests, given up on after ${result.tightMs} ms`}
+      />
+      <StatTile label="Give-up time" value={int(result.tightMs)} unit="ms" />
+      <StatTile
+        label="Fast failures"
+        value={int(result.fastFailures)}
+        info="Probes that failed well inside the timeout"
+      />
+    </StatGrid>
+  </div>
+);
+
 /** Concurrency runs: what the server made of identical simultaneous requests, round by round. */
 const ConcurrencySection = ({ result }: { result: ConcurrencyResult }) => (
   <div className="flex flex-col gap-4">
-    <ul className="flex flex-col gap-2">
-      {result.findings.map((f) => {
-        const { icon: Icon, className } = FINDING_STYLE[f.level];
-        return (
-          <li key={f.message} className={cn("flex gap-2 rounded-xs p-3 text-xs", className)}>
-            <Icon className="mt-0.5 size-3.5 shrink-0" />
-            {f.message}
-          </li>
-        );
-      })}
-    </ul>
+    <Findings findings={result.findings} />
     <table className="w-full max-w-2xl text-sm tabular-nums">
       <thead className="text-muted-foreground text-xs">
         <tr className="border-b">

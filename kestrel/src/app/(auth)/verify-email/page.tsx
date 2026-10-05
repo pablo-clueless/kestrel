@@ -4,6 +4,7 @@ import { Suspense, useEffect, useRef, useState } from "react";
 import { CircleCheck, TriangleAlert } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "next/navigation";
+import { toast } from "sonner";
 import Link from "next/link";
 
 import { errorMessage, verifyEmail } from "@/lib/client";
@@ -35,7 +36,11 @@ const Verify = () => {
         setState({ status: "verified" });
         void queryClient.invalidateQueries({ queryKey: ME_KEY });
       })
-      .catch((err) => setState({ status: "failed", error: errorMessage(err) }));
+      .catch((err) => {
+        const error = errorMessage(err);
+        toast.error(error);
+        setState({ status: "failed", error });
+      });
   }, [token, queryClient]);
 
   if (state.status === "verifying") {
@@ -72,11 +77,9 @@ const Verify = () => {
               ? "This link was already used, but your address is verified, so there's nothing to do."
               : ok
                 ? "Thanks. Your address is verified."
-                : `${state.error.replace(/^./, (c) => c.toUpperCase()).replace(/\.?$/, ".")} ${
-                    signedIn
-                      ? "Send a new link from Profile → Account."
-                      : "Sign in and send a new link from Profile → Account."
-                  }`}
+                : signedIn
+                  ? "The link may have expired or been used. Send a new one from Profile → Account."
+                  : "The link may have expired or been used. Sign in and send a new one from Profile → Account."}
           </p>
         </div>
       </div>

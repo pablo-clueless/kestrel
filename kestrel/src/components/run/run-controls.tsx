@@ -14,6 +14,7 @@ import { useRunEvents } from "@/hooks/use-run-events";
 import { useRunStore } from "@/stores/run-store";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
+import { Checkbox } from "@/components/ui/checkbox";
 import { useValues } from "@/hooks/use-values";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
@@ -32,19 +33,27 @@ import {
 } from "@/lib/client";
 
 type TestKind = RunConfig["kind"];
-type LoadModeType = "closed" | "open" | "breakpoint" | "spike" | "ratelimit";
+type LoadModeType = "closed" | "open" | "breakpoint" | "spike" | "ratelimit" | "soak";
 
 const TESTS: { kind: TestKind; label: string }[] = [
   { kind: "latency", label: "Latency Probe" },
   { kind: "load", label: "Load Test" },
   { kind: "complexity", label: "Big-O (complexity)" },
+  { kind: "payload", label: "Payload scaling" },
   { kind: "concurrency", label: "Concurrency (race)" },
+  { kind: "timeout", label: "Timeout behaviour" },
   { kind: "fake", label: "Fake (no traffic)" },
 ];
+
+/** The Select's value for "no baseline" (Base UI needs a non-empty value). */
+const NO_BASELINE = "__kestrel_no_baseline__";
 
 /** The engine's limits on one concurrency run, whatever the in-flight cap. */
 const MAX_BURST = 1_000;
 const MAX_ROUNDS = 50;
+/** The engine's limits on a timeout run's burst. */
+const MAX_ABANDONED = 1_000;
+const MAX_BURST_CONCURRENCY = 200;
 
 /** Methods that change something, which is what a concurrency test is for. */
 const WRITE_METHODS = ["POST", "PUT", "PATCH", "DELETE"];
@@ -58,6 +67,13 @@ const SIZE_GENERATOR = /{{s*n(:(int_array|string|object_array))?s*}}/;
 const usesSize = (e: Endpoint) =>
   [e.url, ...e.query.map((q) => q.value), ...e.headers.map((h) => h.value), ...bodyTexts(e)].some(
     (s) => SIZE_GENERATOR.test(s),
+  );
+
+/** Whether the request carries credentials: auth, or a header that usually holds them. */
+const usesCredentials = (e: Endpoint) =>
+  e.auth.type !== "none" ||
+  e.headers.some(
+    (h) => h.enabled && ["authorization", "cookie", "x-api-key"].includes(h.key.toLowerCase()),
   );
 
 /** Every template string in the body. */
@@ -127,6 +143,22 @@ const DEFAULTS = {
   burst: 10,
   burstRounds: 3,
   pauseMs: 500,
+  // Multi-endpoint mix (load tests): endpoint id → weight; the selected endpoint is always in it.
+  mixOn: false,
+  mixWeights: {} as Record<string, number>,
+  // Soak
+  soakMin: 30,
+  // Timeout behaviour
+  probes: 20,
+  abandoned: 100,
+  abandonConcurrency: 20,
+  /** 0 = a quarter of the probes' median. */
+  tightMs: 0,
+  // Payload scaling (bytes; the Big-O settings below are shared)
+  payloadMin: 1_000,
+  payloadMax: 1_000_000,
+  /** Big-O and payload scaling: an echo endpoint to send the same bodies to ("" = none). */
+  baselineId: "",
   // Big-O
   minN: 1,
   maxN: 16_384,
@@ -158,6 +190,11 @@ export const RunControls = () => {
   const endpoint = useSelectedEndpoint();
   const isDraft = useSelectedIsDraft();
   const environment = useWorkspaceStore((s) => s.workspace?.activeEnvironment ?? null);
+  /** The selected endpoint's collection: where a load test's mix comes from. */
+  const collection = useWorkspaceStore(
+    (s) =>
+      s.workspace?.collections.find((c) => c.endpoints.some((e) => e.id === endpoint?.id)) ?? null,
+  );
   const flush = useWorkspaceStore((s) => s.flush);
   const running = status === "running";
 
@@ -195,6 +232,16 @@ export const RunControls = () => {
     burst,
     burstRounds,
     pauseMs,
+    soakMin,
+    mixOn,
+    mixWeights,
+    payloadMin,
+    payloadMax,
+    baselineId,
+    probes,
+    abandoned,
+    abandonConcurrency,
+    tightMs,
   } = values;
   const [pendingHost, setPendingHost] = useState<string | null>(null);
 
@@ -224,9 +271,28 @@ export const RunControls = () => {
     clear();
   }, [endpointId, clear]);
 
+  // Big-O and payload scaling share the sweep settings, except the size range: n for Big-O, bytes
+  // for payload scaling, which start from different defaults.
+  const [minKey, maxKey] =
+    kind === "payload" ? (["payloadMin", "payloadMax"] as const) : (["minN", "maxN"] as const);
+  const sweepMin = kind === "payload" ? payloadMin : minN;
+  const sweepMax = kind === "payload" ? payloadMax : maxN;
+
   const buildConfig = (): RunConfig => {
     if (kind === "fake") return { kind, durationMs: Math.round(durationS * 1000) };
     if (!endpoint) throw new Error("Select an endpoint first.");
+    if (kind === "timeout") {
+      return {
+        kind,
+        endpointId: endpoint.id,
+        environment,
+        samples: probes,
+        abandoned,
+        concurrency: abandonConcurrency,
+        tightMs,
+        timeoutMs,
+      };
+    }
     if (kind === "concurrency") {
       return {
         kind,
@@ -246,24 +312,34 @@ export const RunControls = () => {
       okStatuses: parseStatuses(okStatuses),
     };
     if (kind === "latency") return { kind, ...common, warmup, samples };
-    if (kind === "complexity") {
+    if (kind === "complexity" || kind === "payload") {
       return {
         kind,
         ...common,
-        minN,
-        maxN,
+        minN: sweepMin,
+        maxN: sweepMax,
         points: sizes,
         samples: rounds,
+        baselineEndpointId:
+          baselineId && collection?.endpoints.some((e) => e.id === baselineId) ? baselineId : null,
         warmup,
         slowMs,
         budgetMs: Math.round(budgetS * 1000),
       };
     }
+    // The selected endpoint plus the others ticked, by weight; none without a mix.
+    const mixEntries =
+      mixOn && collection
+        ? collection.endpoints
+            .filter((e) => e.id === endpoint.id || (mixWeights[e.id] ?? 0) > 0)
+            .map((e) => ({ endpointId: e.id, weight: Math.max(1, mixWeights[e.id] ?? 1) }))
+        : [];
     if (mode === "ratelimit") {
       const steps = breakpointRates(startRate, stepPercent, maxRate).length;
       return {
         kind,
         ...common,
+        mix: mixEntries,
         mode: {
           type: "rateLimit",
           startRate,
@@ -280,6 +356,7 @@ export const RunControls = () => {
       return {
         kind,
         ...common,
+        mix: mixEntries,
         mode: {
           type: "spike",
           baseRate,
@@ -298,6 +375,7 @@ export const RunControls = () => {
       return {
         kind,
         ...common,
+        mix: mixEntries,
         mode: {
           type: "breakpoint",
           startRate,
@@ -313,9 +391,21 @@ export const RunControls = () => {
         maxInFlight,
       };
     }
+    if (mode === "soak") {
+      return {
+        kind,
+        ...common,
+        mix: mixEntries,
+        mode: { type: "soak", rate },
+        durationMs: Math.round(soakMin * 60_000),
+        rampUpMs: Math.round(rampS * 1000),
+        maxInFlight,
+      };
+    }
     return {
       kind,
       ...common,
+      mix: mixEntries,
       mode: mode === "closed" ? { type: "closed", concurrency } : { type: "open", rate },
       durationMs: Math.round(durationS * 1000),
       rampUpMs: Math.round(rampS * 1000),
@@ -338,6 +428,15 @@ export const RunControls = () => {
     const shaped =
       kind === "load" && (mode === "breakpoint" || mode === "ratelimit" || mode === "spike");
     check(timeoutMs, caps.maxTimeoutMs, "timeout", " ms");
+    if (kind === "timeout") {
+      check(probes, caps.maxSamples, "probes");
+      check(abandoned, MAX_ABANDONED, "requests to abandon");
+      check(
+        abandonConcurrency,
+        Math.min(caps.maxInFlight, MAX_BURST_CONCURRENCY),
+        "abandoned at once",
+      );
+    }
     if (kind === "concurrency") {
       check(burst, Math.min(caps.maxInFlight, MAX_BURST), "requests per round");
       check(burstRounds, MAX_ROUNDS, "rounds");
@@ -346,16 +445,17 @@ export const RunControls = () => {
       check(samples, caps.maxSamples, "samples");
       check(warmup, caps.maxWarmup, "warm-up");
     }
-    if (kind === "complexity") {
+    if (kind === "complexity" || kind === "payload") {
       check(rounds, caps.maxSamples, "rounds");
       check(warmup, caps.maxWarmup, "warm-up");
-      check(maxN, caps.maxN, "largest n");
+      check(sweepMax, caps.maxN, kind === "payload" ? "largest size" : "largest n");
       check(sizes, caps.maxPoints, "sizes");
       check(budgetS, caps.maxSweepS, "time budget", " s");
       check(slowMs, caps.maxTimeoutMs, "slow limit", " ms");
     }
     if (kind === "load") {
-      if (mode === "open") check(rate, caps.maxRps, "rate", " req/s");
+      if (mode === "open" || mode === "soak") check(rate, caps.maxRps, "rate", " req/s");
+      if (mode === "soak") check(soakMin * 60, caps.maxDurationS, "soak length", " s");
       if (mode === "closed") check(concurrency, caps.maxInFlight, "users");
       if (mode === "breakpoint" || mode === "ratelimit") {
         check(startRate, caps.maxRps, "start rate", " req/s");
@@ -367,7 +467,7 @@ export const RunControls = () => {
         check(beforeS + spikeS + afterS, caps.maxDurationS, "total length", " s");
       }
       if (mode !== "closed") check(maxInFlight, caps.maxInFlight, "max in flight");
-      if (!shaped) check(durationS, caps.maxDurationS, "duration", " s");
+      if (!shaped && mode !== "soak") check(durationS, caps.maxDurationS, "duration", " s");
     }
   }
   if (caps && kind === "fake") {
@@ -508,6 +608,7 @@ export const RunControls = () => {
                   <SelectItem value="breakpoint">Breakpoint: step up until it breaks</SelectItem>
                   <SelectItem value="spike">Spike: a burst, then see it recover</SelectItem>
                   <SelectItem value="ratelimit">Rate limit: find where 429s start</SelectItem>
+                  <SelectItem value="soak">Soak: steady load for a long time</SelectItem>
                 </SelectContent>
               </Select>
             </Field>
@@ -660,7 +761,7 @@ export const RunControls = () => {
               </>
             ) : (
               <div className="grid grid-cols-2 gap-3">
-                {mode === "open" ? (
+                {mode === "open" || mode === "soak" ? (
                   <>
                     <Field label="Rate (req/s)">
                       <Input
@@ -692,16 +793,28 @@ export const RunControls = () => {
                     />
                   </Field>
                 )}
-                <Field label="Duration (s)">
-                  <Input
-                    type="number"
-                    min={1}
-                    max={caps?.maxDurationS}
-                    value={durationS}
-                    disabled={running}
-                    onChange={num("durationS")}
-                  />
-                </Field>
+                {mode === "soak" ? (
+                  <Field label="Duration (min)">
+                    <Input
+                      type="number"
+                      min={1}
+                      value={soakMin}
+                      disabled={running}
+                      onChange={num("soakMin")}
+                    />
+                  </Field>
+                ) : (
+                  <Field label="Duration (s)">
+                    <Input
+                      type="number"
+                      min={1}
+                      max={caps?.maxDurationS}
+                      value={durationS}
+                      disabled={running}
+                      onChange={num("durationS")}
+                    />
+                  </Field>
+                )}
                 <Field label="Ramp-up (s)">
                   <Input
                     type="number"
@@ -712,6 +825,58 @@ export const RunControls = () => {
                   />
                 </Field>
               </div>
+            )}
+            {endpoint && collection && collection.endpoints.length > 1 && (
+              <>
+                <label className="flex items-center justify-between">
+                  <span>Mix with other endpoints</span>
+                  <Switch
+                    checked={mixOn}
+                    disabled={running}
+                    onCheckedChange={(checked) => set("mixOn", !!checked)}
+                  />
+                </label>
+                {mixOn && (
+                  <div className="flex flex-col gap-1.5">
+                    <p className="text-muted-foreground text-xs">
+                      Each request goes to one of these, in proportion to its weight. They must all
+                      be on the same host as this endpoint.
+                    </p>
+                    {collection.endpoints.map((e) => {
+                      const self = e.id === endpoint.id;
+                      const weight = mixWeights[e.id] ?? (self ? 1 : 0);
+                      const setWeight = (w: number) =>
+                        set("mixWeights", { ...mixWeights, [e.id]: w });
+                      return (
+                        <div key={e.id} className="flex min-w-0 items-center gap-2">
+                          <Checkbox
+                            checked={self || weight > 0}
+                            disabled={self || running}
+                            onCheckedChange={(checked) => setWeight(checked ? 1 : 0)}
+                            aria-label={`Include ${e.name || e.url}`}
+                          />
+                          <MethodBadge method={e.method} short />
+                          <span className="min-w-0 flex-1 truncate text-xs" title={e.url}>
+                            {e.name || e.url}
+                          </span>
+                          {(self || weight > 0) && (
+                            <Input
+                              type="number"
+                              min={1}
+                              max={1000}
+                              className="h-7 w-16 text-xs"
+                              aria-label="Weight"
+                              value={Math.max(1, weight)}
+                              disabled={running}
+                              onChange={(ev) => setWeight(Math.max(1, Number(ev.target.value)))}
+                            />
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </>
             )}
           </>
         )}
@@ -729,9 +894,16 @@ export const RunControls = () => {
           </Field>
         )}
 
-        {kind === "complexity" && (
+        {(kind === "complexity" || kind === "payload") && (
           <>
-            {endpoint && !usesSize(endpoint) && (
+            {endpoint && !usesSize(endpoint) && kind === "payload" && (
+              <p className="bg-amber-50 p-3 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                Size the payload with <code>{"{{n:string}}"}</code> in the body (n bytes of text),
+                or <code>{"{{n}}"}</code> in a parameter that grows the response, such as a page
+                size.
+              </p>
+            )}
+            {endpoint && !usesSize(endpoint) && kind === "complexity" && (
               <p className="bg-amber-50 p-3 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-300">
                 Mark the input size in the request with <code>{"{{n}}"}</code> (e.g. a limit),{" "}
                 <code>{"{{n:int_array}}"}</code>, <code>{"{{n:string}}"}</code> or{" "}
@@ -740,22 +912,23 @@ export const RunControls = () => {
               </p>
             )}
             <div className="grid grid-cols-2 gap-3">
-              <Field label="Smallest n">
+              <Field label={kind === "payload" ? "Smallest size (bytes)" : "Smallest n"}>
                 <Input
                   type="number"
                   min={1}
-                  value={minN}
+                  value={sweepMin}
                   disabled={running}
-                  onChange={num("minN")}
+                  onChange={num(minKey)}
                 />
               </Field>
-              <Field label="Largest n">
+              <Field label={kind === "payload" ? "Largest size (bytes)" : "Largest n"}>
                 <Input
                   type="number"
                   min={1}
-                  value={maxN}
+                  max={caps?.maxN}
+                  value={sweepMax}
                   disabled={running}
-                  onChange={num("maxN")}
+                  onChange={num(maxKey)}
                 />
               </Field>
               <Field label="Sizes">
@@ -806,9 +979,42 @@ export const RunControls = () => {
                 />
               </Field>
             </div>
+            <Field label="Payload baseline (echo)">
+              <Select
+                value={baselineId || NO_BASELINE}
+                disabled={running}
+                onValueChange={(v) => set("baselineId", v === NO_BASELINE ? "" : String(v))}
+                items={[
+                  { value: NO_BASELINE, label: "None" },
+                  ...(collection?.endpoints ?? [])
+                    .filter((e) => e.id !== endpoint?.id)
+                    .map((e) => ({ value: e.id, label: `${e.method} ${e.name || e.url}` })),
+                ]}
+              >
+                <SelectTrigger className="w-full text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={NO_BASELINE}>None</SelectItem>
+                  {(collection?.endpoints ?? [])
+                    .filter((e) => e.id !== endpoint?.id)
+                    .map((e) => (
+                      <SelectItem key={e.id} value={e.id}>
+                        {e.method} {e.name || e.url}
+                      </SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
+              <p className="text-muted-foreground text-xs">
+                Sends each body to this endpoint too (e.g. one that echoes it back), to show how
+                much of the growth is just moving and parsing the bytes. Must be on the same host.
+              </p>
+            </Field>
             <p className="text-muted-foreground text-xs">
               Sizes are spaced geometrically and sampled in shuffled rounds. A size slower than the
               limit stops the sweep from growing further.
+              {kind === "payload" &&
+                " The results add MB/s and latency against the bytes sent and received, and the cost a request has whatever its size."}
             </p>
           </>
         )}
@@ -862,6 +1068,60 @@ export const RunControls = () => {
           </>
         )}
 
+        {kind === "timeout" && (
+          <>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Probes (before and after)">
+                <Input
+                  type="number"
+                  min={1}
+                  max={caps?.maxSamples}
+                  value={probes}
+                  disabled={running}
+                  onChange={num("probes")}
+                />
+              </Field>
+              <Field label="Requests to abandon">
+                <Input
+                  type="number"
+                  min={1}
+                  max={MAX_ABANDONED}
+                  value={abandoned}
+                  disabled={running}
+                  onChange={num("abandoned")}
+                />
+              </Field>
+              <Field label="Abandoned at once">
+                <Input
+                  type="number"
+                  min={1}
+                  max={
+                    caps ? Math.min(caps.maxInFlight, MAX_BURST_CONCURRENCY) : MAX_BURST_CONCURRENCY
+                  }
+                  value={abandonConcurrency}
+                  disabled={running}
+                  onChange={num("abandonConcurrency")}
+                />
+              </Field>
+              <Field label="Give up after (ms, 0 = auto)">
+                <Input
+                  type="number"
+                  min={0}
+                  value={tightMs}
+                  disabled={running}
+                  onChange={num("tightMs")}
+                />
+              </Field>
+            </div>
+            <p className="text-muted-foreground text-xs">
+              Probes the endpoint one request at a time, then sends {abandoned} requests it gives up
+              on mid-flight, then probes again. A probe that reaches the timeout below means the
+              server hung; slower probes afterwards mean it kept working on requests nobody was
+              waiting for. Auto gives up after a quarter of the probes&apos; median time.
+            </p>
+          </>
+        )}
+
         {kind === "latency" && (
           <div className="grid grid-cols-2 gap-3">
             <Field label="Warm-up">
@@ -897,7 +1157,7 @@ export const RunControls = () => {
                   onChange={num("timeoutMs")}
                 />
               </Field>
-              {kind !== "concurrency" && (
+              {kind !== "concurrency" && kind !== "timeout" && (
                 <Field label="OK statuses">
                   <Input
                     placeholder="404, 409"
@@ -908,7 +1168,7 @@ export const RunControls = () => {
                 </Field>
               )}
             </div>
-            {kind !== "concurrency" && (
+            {kind !== "concurrency" && kind !== "timeout" && (
               <label className="flex items-center justify-between">
                 <span>Keep-alive</span>
                 <Switch
@@ -950,12 +1210,28 @@ export const RunControls = () => {
             is for real traffic. Use the open model to test a target rate.
           </p>
         )}
-        {kind === "load" && mode === "open" && !keepAlive && rate > PORT_EXHAUSTION_RPS && (
-          <p className="rounded-xs bg-amber-50 p-3 text-xs text-amber-700 dark:bg-amber-950 dark:text-amber-400">
-            Keep-alive off at {rate} req/s opens a new connection per request and can exhaust
-            ephemeral ports. Those failures are reported as client errors, not target errors.
+        {kind === "load" && mode === "soak" && caps && soakMin * 60 > caps.maxDurationS && (
+          <p className="bg-muted text-muted-foreground rounded-xs p-3 text-xs">
+            Soak runs usually last 30 minutes or more, and this engine stops runs at{" "}
+            {caps.maxDurationS} s. Set <code>KESTREL_MAX_DURATION_S</code> (up to 7 days) where the
+            engine runs and restart it, or shorten the soak.
           </p>
         )}
+        {kind === "load" && mode === "soak" && endpoint && usesCredentials(endpoint) && (
+          <p className="bg-amber-50 p-3 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+            This request sends credentials. A soak uses the same ones for the whole run, so a token
+            that expires partway through shows up as a wall of 401s. Use one that outlives the run.
+          </p>
+        )}
+        {kind === "load" &&
+          (mode === "open" || mode === "soak") &&
+          !keepAlive &&
+          rate > PORT_EXHAUSTION_RPS && (
+            <p className="rounded-xs bg-amber-50 p-3 text-xs text-amber-700 dark:bg-amber-950 dark:text-amber-400">
+              Keep-alive off at {rate} req/s opens a new connection per request and can exhaust
+              ephemeral ports. Those failures are reported as client errors, not target errors.
+            </p>
+          )}
 
         {runId && (
           <dl className="flex flex-col gap-3 border-t pt-5">

@@ -27,6 +27,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use super::phases::{PhaseTimes, Phases};
+use super::soak::{self, SoakAnalyzer};
 use super::{
     BUCKET_INTERVAL,
     breakpoint::StepJudge,
@@ -35,8 +36,8 @@ use super::{
     sample,
     spike::SpikeAnalyzer,
     types::{
-        BreakpointResult, Bucket, ErrorClass, ErrorCounts, LoadConfig, LoadMode, RateLimitResult, RunEvent, RunReport,
-        RunStatus, Sample, SpikeResult, StartedEvent, StatusCount, TargetInfo,
+        BreakpointResult, Bucket, ErrorClass, ErrorCounts, LoadConfig, LoadMode, MixStats, RateLimitResult, RunEvent,
+        RunReport, RunStatus, Sample, SoakResult, SpikeResult, StartedEvent, StatusCount, TargetInfo,
     },
 };
 use crate::{
@@ -67,6 +68,37 @@ pub struct Prepared {
     pub max_rps: u32,
     /// Set by the caller for endpoints imported from a spec.
     pub contract: Option<Arc<Contract>>,
+    /// Multi-endpoint mix, set with [`Prepared::with_mix`]. Empty: every request is `request`.
+    pub mix: Vec<MixTarget>,
+}
+
+/// One endpoint of a multi-endpoint mix, compiled and ready to send.
+pub struct MixTarget {
+    pub endpoint_id: uuid::Uuid,
+    pub name: String,
+    pub weight: u32,
+    pub request: CompiledRequest,
+    pub contract: Option<Arc<Contract>>,
+}
+
+impl Prepared {
+    /// Spreads the run over `mix`. Every endpoint must be on the target's origin: the run's client is
+    /// pinned to that host's address.
+    pub fn with_mix(mut self, mix: Vec<MixTarget>) -> Result<Self, String> {
+        let origin = |r: &CompiledRequest| r.preview().map(|req| req.url.origin());
+        let primary = origin(&self.request)?;
+        for m in &mix {
+            if origin(&m.request)? != primary {
+                return Err(format!(
+                    "`{}` is on a different host; every endpoint in a mix must be on {}",
+                    m.name,
+                    primary.ascii_serialization()
+                ));
+            }
+        }
+        self.mix = mix;
+        Ok(self)
+    }
 }
 
 pub enum PrepareError {
@@ -92,7 +124,7 @@ pub async fn prepare(
         return Err(PrepareError::HostNotConfirmed(host));
     }
     let target_info = TargetInfo { host, pinned_ip: target.pinned.to_string(), loopback: target.pinned.is_loopback() };
-    Ok(Prepared { cfg, request, target, target_info, max_in_flight, max_rps, contract: None })
+    Ok(Prepared { cfg, request, target, target_info, max_in_flight, max_rps, contract: None, mix: Vec::new() })
 }
 
 /// What request tasks report to the aggregator.
@@ -105,6 +137,8 @@ enum Msg {
 }
 
 struct Record {
+    /// Which endpoint of the mix (0 without one).
+    endpoint: usize,
     /// When the request was scheduled, from the start of the run.
     offset: Duration,
     latency: Duration,
@@ -126,19 +160,41 @@ struct Shared {
     /// Keep responses' rate-limit headers (rate-limit discovery).
     rate_headers: bool,
     client: Client,
-    request: CompiledRequest,
+    /// What to send: one target, or a multi-endpoint mix picked by weight.
+    targets: Vec<Pick>,
+    total_weight: u32,
     timeout: Duration,
     ok_statuses: Vec<u16>,
     tx: mpsc::UnboundedSender<Msg>,
     in_flight: Arc<AtomicU32>,
     success_sampled: AtomicBool,
     error_samples: AtomicUsize,
-    contract: Option<Arc<Contract>>,
     /// (window start, checks in window) for the contract sampling rate.
     contract_gate: Mutex<(Instant, u32)>,
 }
 
+/// One endpoint the run sends to.
+struct Pick {
+    request: CompiledRequest,
+    contract: Option<Arc<Contract>>,
+    weight: u32,
+}
+
 impl Shared {
+    /// The endpoint for the next request, by weight.
+    fn pick(&self) -> (usize, &Pick) {
+        if self.targets.len() > 1 {
+            let mut r = rand::random_range(0..self.total_weight.max(1));
+            for (i, t) in self.targets.iter().enumerate() {
+                if r < t.weight {
+                    return (i, t);
+                }
+                r -= t.weight;
+            }
+        }
+        (0, &self.targets[0])
+    }
+
     /// True if this response may be contract-checked (at most `CONTRACT_CHECKS_PER_SEC`).
     fn contract_slot(&self) -> bool {
         let mut gate = self.contract_gate.lock().unwrap();
@@ -152,11 +208,13 @@ impl Shared {
     /// Sends one request. `scheduled` is when it should have gone out; latency is measured from there.
     async fn fire(&self, scheduled: Instant) {
         let _guard = InFlight::enter(&self.in_flight);
-        let req = match self.request.render() {
+        let (endpoint, target) = self.pick();
+        let req = match target.request.render() {
             Ok(req) => req,
             Err(msg) => {
                 tracing::warn!("render failed mid-run: {msg}");
                 let _ = self.tx.send(Msg::Done(Record {
+                    endpoint,
                     offset: Instant::now().saturating_duration_since(self.started),
                     latency: Duration::ZERO,
                     ttfb: Duration::ZERO,
@@ -173,7 +231,7 @@ impl Shared {
         let outcome = client::execute(&self.client, &req, self.timeout).await.classify_with(&self.ok_statuses);
         let latency = scheduled.elapsed();
 
-        let check = match (&self.contract, outcome.status) {
+        let check = match (&target.contract, outcome.status) {
             (Some(contract), Some(status)) if self.contract_slot() => Some(contract.check(status, &outcome.body)),
             _ => None,
         };
@@ -184,7 +242,8 @@ impl Shared {
         } else {
             self.error_samples.fetch_add(1, Ordering::Relaxed) < MAX_ERROR_SAMPLES
         };
-        let redactor = Redactor::new(self.request.api_key_header.as_deref(), &self.request.secret_values, Some(&req));
+        let redactor =
+            Redactor::new(target.request.api_key_header.as_deref(), &target.request.secret_values, Some(&req));
         let check = check.map(|c| ContractCheck { message: redactor.text(&c.message), ..c });
         let sample = want_sample.then(|| {
             let mut s = sample::build(&req, &outcome, &redactor, SAMPLE_BODY_BYTES);
@@ -193,6 +252,7 @@ impl Shared {
         });
 
         let _ = self.tx.send(Msg::Done(Record {
+            endpoint,
             offset: scheduled.saturating_duration_since(self.started),
             latency,
             ttfb: outcome.ttfb,
@@ -293,6 +353,7 @@ pub async fn run(run: Arc<Run>, p: Prepared) {
     let watch = match &p.cfg.mode {
         LoadMode::Breakpoint(mode) => Some(Watch::Breakpoint(StepJudge::new(mode.clone(), timeout, stop.clone()))),
         LoadMode::Spike(mode) => Some(Watch::Spike(SpikeAnalyzer::new(mode.clone(), timeout))),
+        LoadMode::Soak { .. } => Some(Watch::Soak(SoakAnalyzer::new(duration, timeout))),
         LoadMode::RateLimit(mode) => Some(Watch::RateLimit {
             judge: StepJudge::new(mode.as_breakpoint(), timeout, stop.clone()).counting("429s"),
             limited_headers: None,
@@ -301,21 +362,30 @@ pub async fn run(run: Arc<Run>, p: Prepared) {
         _ => None,
     };
 
-    let aggregator = tokio::spawn(aggregate(Arc::clone(&run), rx, Arc::clone(&in_flight), started, timeout, watch));
+    // A mix's endpoints, for its per-endpoint report; empty for a single endpoint.
+    let mix_meta: Vec<(uuid::Uuid, String, u32)> =
+        p.mix.iter().map(|m| (m.endpoint_id, m.name.clone(), m.weight)).collect();
+    let aggregator =
+        tokio::spawn(aggregate(Arc::clone(&run), rx, Arc::clone(&in_flight), started, timeout, watch, mix_meta.len()));
     let dns = p.target.dns;
 
+    let targets: Vec<Pick> = if p.mix.is_empty() {
+        vec![Pick { request: p.request, contract: p.contract.clone(), weight: 1 }]
+    } else {
+        p.mix.into_iter().map(|m| Pick { request: m.request, contract: m.contract, weight: m.weight.max(1) }).collect()
+    };
     let shared = Arc::new(Shared {
         started,
         rate_headers: matches!(p.cfg.mode, LoadMode::RateLimit(_)),
         client: p.target.client,
-        request: p.request,
+        total_weight: targets.iter().map(|t| t.weight).sum(),
+        targets,
         timeout,
         ok_statuses: p.cfg.ok_statuses.clone(),
         tx,
         in_flight,
         success_sampled: AtomicBool::new(false),
         error_samples: AtomicUsize::new(0),
-        contract: p.contract.clone(),
         contract_gate: Mutex::new((Instant::now(), 0)),
     });
     let pacer = Arc::new(Pacer::new(p.max_rps));
@@ -323,7 +393,7 @@ pub async fn run(run: Arc<Run>, p: Prepared) {
         LoadMode::Closed { concurrency } => {
             closed(shared, Arc::clone(&pacer), concurrency, duration, ramp, &run.cancel).await
         }
-        LoadMode::Open { rate } => {
+        LoadMode::Open { rate } | LoadMode::Soak { rate } => {
             let cap = p.cfg.max_in_flight.unwrap_or(p.max_in_flight).clamp(1, p.max_in_flight);
             open(shared, Rates::Ramp { rate, ramp }, duration, cap as usize, &stop, &run.cancel).await
         }
@@ -428,6 +498,29 @@ pub async fn run(run: Arc<Run>, p: Prepared) {
         breakpoint: totals.breakpoint,
         spike: totals.spike,
         rate_limit: totals.rate_limit,
+        // A soak outlasts the live history (about 17 minutes of buckets), so its windows are the
+        // timeline. Empty for other modes, which `finish` fills from the history.
+        timeline: totals.soak.as_ref().map(soak::timeline).unwrap_or_default(),
+        soak: totals.soak,
+        mix: (!mix_meta.is_empty()).then(|| {
+            mix_meta
+                .into_iter()
+                .zip(totals.per_endpoint)
+                .map(|((endpoint_id, name, weight), e)| MixStats {
+                    endpoint_id,
+                    name,
+                    weight,
+                    requests: e.latency.len(),
+                    errors: e.errors,
+                    latency: e.latency.summary(),
+                    status_counts: e
+                        .statuses
+                        .into_iter()
+                        .map(|(status, count)| StatusCount { status, count })
+                        .collect(),
+                })
+                .collect()
+        }),
         ..RunReport::base(run.id, run.config.clone(), status, run.started_at_ms, now_ms())
     });
 }
@@ -612,12 +705,22 @@ struct Totals {
     breakpoint: Option<BreakpointResult>,
     spike: Option<SpikeResult>,
     rate_limit: Option<RateLimitResult>,
+    soak: Option<SoakResult>,
+    /// Multi-endpoint runs: one per endpoint of the mix, in its order.
+    per_endpoint: Vec<EndpointTotals>,
+}
+
+struct EndpointTotals {
+    latency: Recorder,
+    errors: u64,
+    statuses: BTreeMap<u16, u64>,
 }
 
 /// What watches a shaped open-model run as results come in.
 enum Watch {
     Breakpoint(StepJudge),
     Spike(SpikeAnalyzer),
+    Soak(SoakAnalyzer),
     /// Only 429s count as failures; the first rate-limit headers of each kind are kept.
     RateLimit {
         judge: StepJudge,
@@ -631,6 +734,7 @@ impl Watch {
         match self {
             Self::Breakpoint(j) | Self::RateLimit { judge: j, .. } => j.scheduled(at),
             Self::Spike(a) => a.scheduled(at),
+            Self::Soak(a) => a.scheduled(at),
         }
     }
 
@@ -638,6 +742,7 @@ impl Watch {
         match self {
             Self::Breakpoint(j) => j.dropped(at),
             Self::Spike(a) => a.dropped(at),
+            Self::Soak(a) => a.dropped(at),
             // A drop at the in-flight cap is the engine's limit, not the target's 429. It counts as
             // answered-without-429 so it doesn't hold the step open as "pending".
             Self::RateLimit { judge, .. } => judge.done(at, Duration::ZERO, false),
@@ -649,6 +754,7 @@ impl Watch {
         match self {
             Self::Breakpoint(j) => j.done(rec.offset, rec.latency, failed),
             Self::Spike(a) => a.done(rec.offset, rec.latency, failed),
+            Self::Soak(a) => a.done(rec.offset, rec.latency, failed, rec.status),
             Self::RateLimit { judge, limited_headers, ok_headers } => {
                 let limited = rec.status == Some(429);
                 judge.done(rec.offset, rec.latency, limited);
@@ -670,6 +776,7 @@ impl Watch {
         match self {
             Self::Breakpoint(j) => t.breakpoint = Some(j.finish()),
             Self::Spike(a) => t.spike = Some(a.finish()),
+            Self::Soak(a) => t.soak = Some(a.finish()),
             Self::RateLimit { judge, limited_headers, ok_headers } => {
                 let result = judge.finish();
                 t.rate_limit = Some(RateLimitResult {
@@ -691,6 +798,7 @@ async fn aggregate(
     started: Instant,
     timeout: Duration,
     mut watch: Option<Watch>,
+    endpoints: usize,
 ) -> Totals {
     let mut t = Totals {
         all: Recorder::new(timeout),
@@ -708,6 +816,10 @@ async fn aggregate(
         breakpoint: None,
         spike: None,
         rate_limit: None,
+        soak: None,
+        per_endpoint: (0..endpoints)
+            .map(|_| EndpointTotals { latency: Recorder::new(timeout), errors: 0, statuses: BTreeMap::new() })
+            .collect(),
     };
     let mut window = Recorder::new(timeout);
     let (mut w_errors, mut w_dropped, mut w_lag) = (0u32, 0u32, Duration::ZERO);
@@ -764,6 +876,13 @@ async fn aggregate(
                     }
                     t.all.record(rec.latency);
                     t.ttfb.record(rec.ttfb);
+                    if let Some(e) = t.per_endpoint.get_mut(rec.endpoint) {
+                        e.latency.record(rec.latency);
+                        e.errors += u64::from(rec.error.is_some());
+                        if let Some(code) = rec.status {
+                            *e.statuses.entry(code).or_default() += 1;
+                        }
+                    }
                     if let Some(phases) = rec.phases {
                         t.phases.record(phases);
                     }
@@ -967,6 +1086,7 @@ mod tests {
             keep_alive: true,
             max_in_flight: None,
             ok_statuses: vec![],
+            mix: vec![],
         }
     }
 
@@ -1114,6 +1234,81 @@ mod tests {
             run_load_capped(format!("{base}/ok"), config(LoadMode::Closed { concurrency: 20 }, 1_000), 200).await;
         assert!((180..=210).contains(&report.total_requests), "sent {} at a 200 rps cap", report.total_requests);
         assert!(report.notes.iter().any(|n| n.contains("cap")), "{:?}", report.notes);
+    }
+
+    /// A 3:1 mix of a fast and a slow endpoint: traffic splits by weight, each endpoint gets its own
+    /// numbers, and an endpoint on another host is refused.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_mix_spreads_requests_by_weight_and_reports_each_endpoint() {
+        use crate::engine::types::MixEntry;
+        let base = server().await;
+        let compile = |url: String| {
+            let endpoint = Endpoint {
+                id: uuid::Uuid::nil(),
+                name: String::new(),
+                group: None,
+                method: HttpMethod::Get,
+                url,
+                headers: vec![],
+                query: vec![],
+                body: Default::default(),
+                auth: Default::default(),
+                expect: None,
+                extract: vec![],
+            };
+            CompiledRequest::compile(&endpoint, &Workspace::default(), &Default::default(), None, false).unwrap()
+        };
+        let (fast, slow) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        let mut cfg = config(LoadMode::Open { rate: 200 }, 2_000);
+        cfg.endpoint_id = fast;
+        cfg.mix = vec![MixEntry { endpoint_id: fast, weight: 3 }, MixEntry { endpoint_id: slow, weight: 1 }];
+        let target = |id, name: &str, weight, url: String| MixTarget {
+            endpoint_id: id,
+            name: name.into(),
+            weight,
+            request: compile(url),
+            contract: None,
+        };
+        let Ok(prepared) = prepare(cfg.clone(), compile(format!("{base}/ok")), &[], 10_000, 100_000).await else {
+            panic!("prepare failed")
+        };
+        let elsewhere = prepared.with_mix(vec![target(slow, "other", 1, "http://127.0.0.2:9/x".into())]);
+        assert!(elsewhere.is_err_and(|e| e.contains("different host")));
+
+        let Ok(prepared) = prepare(cfg.clone(), compile(format!("{base}/ok")), &[], 10_000, 100_000).await else {
+            panic!("prepare failed")
+        };
+        let prepared = prepared
+            .with_mix(vec![
+                target(fast, "ok", 3, format!("{base}/ok")),
+                target(slow, "slow", 1, format!("{base}/slow")),
+            ])
+            .unwrap();
+        let registry = Arc::new(RunRegistry::default());
+        let r = registry.create(uuid::Uuid::nil(), super::super::types::RunConfig::Load(cfg));
+        super::run(Arc::clone(&r), prepared).await;
+        let report = r.report().unwrap();
+
+        let mix = report.mix.as_ref().expect("per-endpoint stats");
+        assert_eq!((mix[0].name.as_str(), mix[1].name.as_str()), ("ok", "slow"));
+        let (a, b) = (mix[0].requests as f64, mix[1].requests as f64);
+        assert_eq!(a + b, report.total_requests as f64);
+        assert!((0.68..=0.82).contains(&(a / (a + b))), "about 3 in 4 to the first: {a} vs {b}");
+        let (fast_p50, slow_p50) = (mix[0].latency.as_ref().unwrap().p50_ms, mix[1].latency.as_ref().unwrap().p50_ms);
+        assert!(fast_p50 < 100.0 && slow_p50 >= 290.0, "each endpoint's own latency: {fast_p50} vs {slow_p50}");
+    }
+
+    /// Soak: windows sized from the run, used as the timeline, and a steady target reads as steady.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn soak_reports_windows_as_the_timeline() {
+        let base = server().await;
+        let report = run_load(format!("{base}/ok"), config(LoadMode::Soak { rate: 50 }, 6_000)).await;
+        let soak = report.soak.as_ref().unwrap();
+        assert_eq!(soak.window_ms, 1_000);
+        assert!((6..=7).contains(&soak.windows.len()), "{:?}", soak.windows);
+        assert_eq!(report.timeline.len(), soak.windows.len(), "the windows are the timeline");
+        assert!((280..=310).contains(&report.total_requests), "{}", report.total_requests);
+        assert_eq!(soak.findings[0].level, crate::engine::types::FindingLevel::Good, "{:?}", soak.findings);
     }
 
     #[tokio::test(flavor = "multi_thread")]

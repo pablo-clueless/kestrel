@@ -39,6 +39,12 @@ impl FromRequestParts<AppState> for Scope {
             requested.ok_or_else(|| ApiError::BadRequest("missing X-Kestrel-Workspace header".into()))?
         };
         let store = state.workspaces.get(id).await.map_err(|e| ApiError::Internal(format!("{e:#}")))?;
+        // Defence in depth: never serve a store for a workspace other than the one just authorised,
+        // whatever a cache bug might hand back.
+        if store.id() != id {
+            tracing::error!(authorised = %id, served = %store.id(), "workspace store mismatch; refusing the request");
+            return Err(ApiError::Internal("workspace mismatch; the request was refused".into()));
+        }
         Ok(Self { id, store })
     }
 }

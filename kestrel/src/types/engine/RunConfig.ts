@@ -4,8 +4,9 @@ import type { ConcurrencyConfig } from "./ConcurrencyConfig";
 import type { FakeConfig } from "./FakeConfig";
 import type { LatencyConfig } from "./LatencyConfig";
 import type { LoadConfig } from "./LoadConfig";
+import type { TimeoutConfig } from "./TimeoutConfig";
 
 /**
  * Body of `POST /api/runs`. Tagged by `kind`; real tests are added as variants.
  */
-export type RunConfig = { "kind": "fake" } & FakeConfig | { "kind": "latency" } & LatencyConfig | { "kind": "load" } & LoadConfig | { "kind": "complexity" } & ComplexityConfig | { "kind": "concurrency" } & ConcurrencyConfig;
+export type RunConfig = { "kind": "fake" } & FakeConfig | { "kind": "latency" } & LatencyConfig | { "kind": "load" } & LoadConfig | { "kind": "complexity" } & ComplexityConfig | { "kind": "concurrency" } & ConcurrencyConfig | { "kind": "timeout" } & TimeoutConfig | { "kind": "payload" } & ComplexityConfig;
