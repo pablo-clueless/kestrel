@@ -141,6 +141,9 @@ async fn prepare(state: &AppState, scope: &Scope, config: &RunConfig) -> Result<
             if !mix.is_empty() {
                 prepared = prepared.with_mix(mix).map_err(ApiError::BadRequest)?;
             }
+            if let Some(refresh) = prepared.cfg.token_refresh.clone() {
+                prepared.refresh = Some(token_refresher(scope, &prepared.cfg, &refresh, max_duration_ms)?);
+            }
             Ok(Prepared::Load(Box::new(prepared)))
         }
         RunConfig::Complexity(cfg) | RunConfig::Payload(cfg) => {
@@ -240,6 +243,49 @@ async fn load_mix(scope: &Scope, cfg: &mut crate::engine::types::LoadConfig) -> 
         });
     }
     Ok(targets)
+}
+
+/// The refresher for a load run's `tokenRefresh`, checked up front so mistakes are a 400.
+fn token_refresher(
+    scope: &Scope,
+    cfg: &crate::engine::types::LoadConfig,
+    refresh: &crate::engine::types::TokenRefreshConfig,
+    max_duration_ms: u32,
+) -> Result<crate::engine::refresh::Refresher, ApiError> {
+    if !(10_000..=max_duration_ms.max(10_000)).contains(&refresh.every_ms) {
+        return Err(ApiError::BadRequest(format!(
+            "token refresh must be every 10 s to {} s",
+            max_duration_ms.max(10_000) / 1000
+        )));
+    }
+    let workspace = scope.store.workspace();
+    let environment = cfg.environment.clone().or_else(|| workspace.active_environment.clone()).ok_or_else(|| {
+        ApiError::BadRequest("token refresh saves the token into an environment; choose one first".into())
+    })?;
+    let token_endpoint = workspace.endpoint(refresh.endpoint_id).cloned().ok_or_else(|| {
+        ApiError::BadRequest("the token request endpoint wasn't found; save the workspace first".into())
+    })?;
+    if !token_endpoint.extract.iter().any(|r| r.enabled && !r.name.trim().is_empty()) {
+        let name = if token_endpoint.name.is_empty() { &token_endpoint.url } else { &token_endpoint.name };
+        return Err(ApiError::BadRequest(format!(
+            "`{name}` has no On Response rules, so there's nothing to pick the token out of its response with"
+        )));
+    }
+    // The same endpoints, in the same order, as the run sends them.
+    let ids: Vec<Uuid> =
+        if cfg.mix.is_empty() { vec![cfg.endpoint_id] } else { cfg.mix.iter().map(|m| m.endpoint_id).collect() };
+    let targets = ids
+        .iter()
+        .map(|id| workspace.endpoint(*id).cloned().ok_or_else(|| ApiError::BadRequest("endpoint not found".into())))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(crate::engine::refresh::Refresher::new(
+        std::time::Duration::from_millis(refresh.every_ms.into()),
+        token_endpoint,
+        targets,
+        environment,
+        Arc::clone(&scope.store),
+        std::time::Duration::from_millis(cfg.timeout_ms.into()),
+    ))
 }
 
 /// Most endpoints in one multi-endpoint run.
