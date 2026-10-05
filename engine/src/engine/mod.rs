@@ -7,6 +7,7 @@ pub mod latency;
 pub mod load;
 pub mod payload;
 pub mod phases;
+pub mod refresh;
 pub mod registry;
 pub mod sample;
 pub mod soak;

@@ -70,6 +70,8 @@ pub struct Prepared {
     pub contract: Option<Arc<Contract>>,
     /// Multi-endpoint mix, set with [`Prepared::with_mix`]. Empty: every request is `request`.
     pub mix: Vec<MixTarget>,
+    /// Keeps the run's token fresh; set by the caller (see `refresh.rs`).
+    pub refresh: Option<super::refresh::Refresher>,
 }
 
 /// One endpoint of a multi-endpoint mix, compiled and ready to send.
@@ -124,7 +126,17 @@ pub async fn prepare(
         return Err(PrepareError::HostNotConfirmed(host));
     }
     let target_info = TargetInfo { host, pinned_ip: target.pinned.to_string(), loopback: target.pinned.is_loopback() };
-    Ok(Prepared { cfg, request, target, target_info, max_in_flight, max_rps, contract: None, mix: Vec::new() })
+    Ok(Prepared {
+        cfg,
+        request,
+        target,
+        target_info,
+        max_in_flight,
+        max_rps,
+        contract: None,
+        mix: Vec::new(),
+        refresh: None,
+    })
 }
 
 /// What request tasks report to the aggregator.
@@ -160,9 +172,9 @@ struct Shared {
     /// Keep responses' rate-limit headers (rate-limit discovery).
     rate_headers: bool,
     client: Client,
-    /// What to send: one target, or a multi-endpoint mix picked by weight.
-    targets: Vec<Pick>,
-    total_weight: u32,
+    /// What to send: one target, or a multi-endpoint mix picked by weight. Swapped mid-run when a
+    /// token refresh compiles the requests again.
+    targets: Arc<Targets>,
     timeout: Duration,
     ok_statuses: Vec<u16>,
     tx: mpsc::UnboundedSender<Msg>,
@@ -171,6 +183,70 @@ struct Shared {
     error_samples: AtomicUsize,
     /// (window start, checks in window) for the contract sampling rate.
     contract_gate: Mutex<(Instant, u32)>,
+}
+
+/// The run's endpoints, behind a lock so a token refresh can swap in requests compiled with the new
+/// token. Kept apart from `Shared`: the aggregator ends when the last `Shared` is dropped, and the
+/// refresher mustn't hold that up.
+struct Targets {
+    picks: std::sync::RwLock<Arc<Vec<Pick>>>,
+    total_weight: u32,
+    /// Woken by a 401, so the refresher can fetch a token early.
+    unauthorized: tokio::sync::Notify,
+}
+
+impl Targets {
+    fn current(&self) -> Arc<Vec<Pick>> {
+        Arc::clone(&self.picks.read().unwrap())
+    }
+
+    /// New requests for the same endpoints, in the same order; contracts and weights are kept.
+    fn replace(&self, requests: Vec<CompiledRequest>) {
+        let old = self.current();
+        let new: Vec<Pick> = old
+            .iter()
+            .zip(requests)
+            .map(|(p, request)| Pick { request, contract: p.contract.clone(), weight: p.weight })
+            .collect();
+        *self.picks.write().unwrap() = Arc::new(new);
+    }
+}
+
+/// Refreshes the token every `every`, and early (at most every [`MIN_GAP`]) when the run gets 401s,
+/// until `stop`. Returns what it did, for the notes.
+async fn refresh_loop(
+    mut refresher: super::refresh::Refresher,
+    targets: Arc<Targets>,
+    stop: CancellationToken,
+    mut tally: super::refresh::Tally,
+) -> (String, Duration, super::refresh::Tally) {
+    use super::refresh::MIN_GAP;
+    let every = refresher.every;
+    let mut last = Instant::now();
+    let mut tick = tokio::time::interval_at(last + every, every);
+    loop {
+        let early = tokio::select! {
+            _ = stop.cancelled() => break,
+            _ = tick.tick() => false,
+            _ = targets.unauthorized.notified() => true,
+        };
+        if early && last.elapsed() < MIN_GAP {
+            continue;
+        }
+        match refresher.refresh().await {
+            Ok(requests) => {
+                targets.replace(requests);
+                tally.refreshed += 1;
+                tally.after_401s += u32::from(early);
+            }
+            Err(e) => tally.failures.push(e),
+        }
+        last = Instant::now();
+        if early {
+            tick.reset();
+        }
+    }
+    (refresher.name().to_owned(), every, tally)
 }
 
 /// One endpoint the run sends to.
@@ -182,17 +258,20 @@ struct Pick {
 
 impl Shared {
     /// The endpoint for the next request, by weight.
-    fn pick(&self) -> (usize, &Pick) {
-        if self.targets.len() > 1 {
-            let mut r = rand::random_range(0..self.total_weight.max(1));
-            for (i, t) in self.targets.iter().enumerate() {
+    fn pick(&self) -> (usize, Arc<Vec<Pick>>) {
+        let picks = self.targets.current();
+        let mut index = 0;
+        if picks.len() > 1 {
+            let mut r = rand::random_range(0..self.targets.total_weight.max(1));
+            for (i, t) in picks.iter().enumerate() {
                 if r < t.weight {
-                    return (i, t);
+                    index = i;
+                    break;
                 }
                 r -= t.weight;
             }
         }
-        (0, &self.targets[0])
+        (index, picks)
     }
 
     /// True if this response may be contract-checked (at most `CONTRACT_CHECKS_PER_SEC`).
@@ -208,7 +287,8 @@ impl Shared {
     /// Sends one request. `scheduled` is when it should have gone out; latency is measured from there.
     async fn fire(&self, scheduled: Instant) {
         let _guard = InFlight::enter(&self.in_flight);
-        let (endpoint, target) = self.pick();
+        let (endpoint, picks) = self.pick();
+        let target = &picks[endpoint];
         let req = match target.request.render() {
             Ok(req) => req,
             Err(msg) => {
@@ -229,6 +309,9 @@ impl Shared {
             }
         };
         let outcome = client::execute(&self.client, &req, self.timeout).await.classify_with(&self.ok_statuses);
+        if outcome.status == Some(401) {
+            self.targets.unauthorized.notify_one();
+        }
         let latency = scheduled.elapsed();
 
         let check = match (&target.contract, outcome.status) {
@@ -316,13 +399,27 @@ impl Drop for InFlight<'_> {
     }
 }
 
-pub async fn run(run: Arc<Run>, p: Prepared) {
+pub async fn run(run: Arc<Run>, mut p: Prepared) {
     platform::high_res_timer();
     run.publish(RunEvent::Started(StartedEvent {
         run_id: run.id,
         config: run.config.clone(),
         started_at_ms: run.started_at_ms,
     }));
+
+    // A fresh token before the first request, so the run starts on one that will last.
+    let mut refresher = p.refresh.take();
+    let mut tally = super::refresh::Tally::default();
+    let mut fresh = None;
+    if let Some(r) = refresher.as_mut() {
+        match r.refresh().await {
+            Ok(requests) => {
+                fresh = Some(requests);
+                tally.refreshed += 1;
+            }
+            Err(e) => tally.failures.push(e),
+        }
+    }
 
     let timeout = Duration::from_millis(p.cfg.timeout_ms.into());
     let mut duration = Duration::from_millis(p.cfg.duration_ms.into());
@@ -369,16 +466,28 @@ pub async fn run(run: Arc<Run>, p: Prepared) {
         tokio::spawn(aggregate(Arc::clone(&run), rx, Arc::clone(&in_flight), started, timeout, watch, mix_meta.len()));
     let dns = p.target.dns;
 
-    let targets: Vec<Pick> = if p.mix.is_empty() {
+    let mut picks: Vec<Pick> = if p.mix.is_empty() {
         vec![Pick { request: p.request, contract: p.contract.clone(), weight: 1 }]
     } else {
         p.mix.into_iter().map(|m| Pick { request: m.request, contract: m.contract, weight: m.weight.max(1) }).collect()
     };
+    if let Some(requests) = fresh {
+        for (pick, request) in picks.iter_mut().zip(requests) {
+            pick.request = request;
+        }
+    }
+    let targets = Arc::new(Targets {
+        total_weight: picks.iter().map(|t| t.weight).sum(),
+        picks: std::sync::RwLock::new(Arc::new(picks)),
+        unauthorized: tokio::sync::Notify::new(),
+    });
+    let refresh_stop = run.cancel.child_token();
+    let refreshing =
+        refresher.map(|r| tokio::spawn(refresh_loop(r, Arc::clone(&targets), refresh_stop.clone(), tally)));
     let shared = Arc::new(Shared {
         started,
         rate_headers: matches!(p.cfg.mode, LoadMode::RateLimit(_)),
         client: p.target.client,
-        total_weight: targets.iter().map(|t| t.weight).sum(),
         targets,
         timeout,
         ok_statuses: p.cfg.ok_statuses.clone(),
@@ -421,10 +530,18 @@ pub async fn run(run: Arc<Run>, p: Prepared) {
         }
     };
     let active = started.elapsed().min(duration.max(Duration::from_millis(1)));
+    refresh_stop.cancel();
+    let refresh_notes = match refreshing {
+        Some(handle) => match handle.await {
+            Ok((name, every, tally)) => tally.note(&name, every),
+            Err(_) => vec!["The token refresher stopped unexpectedly.".into()],
+        },
+        None => Vec::new(),
+    };
     // Every `Shared` clone is gone now, so the channel is closed and the aggregator finishes.
     let totals = aggregator.await.expect("aggregator task panicked");
 
-    let mut notes = Vec::new();
+    let mut notes = refresh_notes;
     if let (Some(result), Some(planned)) = (&totals.breakpoint, planned) {
         notes.extend(breakpoint_note(result, planned, duration));
     }
@@ -1087,6 +1204,7 @@ mod tests {
             max_in_flight: None,
             ok_statuses: vec![],
             mix: vec![],
+            token_refresh: None,
         }
     }
 
@@ -1296,6 +1414,124 @@ mod tests {
         assert!((0.68..=0.82).contains(&(a / (a + b))), "about 3 in 4 to the first: {a} vs {b}");
         let (fast_p50, slow_p50) = (mix[0].latency.as_ref().unwrap().p50_ms, mix[1].latency.as_ref().unwrap().p50_ms);
         assert!(fast_p50 < 100.0 && slow_p50 >= 290.0, "each endpoint's own latency: {fast_p50} vs {slow_p50}");
+    }
+
+    /// Token refresh: tokens that expire after 1.5 s, a run that starts with a stale one. It's
+    /// refreshed before the first request, and again early when 401s start.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn token_refresh_keeps_a_short_lived_token_fresh() {
+        use crate::{
+            db::{Db, crypto::SecretsCipher},
+            engine::refresh::Refresher,
+            model::{Auth, Collection, Environment, Extract, ExtractSource, ExtractTarget, store::WorkspaceStore},
+        };
+        use axum::{http::StatusCode, http::header, routing::get};
+
+        // The latest token and when it was issued; it works for 1.5 s.
+        let issued: Arc<std::sync::Mutex<(u32, std::time::Instant)>> =
+            Arc::new(std::sync::Mutex::new((0, std::time::Instant::now())));
+        let (for_token, for_check) = (Arc::clone(&issued), Arc::clone(&issued));
+        let app = Router::new()
+            .route(
+                "/token",
+                get(move || {
+                    let issued = Arc::clone(&for_token);
+                    async move {
+                        let mut i = issued.lock().unwrap();
+                        *i = (i.0 + 1, std::time::Instant::now());
+                        axum::Json(serde_json::json!({ "token": format!("tok-{}", i.0) }))
+                    }
+                }),
+            )
+            .route(
+                "/protected",
+                get(move |headers: axum::http::HeaderMap| {
+                    let issued = Arc::clone(&for_check);
+                    async move {
+                        let (n, at) = *issued.lock().unwrap();
+                        let sent = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).unwrap_or("");
+                        let ok = sent == format!("Bearer tok-{n}") && at.elapsed() < Duration::from_millis(1500);
+                        if ok { StatusCode::OK } else { StatusCode::UNAUTHORIZED }
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let endpoint = |path: &str, auth: Auth, extract: Vec<Extract>| Endpoint {
+            id: uuid::Uuid::new_v4(),
+            name: path.trim_start_matches('/').into(),
+            group: None,
+            method: HttpMethod::Get,
+            url: format!("{{{{base}}}}{path}"),
+            headers: vec![],
+            query: vec![],
+            body: Default::default(),
+            auth,
+            expect: None,
+            extract,
+        };
+        let rule = Extract {
+            source: ExtractSource::Body,
+            path: "token".into(),
+            target: ExtractTarget::Variable,
+            name: "token".into(),
+            enabled: true,
+        };
+        let token = endpoint("/token", Auth::None, vec![rule]);
+        let protected = endpoint("/protected", Auth::Bearer { token: "{{token}}".into() }, vec![]);
+        let workspace = Workspace {
+            collections: vec![Collection {
+                headers: vec![],
+                id: uuid::Uuid::new_v4(),
+                name: "c".into(),
+                vars: Default::default(),
+                endpoints: vec![token.clone(), protected.clone()],
+                groups: vec![],
+                source: None,
+                schema_defs: None,
+            }],
+            environments: vec![Environment {
+                name: "local".into(),
+                vars: [("base".to_string(), base), ("token".to_string(), "stale".to_string())].into(),
+            }],
+            active_environment: Some("local".into()),
+            ..Default::default()
+        };
+        // Variables only: the store never needs the database here.
+        let db = Db::lazy("postgres://unused@127.0.0.1:1/unused", 1, SecretsCipher::for_tests(), "x_").unwrap();
+        let store = Arc::new(WorkspaceStore::empty_for_tests(Arc::new(db)));
+        store.set_workspace_for_tests(workspace.clone());
+
+        let request =
+            CompiledRequest::compile(&protected, &workspace, &Default::default(), Some("local"), false).unwrap();
+        let cfg = config(LoadMode::Open { rate: 50 }, 3_000);
+        let Ok(mut prepared) = prepare(cfg.clone(), request, &[], 10_000, 100_000).await else {
+            panic!("prepare failed")
+        };
+        prepared.refresh = Some(Refresher::new(
+            Duration::from_secs(60),
+            token,
+            vec![protected],
+            "local".into(),
+            store,
+            Duration::from_secs(2),
+        ));
+        let registry = Arc::new(RunRegistry::default());
+        let r = registry.create(uuid::Uuid::nil(), super::super::types::RunConfig::Load(cfg));
+        super::run(Arc::clone(&r), prepared).await;
+        let report = r.report().unwrap();
+
+        let unauthorized = report.status_counts.iter().find(|s| s.status == 401).map_or(0, |s| s.count);
+        assert!(
+            unauthorized * 100 < report.total_requests * 15,
+            "a few 401s while the new token comes in, not a wall: {unauthorized} of {}",
+            report.total_requests
+        );
+        let note = report.notes.iter().find(|n| n.starts_with("Refreshed the token")).expect("a refresh note");
+        assert!(note.contains("early because of 401s"), "{note}");
+        assert!(!report.notes.iter().any(|n| n.contains("failed")), "{:?}", report.notes);
     }
 
     /// Soak: windows sized from the run, used as the timeline, and a steady target reads as steady.
