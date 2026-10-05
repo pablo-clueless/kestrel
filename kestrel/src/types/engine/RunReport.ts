@@ -7,14 +7,17 @@ import type { ContractSummary } from "./ContractSummary";
 import type { ErrorCounts } from "./ErrorCounts";
 import type { HistogramBin } from "./HistogramBin";
 import type { LatencySummary } from "./LatencySummary";
+import type { MixStats } from "./MixStats";
 import type { PhaseSummary } from "./PhaseSummary";
 import type { RateLimitResult } from "./RateLimitResult";
 import type { RunConfig } from "./RunConfig";
 import type { RunStatus } from "./RunStatus";
 import type { Sample } from "./Sample";
+import type { SoakResult } from "./SoakResult";
 import type { SpikeResult } from "./SpikeResult";
 import type { StatusCount } from "./StatusCount";
 import type { TargetInfo } from "./TargetInfo";
+import type { TimeoutResult } from "./TimeoutResult";
 
 export type RunReport = { runId: string, config: RunConfig, status: RunStatus, startedAtMs: number, finishedAtMs: number, totalRequests: number, totalErrors: number, meanRps: number, maxP99Ms: number, 
 /**
@@ -89,4 +92,16 @@ rateLimit: RateLimitResult | null,
 /**
  * Concurrency runs only.
  */
-concurrency: ConcurrencyResult | null, };
+concurrency: ConcurrencyResult | null, 
+/**
+ * Timeout behaviour runs only.
+ */
+timeout: TimeoutResult | null, 
+/**
+ * Soak runs only.
+ */
+soak: SoakResult | null, 
+/**
+ * Multi-endpoint load runs only: each endpoint's share, in the mix's order.
+ */
+mix: Array<MixStats> | null, };

@@ -21,6 +21,8 @@ const KIND_LABEL: Record<RunKind, string> = {
   load: "Load",
   complexity: "Big-O",
   concurrency: "Race",
+  timeout: "Timeout",
+  payload: "Payload",
   fake: "Fake",
 };
 

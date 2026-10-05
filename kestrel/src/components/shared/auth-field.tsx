@@ -23,9 +23,8 @@ export const AuthField = ({
 }: Props) => (
   <div
     className={cn(
-      "bg-card focus-within:border-primary focus-within:ring-primary/15 flex h-14 items-center border transition-[border-color,box-shadow] focus-within:ring-4",
-      invalid &&
-        "border-destructive focus-within:border-destructive focus-within:ring-destructive/15",
+      "bg-card focus-within:border-primary flex h-14 items-center border transition-[border-color,box-shadow]",
+      invalid && "border-destructive focus-within:border-destructive",
       className,
     )}
   >

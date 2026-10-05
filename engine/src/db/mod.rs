@@ -13,6 +13,9 @@
 //!   no tables and fails instead of reading some other schema.
 //! - Schema names are built only from a parsed [`Uuid`], never from request text.
 //! - Shared queries name their schema (`auth.workspaces`).
+//! - Defence in depth: pinning checks that the transaction really resolves to that schema (and
+//!   that it exists), the API checks a store belongs to the workspace it authorised
+//!   (`api::scope`), and the engine warns at startup when it connects as a superuser.
 
 pub mod accounts;
 pub mod crypto;
@@ -133,7 +136,33 @@ impl Db {
     pub async fn connect(url: &str, max_connections: u32, cipher: SecretsCipher) -> anyhow::Result<Self> {
         let db = Self::lazy(url, max_connections, cipher, "")?;
         db.migrate_auth().await?;
+        db.warn_if_superuser().await;
         Ok(db)
+    }
+
+    /// A superuser can read any schema and run server-side programs, so a bug or injection would
+    /// reach everything. The engine only needs a role that owns its own database.
+    async fn warn_if_superuser(&self) {
+        let row: Result<(String, bool), _> =
+            sqlx::query_as("SELECT current_user::text, rolsuper FROM pg_catalog.pg_roles WHERE rolname = current_user")
+                .fetch_one(&self.pool)
+                .await;
+        if let Ok((role, true)) = row {
+            tracing::warn!(
+                "connected to Postgres as `{role}`, a superuser. Use a role that only owns Kestrel's database: \
+                 CREATE ROLE kestrel_app LOGIN PASSWORD '…' NOSUPERUSER NOCREATEDB NOCREATEROLE; \
+                 ALTER DATABASE <db> OWNER TO kestrel_app; then point KESTREL_DATABASE_URL at it"
+            );
+        }
+    }
+
+    /// Whether the connected role is a Postgres superuser.
+    #[cfg(test)]
+    pub async fn is_superuser(&self) -> bool {
+        sqlx::query_scalar("SELECT rolsuper FROM pg_catalog.pg_roles WHERE rolname = current_user")
+            .fetch_one(&self.pool)
+            .await
+            .unwrap_or(false)
     }
 
     /// A pool that connects on first use, with schema names prefixed by `prefix`.
@@ -294,10 +323,20 @@ impl Db {
 }
 
 /// `SET LOCAL search_path = "<schema>"`, as one cached statement whatever the schema (`true` makes
-/// it transaction-local).
+/// it transaction-local). In the same round trip, reads back the schema unqualified names now
+/// resolve to: `current_schema()` is NULL when the schema doesn't exist, and anything but `schema`
+/// means the pin didn't take. Either way nothing runs, rather than running against the wrong place.
 async fn pin(conn: &mut PgConnection, schema: &str) -> anyhow::Result<()> {
-    sqlx::query("SELECT set_config('search_path', $1, true)").bind(quote_ident(schema)).execute(conn).await?;
-    Ok(())
+    let resolved: Option<String> =
+        sqlx::query_scalar("SELECT current_schema()::text FROM (SELECT set_config('search_path', $1, true)) AS pinned")
+            .bind(quote_ident(schema))
+            .fetch_one(conn)
+            .await?;
+    match resolved {
+        Some(found) if found == schema => Ok(()),
+        Some(found) => anyhow::bail!("pinned to schema `{schema}` but queries would go to `{found}`"),
+        None => anyhow::bail!("schema `{schema}` doesn't exist"),
+    }
 }
 
 fn check_not_newer(what: &str, version: usize, known: usize) -> anyhow::Result<()> {
@@ -421,6 +460,27 @@ pub mod test {
 #[cfg(test)]
 mod tests {
     use super::{test::require_db, *};
+
+    /// A pin only succeeds when queries will really go to that schema.
+    #[tokio::test]
+    async fn pinning_checks_the_schema_exists() {
+        let db = require_db!();
+        let id = Uuid::new_v4();
+        let schema = db.ensure_workspace(id).await.unwrap();
+        db.pinned(&schema).await.expect("an existing schema pins").rollback().await.unwrap();
+        let missing = db.schema_of(Uuid::new_v4());
+        let Err(err) = db.pinned(&missing).await else { panic!("a missing schema must not pin") };
+        assert!(format!("{err:#}").contains("doesn't exist"), "{err:#}");
+    }
+
+    #[tokio::test]
+    async fn the_superuser_check_runs() {
+        let db = require_db!();
+        // Development databases usually connect as a superuser; either answer is fine here, as long
+        // as the query works against the real catalog.
+        let _ = db.is_superuser().await;
+        db.warn_if_superuser().await;
+    }
 
     #[tokio::test]
     async fn creates_and_migrates_a_workspace_once() {

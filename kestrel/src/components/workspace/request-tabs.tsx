@@ -206,7 +206,7 @@ const RequestTab = ({
       style={width === null ? undefined : { flex: `0 0 ${width}px` }}
       className={cn(
         "group @container relative flex min-w-10 shrink grow-0 basis-56 cursor-default items-center gap-1.5 border-r px-2 text-xs outline-none select-none",
-        "focus-visible:ring-ring/50 focus-visible:ring-2 focus-visible:ring-inset",
+        "focus-visible:border-primary",
         active
           ? "bg-background text-foreground -mb-px font-medium"
           : "text-muted-foreground hover:bg-muted/60 hover:text-foreground bg-card",

@@ -57,3 +57,19 @@ export async function downloadJsonOrYaml(
   const type = resolved === "yaml" ? "application/yaml" : "application/json";
   downloadText(text, name, type);
 }
+
+/** A random (v4) UUID. `crypto.randomUUID` only exists on secure origins (https, or localhost), so
+ * on plain http (e.g. a LAN address) this builds one from `crypto.getRandomValues`, which works
+ * everywhere and, unlike `Math.random`, is safe for ids that act as keys. */
+export function generateUUID(): string {
+  if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  const b = crypto.getRandomValues(new Uint8Array(16));
+  b[6] = (b[6] & 0x0f) | 0x40; // version 4
+  b[8] = (b[8] & 0x3f) | 0x80; // RFC 4122 variant
+  const h = Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+}
+
+/** Whether `s` is a UUID in the usual 8-4-4-4-12 form. */
+export const isUUID = (s: string) =>
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);

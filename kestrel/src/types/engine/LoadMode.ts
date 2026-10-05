@@ -3,4 +3,4 @@ import type { BreakpointMode } from "./BreakpointMode";
 import type { RateLimitMode } from "./RateLimitMode";
 import type { SpikeMode } from "./SpikeMode";
 
-export type LoadMode = { "type": "closed", concurrency: number, } | { "type": "open", rate: number, } | { "type": "breakpoint" } & BreakpointMode | { "type": "spike" } & SpikeMode | { "type": "rateLimit" } & RateLimitMode;
+export type LoadMode = { "type": "closed", concurrency: number, } | { "type": "open", rate: number, } | { "type": "breakpoint" } & BreakpointMode | { "type": "spike" } & SpikeMode | { "type": "rateLimit" } & RateLimitMode | { "type": "soak", rate: number, };
