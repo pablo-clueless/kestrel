@@ -118,6 +118,12 @@ impl WorkspaceStore {
         }
     }
 
+    /// Replaces the in-memory workspace without touching the database (tests with no Postgres).
+    #[cfg(test)]
+    pub fn set_workspace_for_tests(&self, workspace: Workspace) {
+        *self.workspace.write().unwrap() = workspace;
+    }
+
     async fn tx(&self) -> anyhow::Result<Transaction<'static, Postgres>> {
         self.db.pinned(&self.schema).await
     }
