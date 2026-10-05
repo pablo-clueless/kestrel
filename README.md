@@ -121,7 +121,7 @@ explanations. The main ones:
 | `KESTREL_DATABASE_URL` | required | Postgres connection URL |
 | `KESTREL_SECRETS_KEY` | required | Key that encrypts stored secrets. Keep it safe and don't change it, or stored secrets can't be read. |
 | `KESTREL_TOKEN` | random per start | Session token the UI uses to talk to the engine. Set it when running the UI with `pnpm dev`. |
-| `KESTREL_PORT` | `7070` | Engine port |
+| `KESTREL_PORT` | `7070` | Engine port (falls back to `PORT`, as set by Render, before `7070`) |
 | `KESTREL_AUTH` | `off` | `on` requires sign-in and gives each account its own workspace |
 | `KESTREL_SIGNUP` | `open` | `closed` turns off self sign-up; create accounts with `engine user add <email>` |
 | `KESTREL_SMTP_*` | unset | Email for address verification and password reset (accounts only) |

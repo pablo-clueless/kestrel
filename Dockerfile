@@ -42,8 +42,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 COPY --from=engine /usr/local/bin/kestrel-engine /usr/local/bin/kestrel-engine
 
 # `::` so Fly's private (IPv6) network can reach it. Still no public exposure unless you publish it.
+# The port is 7070 unless the platform assigns one in `PORT` (Render does); KESTREL_PORT overrides both.
 ENV KESTREL_BIND=:: \
-    KESTREL_PORT=7070 \
     KESTREL_WORKSPACE_DIR=/data \
     RUST_LOG=engine=info
 WORKDIR /data
