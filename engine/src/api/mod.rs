@@ -12,10 +12,12 @@ use std::sync::Arc;
 use axum::{
     Json, Router,
     extract::DefaultBodyLimit,
-    http::{HeaderName, HeaderValue, Method, header},
+    http::{HeaderName, HeaderValue, Method, StatusCode, header},
     middleware,
+    response::{IntoResponse, Response},
     routing::{get, post, put},
 };
+use serde_json::json;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use crate::{auth::Accounts, config::Config, db::Db, engine::registry::RunRegistry, model::workspaces::Workspaces};
@@ -69,10 +71,13 @@ pub fn router(state: AppState) -> Router {
         .route("/auth/password-reset/confirm", post(auth::confirm_password_reset))
         .route("/auth/verify-email", post(auth::verify_email))
         .route("/auth/verify-email/resend", post(auth::resend_verification))
+        // An unknown `/api` path is a JSON 404, not the UI's HTML 404 page.
+        .fallback(api_not_found)
         // The last layer added runs first: the guard (token, Host, Origin, content type), then the
-        // session check, then the handler.
+        // session check, then the handler. `json_errors` wraps them all, so every error is JSON.
         .layer(middleware::from_fn_with_state(state.clone(), auth::require_session))
         .layer(middleware::from_fn_with_state(state.clone(), guard::guard))
+        .layer(middleware::from_fn(json_errors))
         .with_state(state.clone());
 
     // CORS is outermost so preflights are answered without a token (browsers never send one).
@@ -84,6 +89,35 @@ pub fn router(state: AppState) -> Router {
         .fallback(ui::serve)
         .with_state(state.clone())
         .layer(cors(&state.config))
+}
+
+/// `/api` paths with no route: a JSON 404 that names what was asked for.
+async fn api_not_found(method: Method, uri: axum::extract::OriginalUri) -> Response {
+    let body = json!({ "error": format!("no API endpoint {method} {}", uri.path()) });
+    (StatusCode::NOT_FOUND, Json(body)).into_response()
+}
+
+/// Every `/api` error is `{"error": "…"}`, like [`ApiError`]'s. Axum's own refusals (a body that
+/// isn't valid JSON, the wrong method, a body over the size limit) come back as plain text; this
+/// turns them into the same shape, keeping their status and headers (e.g. `Allow` on a 405).
+async fn json_errors(req: axum::extract::Request, next: middleware::Next) -> Response {
+    let res = next.run(req).await;
+    let is_json = res
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|ct| ct.starts_with("application/json"));
+    if res.status().as_u16() < 400 || is_json {
+        return res;
+    }
+    let (mut parts, body) = res.into_parts();
+    let bytes = axum::body::to_bytes(body, 64 * 1024).await.unwrap_or_default();
+    let text = String::from_utf8_lossy(&bytes).trim().to_owned();
+    let message =
+        if text.is_empty() { parts.status.canonical_reason().unwrap_or("request failed").to_lowercase() } else { text };
+    parts.headers.remove(header::CONTENT_LENGTH);
+    parts.headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    Response::from_parts(parts, axum::body::Body::from(json!({ "error": message }).to_string()))
 }
 
 fn cors(config: &Config) -> CorsLayer {
@@ -196,6 +230,34 @@ mod tests {
         assert_eq!(body["caps"]["maxRps"], 1000);
         assert_eq!(body["caps"]["maxDurationS"], 60);
         assert_eq!(body["caps"]["maxTimeoutMs"], 60_000);
+    }
+
+    /// Every `/api` error is JSON: unknown paths, wrong methods and bodies that don't parse included.
+    #[tokio::test]
+    async fn api_errors_are_always_json() {
+        let error = |res: Response| async move {
+            let ct = res.headers()[header::CONTENT_TYPE].to_str().unwrap().to_owned();
+            assert!(ct.starts_with("application/json"), "{ct}");
+            let body: serde_json::Value = json_body(res).await;
+            body["error"].as_str().unwrap().to_owned()
+        };
+
+        let res = app().oneshot(post_json("/api/auth/signin", "{}".into())).await.unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+        assert_eq!(error(res).await, "no API endpoint POST /api/auth/signin");
+
+        let res = app().oneshot(post_json("/api/import", "{ not json".into())).await.unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        assert!(error(res).await.contains("JSON"));
+
+        let res = app().oneshot(post_json("/api/import", r#"{"source":{"type":"text"}}"#.into())).await.unwrap();
+        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(error(res).await.contains("content"));
+
+        let res = app().oneshot(get("/api/import").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
+        assert!(res.headers().contains_key(header::ALLOW), "the Allow header is kept");
+        assert_eq!(error(res).await, "method not allowed");
     }
 
     /// Specs and HAR files are often bigger than axum's 2 MB default body limit.
@@ -580,6 +642,88 @@ mod tests {
         assert_eq!(status(&app, stop).await, StatusCode::ACCEPTED);
     }
 
+    /// A multi-endpoint mix is checked up front, then reported per endpoint.
+    #[tokio::test]
+    async fn load_mix_is_validated_and_reported_per_endpoint() {
+        use crate::model::{Collection, Endpoint, HttpMethod};
+        let app = Router::new()
+            .route("/a", axum::routing::get(|| async { "a" }))
+            .route("/b", axum::routing::get(|| async { (StatusCode::NOT_FOUND, "b") }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let (a, b, other) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        let endpoint = |id, name: &str, url: String| Endpoint {
+            id,
+            name: name.into(),
+            group: None,
+            method: HttpMethod::Get,
+            url,
+            headers: vec![],
+            query: vec![],
+            body: Default::default(),
+            auth: Default::default(),
+            expect: None,
+            extract: vec![],
+        };
+        let workspace = Workspace {
+            collections: vec![Collection {
+                headers: Vec::new(),
+                id: uuid::Uuid::new_v4(),
+                name: "c".into(),
+                vars: Default::default(),
+                source: None,
+                groups: Vec::new(),
+                schema_defs: None,
+                endpoints: vec![
+                    endpoint(a, "A", format!("{base}/a")),
+                    endpoint(b, "B", format!("{base}/b")),
+                    endpoint(other, "Elsewhere", "http://127.0.0.2:9/x".into()),
+                ],
+            }],
+            ..Default::default()
+        };
+        let db = require_db!();
+        let app = app_with(&db, workspace, Secrets::default()).await;
+        let config = |mix: &str| {
+            format!(
+                r#"{{"kind":"load","endpointId":"{a}","mode":{{"type":"open","rate":100}},"durationMs":500,"timeoutMs":2000,"keepAlive":true,"mix":{mix}}}"#
+            )
+        };
+        let refused = |mix: String| {
+            let app = app.clone();
+            async move {
+                let res = app.oneshot(post_json("/api/runs", config(&mix))).await.unwrap();
+                assert_eq!(res.status(), StatusCode::BAD_REQUEST, "{mix}");
+                let body: serde_json::Value = json_body(res).await;
+                body["error"].as_str().unwrap().to_owned()
+            }
+        };
+        let entry = |id: uuid::Uuid, w: u32| format!(r#"{{"endpointId":"{id}","weight":{w}}}"#);
+        assert!(refused(format!("[{},{}]", entry(b, 1), entry(other, 1))).await.contains("include the run's endpoint"));
+        assert!(refused(format!("[{},{}]", entry(a, 1), entry(a, 2))).await.contains("twice"));
+        assert!(refused(format!("[{},{}]", entry(a, 1), entry(b, 0))).await.contains("weights"));
+        assert!(refused(format!("[{},{}]", entry(a, 1), entry(other, 1))).await.contains("different host"));
+
+        let res =
+            app.clone().oneshot(post_json("/api/runs", config(&format!("[{},{}]", entry(a, 1), entry(b, 1))))).await;
+        let StartRunResponse { run_id } = json_body(res.unwrap()).await;
+        let events =
+            app.clone().oneshot(get(&format!("/api/runs/{run_id}/events")).body(Body::empty()).unwrap()).await.unwrap();
+        events.into_body().collect().await.unwrap();
+        let report: RunReport = json_body(
+            app.oneshot(get(&format!("/api/runs/{run_id}/report")).body(Body::empty()).unwrap()).await.unwrap(),
+        )
+        .await;
+        let mix = report.mix.expect("per-endpoint stats");
+        assert_eq!((mix[0].name.as_str(), mix[1].name.as_str()), ("A", "B"));
+        assert!(mix[0].requests > 0 && mix[1].requests > 0, "{mix:?}");
+        assert_eq!(mix[0].errors, 0);
+        assert_eq!(mix[1].errors, mix[1].requests, "B's 404s are its own");
+        assert_eq!(mix[1].status_counts[0].status, 404);
+    }
+
     /// M3 "done when": bad responses are flagged, declared 4xx aren't errors, undeclared codes are.
     #[tokio::test]
     async fn latency_run_checks_responses_against_the_contract() {
@@ -661,24 +805,27 @@ mod tests {
     #[tokio::test]
     async fn complexity_run_sweeps_every_size_and_fits() {
         use crate::model::{Body as ReqBody, Collection, Endpoint, HttpMethod};
-        let app = Router::new().route(
-            "/count",
-            axum::routing::post(|body: axum::body::Bytes| async move {
-                let items: Vec<i64> = serde_json::from_slice(&body).unwrap();
-                items.len().to_string()
-            }),
-        );
+        let app = Router::new()
+            .route(
+                "/count",
+                axum::routing::post(|body: axum::body::Bytes| async move {
+                    let items: Vec<i64> = serde_json::from_slice(&body).unwrap();
+                    items.len().to_string()
+                }),
+            )
+            .route("/echo", axum::routing::post(|body: axum::body::Bytes| async move { body }));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
         let (with_n, without_n) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
-        let endpoint = |id, body: &str| Endpoint {
+        let (echo, elsewhere) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        let at = |id, url: &str, body: &str| Endpoint {
             id,
             name: String::new(),
             group: None,
             method: HttpMethod::Post,
-            url: "{{base}}/count".into(),
+            url: url.into(),
             headers: vec![],
             query: vec![],
             body: ReqBody::Json { content: body.into() },
@@ -686,6 +833,7 @@ mod tests {
             expect: None,
             extract: vec![],
         };
+        let endpoint = |id, body: &str| at(id, "{{base}}/count", body);
         let workspace = Workspace {
             collections: vec![Collection {
                 headers: Vec::new(),
@@ -695,7 +843,12 @@ mod tests {
                 source: None,
                 groups: Vec::new(),
                 schema_defs: None,
-                endpoints: vec![endpoint(with_n, "{{n:int_array}}"), endpoint(without_n, "[1,2,3]")],
+                endpoints: vec![
+                    endpoint(with_n, "{{n:int_array}}"),
+                    endpoint(without_n, "[1,2,3]"),
+                    at(echo, "{{base}}/echo", "{}"),
+                    at(elsewhere, "http://127.0.0.2:9/echo", "{}"),
+                ],
             }],
             ..Default::default()
         };
@@ -720,7 +873,7 @@ mod tests {
         assert!(stream.contains(r#""type":"complexity""#), "progress events are streamed");
 
         let report: RunReport = json_body(
-            app.oneshot(get(&format!("/api/runs/{run_id}/report")).body(Body::empty()).unwrap()).await.unwrap(),
+            app.clone().oneshot(get(&format!("/api/runs/{run_id}/report")).body(Body::empty()).unwrap()).await.unwrap(),
         )
         .await;
         assert_eq!(report.status, RunStatus::Completed);
@@ -731,6 +884,51 @@ mod tests {
         assert!(result.points.iter().all(|p| p.samples == 3));
         assert!(result.points[3].request_bytes > result.points[0].request_bytes * 10, "bodies grow with n");
         assert!(!result.analysis.fits.is_empty());
+        assert!(result.payload.is_none(), "only payload runs read the points as bytes");
+
+        // Payload scaling is the same sweep, with the points also read as bytes.
+        let payload = config(with_n).replacen(r#""kind":"complexity""#, r#""kind":"payload""#, 1);
+        let StartRunResponse { run_id } =
+            json_body(app.clone().oneshot(post_json("/api/runs", payload)).await.unwrap()).await;
+        let events =
+            app.clone().oneshot(get(&format!("/api/runs/{run_id}/events")).body(Body::empty()).unwrap()).await.unwrap();
+        events.into_body().collect().await.unwrap();
+        let report: RunReport = json_body(
+            app.clone().oneshot(get(&format!("/api/runs/{run_id}/report")).body(Body::empty()).unwrap()).await.unwrap(),
+        )
+        .await;
+        assert_eq!(report.config.kind(), crate::engine::types::RunKind::Payload);
+        let payload = report.complexity.expect("complexity result").payload.expect("payload result");
+        assert_eq!(payload.points.len(), 4);
+        assert!(payload.points[3].bytes > payload.points[0].bytes * 10);
+        assert!(!payload.findings.is_empty());
+
+        // A payload baseline: the same bodies to `/echo`, a median per size, and a note.
+        let with_baseline = |id: uuid::Uuid| {
+            config(with_n).replacen(
+                r#""budgetMs":60000"#,
+                &format!(r#""budgetMs":60000,"baselineEndpointId":"{id}""#),
+                1,
+            )
+        };
+        let res = app.clone().oneshot(post_json("/api/runs", with_baseline(elsewhere))).await.unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body: serde_json::Value = json_body(res).await;
+        assert!(body["error"].as_str().unwrap().contains("different host"), "{body}");
+
+        let StartRunResponse { run_id } =
+            json_body(app.clone().oneshot(post_json("/api/runs", with_baseline(echo))).await.unwrap()).await;
+        let events =
+            app.clone().oneshot(get(&format!("/api/runs/{run_id}/events")).body(Body::empty()).unwrap()).await.unwrap();
+        events.into_body().collect().await.unwrap();
+        let report: RunReport = json_body(
+            app.oneshot(get(&format!("/api/runs/{run_id}/report")).body(Body::empty()).unwrap()).await.unwrap(),
+        )
+        .await;
+        assert_eq!(report.total_requests, 12, "baseline requests aren't counted as the endpoint's");
+        let points = report.complexity.expect("complexity result").points;
+        assert!(points.iter().all(|p| p.baseline_median_ms.is_some()), "{points:?}");
+        assert!(report.notes.iter().any(|n| n.starts_with("Payload baseline")), "{:?}", report.notes);
     }
 
     /// Start a short fake run, read the whole SSE stream, then fetch the report.

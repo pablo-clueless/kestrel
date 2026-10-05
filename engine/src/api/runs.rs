@@ -20,6 +20,7 @@ use crate::{
     engine::{
         self, Prepared, complexity, concurrency, latency, load,
         registry::Envelope,
+        timeout,
         types::{LoadMode, RunConfig, RunEvent, RunStatus, RunSummary, StartRunResponse},
     },
     error::ApiError,
@@ -97,7 +98,7 @@ async fn prepare(state: &AppState, scope: &Scope, config: &RunConfig) -> Result<
             in_range("timeoutMs", cfg.timeout_ms, 1, max_timeout_ms)?;
             match cfg.mode {
                 LoadMode::Closed { concurrency } => in_range("concurrency", concurrency, 1, caps.max_in_flight)?,
-                LoadMode::Open { rate } => in_range("rate", rate, 1, caps.max_rps)?,
+                LoadMode::Open { rate } | LoadMode::Soak { rate } => in_range("rate", rate, 1, caps.max_rps)?,
                 // Checked above.
                 LoadMode::Spike(_) => {}
                 LoadMode::RateLimit(ref m) => {
@@ -125,6 +126,7 @@ async fn prepare(state: &AppState, scope: &Scope, config: &RunConfig) -> Result<
             let (request, contract) = compile_endpoint(scope, cfg.endpoint_id, cfg.environment.as_deref()).await?;
             let mut cfg = cfg.clone();
             cfg.ok_statuses.extend(contract::ok_statuses_from(contract.as_ref()));
+            let mix = load_mix(scope, &mut cfg).await?;
             if breakpoint {
                 cfg.duration_ms = cfg.duration_ms.clamp(1, max_duration_ms);
             }
@@ -136,9 +138,12 @@ async fn prepare(state: &AppState, scope: &Scope, config: &RunConfig) -> Result<
                         load::PrepareError::HostNotConfirmed(host) => ApiError::HostNotConfirmed(host),
                     })?;
             prepared.contract = contract.map(Arc::new);
+            if !mix.is_empty() {
+                prepared = prepared.with_mix(mix).map_err(ApiError::BadRequest)?;
+            }
             Ok(Prepared::Load(Box::new(prepared)))
         }
-        RunConfig::Complexity(cfg) => {
+        RunConfig::Complexity(cfg) | RunConfig::Payload(cfg) => {
             in_range("minN", cfg.min_n, 1, caps.max_n)?;
             in_range("maxN", cfg.max_n, cfg.min_n, caps.max_n)?;
             in_range("points", cfg.points, 3, caps.max_points)?;
@@ -152,6 +157,17 @@ async fn prepare(state: &AppState, scope: &Scope, config: &RunConfig) -> Result<
                 complexity::prepare(cfg.clone(), request, caps.max_sweep_duration, scope.store.confirmed_hosts())
                     .await
                     .map_err(ApiError::BadRequest)?;
+            let mut prepared = complexity::Prepared { payload: matches!(config, RunConfig::Payload(_)), ..prepared };
+            if let Some(id) = cfg.baseline_endpoint_id {
+                let (echo, _) = compile_endpoint(scope, id, cfg.environment.as_deref()).await?;
+                let name = scope
+                    .store
+                    .workspace()
+                    .endpoint(id)
+                    .map(|e| if e.name.is_empty() { e.url.clone() } else { e.name.clone() })
+                    .unwrap_or_default();
+                prepared = prepared.with_baseline(name, &echo).map_err(ApiError::BadRequest)?;
+            }
             Ok(Prepared::Complexity(Box::new(prepared)))
         }
         RunConfig::Concurrency(cfg) => {
@@ -169,8 +185,65 @@ async fn prepare(state: &AppState, scope: &Scope, config: &RunConfig) -> Result<
                     })?;
             Ok(Prepared::Concurrency(Box::new(prepared)))
         }
+        RunConfig::Timeout(cfg) => {
+            in_range("samples", cfg.samples, 1, caps.max_samples)?;
+            in_range("abandoned", cfg.abandoned, 1, timeout::MAX_ABANDONED)?;
+            in_range("concurrency", cfg.concurrency, 1, caps.max_in_flight.min(timeout::MAX_BURST_CONCURRENCY))?;
+            in_range("timeoutMs", cfg.timeout_ms, 1, max_timeout_ms)?;
+            in_range("tightMs", cfg.tight_ms, 0, cfg.timeout_ms)?;
+            let (request, _) = compile_endpoint(scope, cfg.endpoint_id, cfg.environment.as_deref()).await?;
+            let prepared = timeout::prepare(cfg.clone(), request, &scope.store.confirmed_hosts(), caps.max_duration)
+                .await
+                .map_err(|e| match e {
+                    load::PrepareError::Invalid(msg) => ApiError::BadRequest(msg),
+                    load::PrepareError::HostNotConfirmed(host) => ApiError::HostNotConfirmed(host),
+                })?;
+            Ok(Prepared::Timeout(Box::new(prepared)))
+        }
     }
 }
+
+/// The endpoints of a multi-endpoint load run, compiled. Their specs' declared statuses join the
+/// run's OK statuses (the list is per run, not per endpoint).
+async fn load_mix(scope: &Scope, cfg: &mut crate::engine::types::LoadConfig) -> Result<Vec<load::MixTarget>, ApiError> {
+    if cfg.mix.is_empty() {
+        return Ok(Vec::new());
+    }
+    if !(2..=MAX_MIX).contains(&cfg.mix.len()) {
+        return Err(ApiError::BadRequest(format!("a mix has 2 to {MAX_MIX} endpoints")));
+    }
+    let ids: HashSet<Uuid> = cfg.mix.iter().map(|m| m.endpoint_id).collect();
+    if ids.len() != cfg.mix.len() {
+        return Err(ApiError::BadRequest("an endpoint is in the mix twice".into()));
+    }
+    if !ids.contains(&cfg.endpoint_id) {
+        return Err(ApiError::BadRequest("the mix must include the run's endpoint".into()));
+    }
+    let workspace = scope.store.workspace();
+    let mut targets = Vec::new();
+    for entry in cfg.mix.clone() {
+        if !(1..=1_000).contains(&entry.weight) {
+            return Err(ApiError::BadRequest("mix weights must be between 1 and 1000".into()));
+        }
+        let (request, contract) = compile_endpoint(scope, entry.endpoint_id, cfg.environment.as_deref()).await?;
+        cfg.ok_statuses.extend(contract::ok_statuses_from(contract.as_ref()));
+        let name = workspace
+            .endpoint(entry.endpoint_id)
+            .map(|e| if e.name.is_empty() { e.url.clone() } else { e.name.clone() })
+            .unwrap_or_default();
+        targets.push(load::MixTarget {
+            endpoint_id: entry.endpoint_id,
+            name,
+            weight: entry.weight,
+            request,
+            contract: contract.map(Arc::new),
+        });
+    }
+    Ok(targets)
+}
+
+/// Most endpoints in one multi-endpoint run.
+const MAX_MIX: usize = 20;
 
 /// The request to send, and the contract to check responses against (for imported endpoints).
 async fn compile_endpoint(

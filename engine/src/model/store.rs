@@ -27,6 +27,7 @@ use crate::{
 const RUN_HISTORY: i64 = 500;
 
 pub struct WorkspaceStore {
+    /// The workspace this store reads and writes; `api::scope` checks it against the request's.
     id: Uuid,
     schema: String,
     db: Arc<Db>,
@@ -71,6 +72,11 @@ impl FromIterator<(Uuid, Bytes)> for Files {
 }
 
 impl WorkspaceStore {
+    /// The workspace this store belongs to.
+    pub fn id(&self) -> Uuid {
+        self.id
+    }
+
     /// Opens workspace `id`, creating and migrating its schema if needed, and loads the cache.
     pub async fn open(db: Arc<Db>, id: Uuid) -> anyhow::Result<Self> {
         let schema = db.ensure_workspace(id).await?;

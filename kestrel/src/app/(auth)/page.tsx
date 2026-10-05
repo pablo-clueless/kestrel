@@ -4,6 +4,7 @@ import { CircleCheck, LockKeyhole, Mail } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import { toast } from "sonner";
 import Link from "next/link";
 import { z } from "zod";
 
@@ -46,7 +47,6 @@ const MODES: Mode[] = ["signin", "signup"];
 /** Sign-in and sign-up. Goes straight to the workspace when accounts are off or already signed in. */
 const Page = () => {
   const [showPassword, setShowPassword] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [mode, setMode] = useState<Mode>("signin");
   const queryClient = useQueryClient();
   const router = useRouter();
@@ -102,17 +102,20 @@ const Page = () => {
 
   const proceed = me.data && (me.data.auth === "off" || me.data.user !== null);
   useEffect(() => {
+    if (me.isError) toast.error(errorMessage(me.error));
+  }, [me.isError, me.error]);
+  useEffect(() => {
     if (proceed) router.replace("/workspace");
   }, [proceed, router]);
 
   const onSubmit = async ({ email, password }: FormValues) => {
-    setError(null);
     try {
       const signedIn = await authenticate(mode, email, password);
       queryClient.setQueryData(ME_KEY, signedIn);
+      toast.success("Signed in successfully");
       router.replace("/workspace");
     } catch (err) {
-      setError(errorMessage(err));
+      toast.error(errorMessage(err));
     }
   };
 
@@ -127,7 +130,7 @@ const Page = () => {
   if (me.isError) {
     return (
       <div className="flex flex-col items-center gap-3 p-4 text-center text-sm">
-        <p className="text-destructive">{errorMessage(me.error)}</p>
+        <p className="text-muted-foreground">Couldn&apos;t check whether you&apos;re signed in.</p>
         <Button variant="outline" onClick={() => void me.refetch()}>
           Try again
         </Button>
@@ -152,10 +155,7 @@ const Page = () => {
               type="button"
               role="tab"
               aria-selected={mode === m}
-              onClick={() => {
-                setError(null);
-                setMode(m);
-              }}
+              onClick={() => setMode(m)}
               className={cn(
                 "h-9 text-sm transition-colors",
                 mode === m
@@ -186,11 +186,6 @@ const Page = () => {
               >
                 Forgot password?
               </Link>
-            )}
-            {error && (
-              <p role="alert" className="text-destructive text-sm">
-                {error}
-              </p>
             )}
             <Button type="submit" disabled={isSubmitting} className="mt-2 h-12 text-sm">
               {isSubmitting ? <CircleLoader radius={8} /> : copy.action}

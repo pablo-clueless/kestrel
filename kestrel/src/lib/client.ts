@@ -20,6 +20,7 @@ import type { RunConfig } from "@/types/engine/RunConfig";
 import type { RunReport } from "@/types/engine/RunReport";
 import type { Workspace } from "@/types/engine/Workspace";
 import type { FileRef } from "@/types/engine/FileRef";
+import { generateUUID, isUUID } from "./utils";
 
 // Build-time values, used by `pnpm dev` (the UI on :3000 talks to the engine on :7070).
 const BUILD_TOKEN = process.env.NEXT_PUBLIC_KESTREL_TOKEN ?? "";
@@ -27,11 +28,12 @@ const BUILD_TOKEN = process.env.NEXT_PUBLIC_KESTREL_TOKEN ?? "";
 /** In `pnpm dev`, the engine on the page's own hostname: `localhost:3000` → `localhost:7070`. The
  * session cookie is `SameSite=Lax`, so the UI and engine must be the same *site*: `localhost` and
  * `127.0.0.1` are different sites, and mixing them would silently drop the cookie. */
+const ENGINE_PORT = process.env.NEXT_PUBLIC_ENGINE_PORT || "7070";
 const devEngineUrl = () =>
   process.env.NEXT_PUBLIC_ENGINE_URL ||
   (typeof location === "undefined"
-    ? "http://localhost:7070"
-    : `${location.protocol}//${location.hostname}:7070`);
+    ? `http://localhost:${ENGINE_PORT}`
+    : `${location.protocol}//${location.hostname}:${ENGINE_PORT}`);
 
 /** Set when the engine serves the UI itself (single binary / container): it injects the token into the
  * page, and the API is on the same origin. Read per call: this module also loads during prerender. */
@@ -46,13 +48,21 @@ const token = () => injectedToken() ?? BUILD_TOKEN;
 const WORKSPACE_KEY = "kestrel-workspace";
 let memoryWorkspaceId: string | null = null;
 
-/** The workspace id this browser already has, without making one. */
+/** The workspace id this browser already has, without making one. A stored value that isn't a UUID
+ * (an older build could save malformed ones) is dropped, since the engine would refuse every request
+ * that carried it. */
 const storedWorkspaceId = (): string | undefined => {
+  let saved: string | null = null;
   try {
-    return localStorage.getItem(WORKSPACE_KEY) ?? memoryWorkspaceId ?? undefined;
+    saved = localStorage.getItem(WORKSPACE_KEY);
+    if (saved !== null && !isUUID(saved)) {
+      localStorage.removeItem(WORKSPACE_KEY);
+      saved = null;
+    }
   } catch {
-    return memoryWorkspaceId ?? undefined;
+    // Storage blocked: fall back to this tab's id.
   }
+  return saved ?? (memoryWorkspaceId && isUUID(memoryWorkspaceId) ? memoryWorkspaceId : undefined);
 };
 
 /** Remembers the workspace to send. With accounts on, the engine says which one (see `getMe`). */
@@ -71,7 +81,7 @@ const setWorkspaceId = (id: string) => {
 export const workspaceId = () => {
   const saved = storedWorkspaceId();
   if (saved) return saved;
-  const id = crypto.randomUUID();
+  const id = generateUUID();
   setWorkspaceId(id);
   return id;
 };
@@ -105,11 +115,15 @@ export const getMe = async () => {
   return me;
 };
 
+const MODES = {
+  signin: "login",
+  signup: "signup",
+};
 /** Signs in or creates an account. Sends this browser's existing workspace, which a first sign-in
  * adopts if nobody owns it, so work done before signing up isn't lost. */
 export const authenticate = async (mode: "signin" | "signup", email: string, password: string) => {
   const req: AuthRequest = { email, password, workspace: storedWorkspaceId() };
-  const me = (await engine.post<MeResponse>(`/auth/${mode}`, req)).data;
+  const me = (await engine.post<MeResponse>(`/auth/${MODES[mode]}`, req)).data;
   if (me.workspaceId) setWorkspaceId(me.workspaceId);
   return me;
 };
@@ -233,11 +247,32 @@ export const unconfirmedHost = (err: unknown): string | null => {
 export const runEventsUrl = (runId: string) =>
   `${engineUrl()}/api/runs/${runId}/events?token=${encodeURIComponent(token())}&workspace=${encodeURIComponent(workspaceId())}`;
 
+/** Sentence case: the engine writes its messages in lower case. */
+const sentence = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+
+/** A message fit for a toast. The engine's own message when it sent one; otherwise a plain account
+ * of what went wrong, never axios's "Request failed with status code …". */
 export const errorMessage = (err: unknown) => {
   if (axios.isAxiosError(err)) {
-    const body = err.response?.data as { error?: string } | undefined;
-    if (body?.error) return body.error;
     if (!err.response) return "Can't reach the engine. Is `cargo run -p engine` running?";
+    const { status, data } = err.response;
+    const body = data as { error?: string } | string | undefined;
+    const message = typeof body === "object" ? body?.error : undefined;
+    // A request the engine couldn't parse is the UI's fault, not the user's; keep the detail for
+    // whoever opens the console.
+    if (status === 400 || status === 415 || status === 422) {
+      const detail = message ?? (typeof body === "string" ? body : "");
+      if (/deserialize|parse|json/i.test(detail)) {
+        console.error("The engine couldn't read a request:", detail);
+        return "Something went wrong sending that. Reload the page and try again.";
+      }
+    }
+    if (message) return sentence(message);
+    if (status === 404)
+      return "The engine doesn't recognise that request. Restart it to pick up the latest version.";
+    if (status === 429) return "Too many attempts. Wait a minute and try again.";
+    if (status >= 500) return "The engine hit a problem. Try again, or check its log.";
+    return `The engine refused that request (${status}).`;
   }
   return err instanceof Error ? err.message : String(err);
 };

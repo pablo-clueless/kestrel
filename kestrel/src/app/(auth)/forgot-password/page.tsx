@@ -2,6 +2,7 @@
 
 import { ArrowLeft, Mail, MailCheck } from "lucide-react";
 import { useState } from "react";
+import { toast } from "sonner";
 import Link from "next/link";
 import { z } from "zod";
 
@@ -50,15 +51,13 @@ const fields: Record<keyof FormValues, FormField<FormValues>> = {
 /** Asks for a reset link. The answer is the same whether or not the address has an account. */
 const Page = () => {
   const [sentTo, setSentTo] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
 
   const onSubmit = async ({ email }: FormValues) => {
-    setError(null);
     try {
       await requestPasswordReset(email);
       setSentTo(email);
     } catch (err) {
-      setError(errorMessage(err));
+      toast.error(errorMessage(err));
     }
   };
 
@@ -99,11 +98,6 @@ const Page = () => {
         {({ field, isSubmitting }) => (
           <div className="flex flex-col gap-3">
             {field("email")}
-            {error && (
-              <p role="alert" className="text-destructive text-sm">
-                {error}
-              </p>
-            )}
             <Button type="submit" disabled={isSubmitting} className="mt-2 h-12 text-sm">
               {isSubmitting ? <CircleLoader radius={8} /> : "Send reset link"}
             </Button>

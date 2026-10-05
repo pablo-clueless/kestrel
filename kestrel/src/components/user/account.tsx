@@ -26,7 +26,7 @@ export const Account = ({ selected }: Props) => {
 
   return (
     <TabPanel selected={selected} value="account">
-      <div className="bg-background flex flex-col gap-4 p-5">
+      <div className="bg-background flex h-[calc(100%-36px)] flex-col gap-4 p-5">
         {user ? (
           <div className="flex max-w-sm flex-col gap-1.5">
             <Label htmlFor="account-email">Email</Label>

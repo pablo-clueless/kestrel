@@ -15,7 +15,7 @@ export default function DashboardLayout({ children }: Props) {
         <Sidebar />
         <div className="flex min-w-0 flex-1 flex-col">
           <Header />
-          <div className="min-h-0 flex-1">{children}</div>
+          <div className="h-[calc(100vh-56px)] min-h-0 flex-1">{children}</div>
         </div>
       </div>
     </AuthGate>

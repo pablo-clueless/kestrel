@@ -38,6 +38,34 @@ pub struct Prepared {
     pub target_info: TargetInfo,
     pub sizes: Vec<u64>,
     pub budget: Duration,
+    /// Payload scaling: also read the points as bytes (`payload.rs`).
+    pub payload: bool,
+    /// Where each sample's body is also sent, as a payload baseline. See [`Prepared::with_baseline`].
+    pub baseline: Option<Baseline>,
+}
+
+/// The echo endpoint of a payload baseline: same body and headers, its own method and URL.
+pub struct Baseline {
+    pub name: String,
+    pub method: crate::model::HttpMethod,
+    pub url: url::Url,
+}
+
+impl Prepared {
+    /// Adds a payload baseline. It must be on the endpoint's own origin, since the run's client is
+    /// pinned to that host's address.
+    pub fn with_baseline(mut self, name: String, request: &CompiledRequest) -> Result<Self, String> {
+        let echo = request.preview()?;
+        let main = self.request.preview()?;
+        if echo.url.origin() != main.url.origin() {
+            return Err(format!(
+                "the baseline `{name}` is on a different host; it must be on {}",
+                main.url.origin().ascii_serialization()
+            ));
+        }
+        self.baseline = Some(Baseline { name, method: echo.method, url: echo.url });
+        Ok(self)
+    }
 }
 
 pub async fn prepare(
@@ -61,7 +89,7 @@ pub async fn prepare(
     };
     let sizes = geometric_sizes(cfg.min_n, cfg.max_n, cfg.points);
     let budget = Duration::from_millis(cfg.budget_ms.into()).min(budget_cap);
-    Ok(Prepared { cfg, request, target, target_info, sizes, budget })
+    Ok(Prepared { cfg, request, target, target_info, sizes, budget, payload: false, baseline: None })
 }
 
 /// `points` sizes from `min` to `max`, evenly spaced on a log scale, rounded and deduplicated.
@@ -77,6 +105,8 @@ pub fn geometric_sizes(min: u32, max: u32, points: u32) -> Vec<u64> {
 #[derive(Default)]
 struct SizeData {
     latencies_ms: Vec<f64>,
+    /// The same bodies sent to the baseline endpoint (successes only).
+    baseline_ms: Vec<f64>,
     request_bytes: Vec<u64>,
     response_bytes: Vec<u64>,
     errors: u32,
@@ -99,6 +129,11 @@ impl SizeData {
             errors: self.errors,
             request_bytes: median_u64(&self.request_bytes),
             response_bytes: median_u64(&self.response_bytes),
+            baseline_median_ms: (!self.baseline_ms.is_empty()).then(|| {
+                let mut b = self.baseline_ms.clone();
+                b.sort_by(f64::total_cmp);
+                quantile(&b, 0.5)
+            }),
         })
     }
 }
@@ -123,6 +158,7 @@ pub async fn run(run: Arc<Run>, p: Prepared) {
     let (mut have_success_sample, mut error_samples) = (false, 0);
     let mut last_progress = Instant::now();
     let mut status = RunStatus::Completed;
+    let mut baseline_failures = 0u32;
 
     // Warm up once, at the middle size.
     let mid = p.sizes[p.sizes.len() / 2];
@@ -182,6 +218,24 @@ pub async fn run(run: Arc<Run>, p: Prepared) {
                     total_errors += 1;
                 }
             }
+            // The same body to the echo endpoint, straight after, so both see the same conditions.
+            if let (Some(base), None) = (&p.baseline, &outcome.error) {
+                let mut echo = req.clone();
+                echo.method = base.method;
+                echo.url = base.url.clone();
+                let echoed = tokio::select! {
+                    _ = run.cancel.cancelled() => { status = RunStatus::Cancelled; break 'rounds; }
+                    o = client::execute(&p.target.client, &echo, timeout) => o,
+                };
+                let d = data.get_mut(&n).expect("size is tracked");
+                if echoed.is_success() {
+                    d.baseline_ms.push(echoed.total.as_secs_f64() * 1000.0);
+                } else {
+                    baseline_failures += 1;
+                }
+            }
+            let d = data.get_mut(&n).expect("size is tracked");
+
             let want_sample =
                 if outcome.is_success() { !have_success_sample } else { error_samples < MAX_ERROR_SAMPLES };
             if want_sample {
@@ -235,6 +289,16 @@ pub async fn run(run: Arc<Run>, p: Prepared) {
             first.request_bytes, last.request_bytes
         ));
     }
+    let payload = p.payload.then(|| super::payload::analyse(&points, &analysis, p.target_info.loopback));
+    if let Some(base) = &p.baseline {
+        notes.extend(baseline_note(&base.name, &points));
+        if baseline_failures > 0 {
+            notes.push(format!(
+                "{baseline_failures} baseline requests to `{}` failed and aren't in its curve.",
+                base.name
+            ));
+        }
+    }
     if p.target_info.loopback {
         notes.push("The target is on this machine, so it competes with the engine for CPU.".into());
     }
@@ -253,7 +317,7 @@ pub async fn run(run: Arc<Run>, p: Prepared) {
         error_counts: errors,
         samples,
         notes,
-        complexity: Some(ComplexityResult { points, analysis }),
+        complexity: Some(ComplexityResult { points, analysis, payload }),
         ..RunReport::base(run.id, run.config.clone(), status, run.started_at_ms, now_ms())
     });
 }
@@ -264,6 +328,34 @@ fn publish_progress(run: &Run, data: &BTreeMap<u64, SizeData>, round: u32, round
 }
 
 /// Linear-interpolated quantile of sorted values.
+/// How much of the endpoint's growth the echo endpoint shows too: that part is moving and parsing
+/// the bytes, the rest is the endpoint's own work.
+fn baseline_note(name: &str, points: &[ComplexityPoint]) -> Option<String> {
+    let with: Vec<(&ComplexityPoint, f64)> =
+        points.iter().filter_map(|p| p.baseline_median_ms.map(|b| (p, b))).collect();
+    let (&(first, first_echo), &(last, last_echo)) = (with.first()?, with.last()?);
+    if first.n == last.n {
+        return None;
+    }
+    let grew = last.median_ms - first.median_ms;
+    let echo_grew = (last_echo - first_echo).max(0.0);
+    Some(if grew <= 0.0 {
+        format!(
+            "Payload baseline (`{name}`): it went from {first_echo:.1} to {last_echo:.1} ms from n = {} to n = {}, \
+             while this endpoint didn't grow.",
+            first.n, last.n
+        )
+    } else {
+        let share = (echo_grew / grew * 100.0).clamp(0.0, 100.0);
+        format!(
+            "Payload baseline (`{name}`): from n = {} to n = {} this endpoint grew {grew:.1} ms and the echo grew \
+             {echo_grew:.1} ms, so about {share:.0}% of the growth is moving and parsing the bytes; the rest is \
+             the endpoint's own work.",
+            first.n, last.n
+        )
+    })
+}
+
 fn quantile(sorted: &[f64], q: f64) -> f64 {
     let pos = q * (sorted.len() - 1) as f64;
     let (lo, hi) = (pos.floor() as usize, pos.ceil() as usize);
@@ -288,6 +380,25 @@ mod tests {
         assert_eq!(geometric_sizes(1, 4096, 13), vec![1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096]);
         assert_eq!(geometric_sizes(1, 4, 10), vec![1, 2, 3, 4]);
         assert_eq!(geometric_sizes(10, 10, 5), vec![10]);
+    }
+
+    #[test]
+    fn the_baseline_note_says_how_much_growth_is_transfer() {
+        let point = |n, median_ms, echo| ComplexityPoint {
+            n,
+            median_ms,
+            p25_ms: median_ms,
+            p75_ms: median_ms,
+            samples: 5,
+            errors: 0,
+            request_bytes: n * 10,
+            response_bytes: 0,
+            baseline_median_ms: Some(echo),
+        };
+        // The endpoint grows 40 ms, the echo 10 ms: a quarter is moving the bytes.
+        let note = baseline_note("echo", &[point(1, 10.0, 2.0), point(1000, 50.0, 12.0)]).unwrap();
+        assert!(note.contains("grew 40.0 ms") && note.contains("about 25%"), "{note}");
+        assert!(baseline_note("echo", &[point(1, 10.0, 2.0)]).is_none(), "one size says nothing");
     }
 
     #[test]

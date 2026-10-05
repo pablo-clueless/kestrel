@@ -24,4 +24,10 @@ slowMs: number,
 /**
  * Total time for the sweep.
  */
-budgetMs: number, };
+budgetMs: number, 
+/**
+ * Payload baseline (HANDOFF → Big-O, step 5): an echo endpoint on the same host. Each sample's
+ * exact body is also sent there, so the report can show how much of the growth is transfer
+ * and parsing rather than the endpoint's own work.
+ */
+baselineEndpointId: string | null, };
