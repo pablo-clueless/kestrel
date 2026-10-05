@@ -81,6 +81,19 @@ pub struct LoadConfig {
     /// every endpoint must be on the same host, since a run pins one host's address.
     #[serde(default)]
     pub mix: Vec<MixEntry>,
+    /// Keeps a short-lived token fresh during the run (HANDOFF → Open questions 3).
+    #[serde(default)]
+    pub token_refresh: Option<TokenRefreshConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct TokenRefreshConfig {
+    /// An endpoint whose On Response rules pick the token out of its response.
+    pub endpoint_id: Uuid,
+    /// How often to fetch a new token. It's also fetched at the start, and early on 401s.
+    pub every_ms: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

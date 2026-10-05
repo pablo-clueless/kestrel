@@ -45,6 +45,9 @@ const TESTS: { kind: TestKind; label: string }[] = [
   { kind: "fake", label: "Fake (no traffic)" },
 ];
 
+/** The Select's value for "no token request chosen" (Base UI needs a non-empty value). */
+const NO_TOKEN = "__kestrel_no_token__";
+
 /** The Select's value for "no baseline" (Base UI needs a non-empty value). */
 const NO_BASELINE = "__kestrel_no_baseline__";
 
@@ -146,6 +149,10 @@ const DEFAULTS = {
   // Multi-endpoint mix (load tests): endpoint id → weight; the selected endpoint is always in it.
   mixOn: false,
   mixWeights: {} as Record<string, number>,
+  // Token refresh (load tests): an endpoint whose On Response rules pick out a token.
+  refreshOn: false,
+  refreshId: "",
+  refreshMin: 5,
   // Soak
   soakMin: 30,
   // Timeout behaviour
@@ -190,6 +197,12 @@ export const RunControls = () => {
   const endpoint = useSelectedEndpoint();
   const isDraft = useSelectedIsDraft();
   const environment = useWorkspaceStore((s) => s.workspace?.activeEnvironment ?? null);
+  /** Endpoints that can supply a token: ones with an enabled On Response rule. */
+  const tokenEndpoints = useWorkspaceStore((s) =>
+    (s.workspace?.collections ?? [])
+      .flatMap((c) => c.endpoints)
+      .filter((e) => (e.extract ?? []).some((r) => r.enabled && r.name.trim() !== "")),
+  );
   /** The selected endpoint's collection: where a load test's mix comes from. */
   const collection = useWorkspaceStore(
     (s) =>
@@ -235,6 +248,9 @@ export const RunControls = () => {
     soakMin,
     mixOn,
     mixWeights,
+    refreshOn,
+    refreshId,
+    refreshMin,
     payloadMin,
     payloadMax,
     baselineId,
@@ -327,6 +343,11 @@ export const RunControls = () => {
         budgetMs: Math.round(budgetS * 1000),
       };
     }
+    // Fetched at the start, every few minutes and on 401s; off unless a token request is chosen.
+    const tokenRefresh =
+      refreshOn && tokenEndpoints.some((e) => e.id === refreshId)
+        ? { endpointId: refreshId, everyMs: Math.round(refreshMin * 60_000) }
+        : null;
     // The selected endpoint plus the others ticked, by weight; none without a mix.
     const mixEntries =
       mixOn && collection
@@ -340,6 +361,7 @@ export const RunControls = () => {
         kind,
         ...common,
         mix: mixEntries,
+        tokenRefresh,
         mode: {
           type: "rateLimit",
           startRate,
@@ -357,6 +379,7 @@ export const RunControls = () => {
         kind,
         ...common,
         mix: mixEntries,
+        tokenRefresh,
         mode: {
           type: "spike",
           baseRate,
@@ -376,6 +399,7 @@ export const RunControls = () => {
         kind,
         ...common,
         mix: mixEntries,
+        tokenRefresh,
         mode: {
           type: "breakpoint",
           startRate,
@@ -396,6 +420,7 @@ export const RunControls = () => {
         kind,
         ...common,
         mix: mixEntries,
+        tokenRefresh,
         mode: { type: "soak", rate },
         durationMs: Math.round(soakMin * 60_000),
         rampUpMs: Math.round(rampS * 1000),
@@ -406,6 +431,7 @@ export const RunControls = () => {
       kind,
       ...common,
       mix: mixEntries,
+      tokenRefresh,
       mode: mode === "closed" ? { type: "closed", concurrency } : { type: "open", rate },
       durationMs: Math.round(durationS * 1000),
       rampUpMs: Math.round(rampS * 1000),
@@ -826,6 +852,69 @@ export const RunControls = () => {
                 </Field>
               </div>
             )}
+            <label className="flex items-center justify-between">
+              <span>Keep a token fresh</span>
+              <Switch
+                checked={refreshOn}
+                disabled={running}
+                onCheckedChange={(checked) => set("refreshOn", !!checked)}
+              />
+            </label>
+            {refreshOn &&
+              (tokenEndpoints.length === 0 ? (
+                <p className="bg-muted text-muted-foreground rounded-xs p-3 text-xs">
+                  Add an On Response rule to the request that gets a token (for example, save{" "}
+                  <code>access_token</code> from the body as the <code>token</code> secret), then
+                  choose it here.
+                </p>
+              ) : (
+                <div className="flex flex-col gap-1.5">
+                  <div className="grid grid-cols-[1fr_auto] gap-3">
+                    <Field label="Token request">
+                      <Select
+                        value={refreshId || NO_TOKEN}
+                        disabled={running}
+                        onValueChange={(v) => set("refreshId", v === NO_TOKEN ? "" : String(v))}
+                        items={[
+                          { value: NO_TOKEN, label: "Choose…" },
+                          ...tokenEndpoints.map((e) => ({
+                            value: e.id,
+                            label: `${e.method} ${e.name || e.url}`,
+                          })),
+                        ]}
+                      >
+                        <SelectTrigger className="w-full text-xs">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value={NO_TOKEN}>Choose…</SelectItem>
+                          {tokenEndpoints.map((e) => (
+                            <SelectItem key={e.id} value={e.id}>
+                              {e.method} {e.name || e.url}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </Field>
+                    <Field label="Every (min)">
+                      <Input
+                        type="number"
+                        min={1}
+                        className="w-20"
+                        value={refreshMin}
+                        disabled={running}
+                        onChange={num("refreshMin")}
+                      />
+                    </Field>
+                  </div>
+                  <p className="text-muted-foreground text-xs">
+                    Sent before the first request, then on this schedule, and straight away if the
+                    run starts getting 401s. Its On Response rules save the new token, and the run
+                    switches to it without stopping. A token saved as a variable lasts for this run
+                    only; save it as a secret to keep it.
+                  </p>
+                </div>
+              ))}
             {endpoint && collection && collection.endpoints.length > 1 && (
               <>
                 <label className="flex items-center justify-between">
@@ -1217,12 +1306,17 @@ export const RunControls = () => {
             engine runs and restart it, or shorten the soak.
           </p>
         )}
-        {kind === "load" && mode === "soak" && endpoint && usesCredentials(endpoint) && (
-          <p className="bg-amber-50 p-3 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-300">
-            This request sends credentials. A soak uses the same ones for the whole run, so a token
-            that expires partway through shows up as a wall of 401s. Use one that outlives the run.
-          </p>
-        )}
+        {kind === "load" &&
+          mode === "soak" &&
+          !refreshOn &&
+          endpoint &&
+          usesCredentials(endpoint) && (
+            <p className="bg-amber-50 p-3 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+              This request sends credentials. A token that expires partway through a soak shows up
+              as a wall of 401s: switch on <strong>Keep a token fresh</strong> above, or use one
+              that outlives the run.
+            </p>
+          )}
         {kind === "load" &&
           (mode === "open" || mode === "soak") &&
           !keepAlive &&
