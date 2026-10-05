@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Play, Square } from "lucide-react";
 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
@@ -198,10 +198,15 @@ export const RunControls = () => {
   const isDraft = useSelectedIsDraft();
   const environment = useWorkspaceStore((s) => s.workspace?.activeEnvironment ?? null);
   /** Endpoints that can supply a token: ones with an enabled On Response rule. */
-  const tokenEndpoints = useWorkspaceStore((s) =>
-    (s.workspace?.collections ?? [])
-      .flatMap((c) => c.endpoints)
-      .filter((e) => (e.extract ?? []).some((r) => r.enabled && r.name.trim() !== "")),
+  // Derived outside the selector: a selector that builds a new array on every call never settles,
+  // so React re-renders forever.
+  const collections = useWorkspaceStore((s) => s.workspace?.collections);
+  const tokenEndpoints = useMemo(
+    () =>
+      (collections ?? [])
+        .flatMap((c) => c.endpoints)
+        .filter((e) => (e.extract ?? []).some((r) => r.enabled && r.name.trim() !== "")),
+    [collections],
   );
   /** The selected endpoint's collection: where a load test's mix comes from. */
   const collection = useWorkspaceStore(

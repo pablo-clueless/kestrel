@@ -12,6 +12,20 @@ No version has been tagged yet (engine and UI are both `0.1.0`), so the entries 
 
 ### Added
 
+- **Token refresh during load tests.** Switch on **Keep a token fresh**, choose the request that
+  gets a token and how often to fetch one (every 5 minutes by default). Long runs, soaks above all,
+  no longer end in a wall of 401s when a token expires.
+  - **The token request:** any endpoint with an On Response rule that saves the token, the same
+    rules Send uses.
+  - **When it's sent:** before the first request, on the schedule, and straight away when the run
+    starts getting 401s (at most every 5 seconds).
+  - **During the run:** requests switch to the new token without the run stopping.
+  - **Where the token is kept:** a token saved as a secret is stored, so the next run starts with
+    it. One saved as a variable lasts for this run only, because variables are the UI's to save.
+  - **Report notes:** how many refreshes there were, how many were early because of 401s, and any
+    failures. If a refresh fails, the run keeps the token it had.
+  - **Validation:** the run is refused up front if the token request has no On Response rules, if
+    there's no environment to save into, or if the interval is under 10 seconds.
 - **Compare two runs side by side.** In **History**, choose **Compare**, tick two finished runs and
   open the comparison. The older run is "before".
   - **Metrics:** requests, error rate, throughput, p50/p90/p99/max/mean and TTFB p50, with each
@@ -346,6 +360,9 @@ No version has been tagged yet (engine and UI are both `0.1.0`), so the entries 
 
 ### Fixed
 
+- **The workspace page no longer crashes with "Maximum update depth exceeded".** The run panel's
+  list of token requests, added with token refresh, was rebuilt as a new array on every store
+  read, so React re-rendered without end. It's now derived once per change of the collections.
 - **Run history now updates when a run finishes.** Before, a new run only appeared after a reload,
   because history refreshed only while a run it already knew about was in progress.
 - **Workspace isolation now has two more checks behind the `search_path` pin**, plus a warning:
