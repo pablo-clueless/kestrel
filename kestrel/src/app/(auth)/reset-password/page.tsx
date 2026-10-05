@@ -3,7 +3,8 @@
 import { CircleCheck, LockKeyhole, TriangleAlert } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Suspense, useEffect, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
+import { toast } from "sonner";
 import Link from "next/link";
 import { z } from "zod";
 
@@ -54,7 +55,7 @@ const ResetForm = () => {
   // Read once, then dropped from the address bar so it doesn't sit in history or get shared.
   const [token] = useState(() => params.get("token"));
   const [done, setDone] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const router = useRouter();
   const [showPassword, setShowPassword] = useState(false);
 
   useEffect(() => {
@@ -118,14 +119,16 @@ const ResetForm = () => {
   };
 
   const onSubmit = async ({ password }: FormValues) => {
-    setError(null);
     try {
       await resetPassword({ token, newPassword: password });
       // Every session ended, this browser's included.
       queryClient.removeQueries({ queryKey: ME_KEY });
       setDone(true);
     } catch (err) {
-      setError(errorMessage(err));
+      // Usually an expired or used link, so offer a new one right there.
+      toast.error(errorMessage(err), {
+        action: { label: "Get a new link", onClick: () => router.push("/forgot-password") },
+      });
     }
   };
 
@@ -146,14 +149,6 @@ const ResetForm = () => {
         {({ field, isSubmitting }) => (
           <div className="flex flex-col gap-3">
             {field("password")}
-            {error && (
-              <div role="alert" className="text-destructive flex flex-col gap-1 text-sm">
-                <p>{error}</p>
-                <Link href="/forgot-password" className="text-primary font-medium hover:underline">
-                  Get a new link
-                </Link>
-              </div>
-            )}
             <Button type="submit" disabled={isSubmitting} className="mt-2 h-12 text-sm">
               {isSubmitting ? <CircleLoader radius={8} /> : "Set new password"}
             </Button>

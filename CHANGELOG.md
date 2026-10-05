@@ -12,6 +12,100 @@ No version has been tagged yet (engine and UI are both `0.1.0`), so the entries 
 
 ### Added
 
+- **A warning for very short secrets.** Saving a secret of 1 or 2 characters now shows a warning
+  toast. Values that short aren't hidden in response bodies, because they'd match ordinary text, but
+  they're still hidden in Authorization, Cookie and API-key headers. This covers the environment
+  editor and saving a value from a response. The rule itself is unchanged and is now documented
+  where it's defined.
+- **OpenAPI and Swagger specs split across files import whole.** External `$ref`s, such as
+  `models.yaml#/Pet` or `https://…/common.json#/Error`, are fetched and bundled into the spec
+  before importing.
+  - **What it fixes:** request examples and contract checks now see those schemas, where before
+    they were silently missing.
+  - **References stay references:** recursive schemas still work, and refs inside a fetched file
+    resolve against that file.
+  - **Relative refs** need the spec's own address, so they work when you import by URL. Absolute
+    http(s) refs work from pasted text and uploaded files too.
+  - **Limits:** up to 20 documents and 10 MB in total.
+  - **Warnings:** anything that couldn't be followed is listed in the review step, for example a
+    relative ref in pasted text or a document that failed to load.
+- **Cookie parameters are imported.** A spec's cookie parameters become the endpoint's `Cookie`
+  header, using the spec's example values; before, they were skipped with a warning. Required
+  cookies are sent; if none are required, they're all listed and the header starts switched off. A
+  cookie API key goes in the same header as `name={{apiKey}}`, where before it was wrongly imported
+  as a header API key.
+- **Payload baseline for Big-O and payload scaling.** Pick an endpoint under **Payload baseline
+  (echo)**, for example one that returns the body it's sent. It must be on the same host.
+  - **How it runs:** every sample's exact body and headers are also sent there, straight after the
+    real request, so both see the same conditions.
+  - **Results:** each size gets an echo median, shown as an "echo baseline" line on the chart and an
+    **Echo** column in the table.
+  - **The note:** it says how much of the endpoint's growth the echo shows too, which is moving and
+    parsing the bytes. The rest is the endpoint's own work.
+  - **Counting:** baseline requests aren't counted as the endpoint's. Failed ones are left out of
+    the curve and noted.
+- **Multi-endpoint load tests.** Any load test (open, closed, breakpoint, spike, rate limit, soak) can
+  mix in other endpoints from the same collection: switch on **Mix with other endpoints**, tick
+  endpoints and give each a weight.
+  - **Sending:** each request goes to one endpoint, chosen by weight. Weights 3 and 1 send three
+    quarters of the requests to the first.
+  - **Results:** a table shows each endpoint's share of requests, error rate, p50, p99 and status
+    codes. The rest of the report is the combined traffic.
+  - **Contract checks:** each endpoint keeps its own.
+  - **Limits:** 2 to 20 endpoints, weights from 1 to 1,000. They must all be on the run's host,
+    because a run pins one host's address. An endpoint on another host is refused before the run
+    starts, with a message naming it.
+- **Payload scaling test** ("Payload scaling" in the run panel). It runs Big-O's sweep with the size
+  in bytes (1 kB to 1 MB by default) and reads the results as bytes.
+  - **Sizing the payload:** use `{{n:string}}` in the body, or `{{n}}` in a parameter that grows the
+    response, such as a page size. Unlike Big-O, it works for GET requests too.
+  - **Fixed cost and throughput:** a straight line through latency against the bytes sent and
+    received gives what a request costs whatever its size, and the effective MB/s for the bytes on
+    top.
+  - **Per size:** each size gets its own MB/s, and the results show the best one.
+  - **Findings:**
+    - Latency growing faster than the payload is flagged (Big-O's log-log slope above 1.3), as is
+      throughput that peaks and then falls.
+    - If the payload barely changed with n, it says so.
+    - On a target on this machine, it notes that MB/s measures CPU and memory copies, not a network.
+  - **Results:** the payload findings, three tiles (fixed cost, effective throughput, best at one
+    size) and a per-size table appear above the usual Big-O results.
+  - **Limits:** sizes above 1,000,000 need `KESTREL_MAX_N` raised.
+- **Soak test** (Load test → "Soak: steady load for a long time"). It holds a steady rate for minutes
+  or hours, with the duration set in minutes, then reads the run for drift.
+  - **Windows:** the run is split into windows sized to its length, from 1 s for a one-minute run to
+    60 s for runs of two hours or more. That keeps the engine's memory flat however long the run is.
+  - **Timeline:** the windows become the report's timeline, so the chart and CSV cover the whole run.
+    The live history only holds about 17 minutes.
+  - **Drift:** after a warm-up tenth, the early fifth of the run is compared with the last fifth.
+    - Latency that grew by more than a quarter (plus 5 ms) points at a leak, a queue or a filling
+      pool.
+    - Errors that rose by more than a point are flagged.
+    - Otherwise the run is reported as steady.
+  - **Expiring credentials:** 401s or 403s that take over partway through are called out as
+    credentials that probably expired.
+  - **Before you start:** the run panel warns when the request sends credentials, since a token that
+    expires mid-run shows up as a wall of 401s. When the soak is longer than the engine's duration cap,
+    it explains how to raise `KESTREL_MAX_DURATION_S` (up to 7 days).
+- **Timeout behaviour test** ("Timeout behaviour" in the run panel). It answers whether the server
+  fails fast or hangs, and whether requests the client gives up on slow down the ones after them. It
+  runs in three phases:
+  1. **Before:** probes sent one at a time, with the normal timeout.
+  2. **Burst:** requests the client abandons mid-flight, 100 by default, 20 at a time. The give-up
+     time defaults to a quarter of the probes' median time.
+  3. **After:** the same probes again.
+
+  What it reports:
+  - **Hung:** probes that reached the timeout are flagged, with a suggestion to answer 503 or 504
+    after a set time instead.
+  - **Failing fast:** quick 5xx responses or connection failures are reported as good.
+  - **Abandoned work:** if probes are slower after the burst, the report gives p50 and p99 before and
+    after and how long recovery took. It says the server probably keeps working on requests nobody is
+    waiting for.
+  - **Nothing abandoned:** if every burst request was answered in time anyway, it says the burst tested
+    nothing.
+
+  Like a load test, it needs the host confirmed unless the target is this machine.
 - **Concurrency test** ("Concurrency (race)" in the run panel). It sends the same request several
   times at once (2 to 1,000 per round, 1 to 50 rounds, with a pause between), then explains what came
   back.
@@ -182,6 +276,12 @@ No version has been tagged yet (engine and UI are both `0.1.0`), so the entries 
 
 ### Changed
 
+- **README rewritten** to cover what Kestrel does and how to run it: every test type (spike,
+  breakpoint, rate-limit, concurrency included), every import format, getting started, Docker, the
+  reference server, main settings and responsible use. It links to the hosted app at
+  https://kestrel-oqjm.onrender.com. Internal details (storage layout, auth
+  internals, the SQLite migration, full variable list) are gone; `.env.example` stays the full
+  configuration reference.
 - Endpoints in the sidebar are listed alphabetically within each group (by name, or URL when
   unnamed), the same way groups are sorted: ignoring case, with numbers in order.
 - Endpoint groups in the sidebar can be collapsed: click a group's name (it shows how many
@@ -235,6 +335,37 @@ No version has been tagged yet (engine and UI are both `0.1.0`), so the entries 
 
 ### Fixed
 
+- **Workspace isolation now has two more checks behind the `search_path` pin**, plus a warning:
+  - **The pin:** the engine reads back the schema each transaction will use, in the same round trip
+    as setting it. A missing schema, or a pin that didn't take, stops the transaction before
+    anything runs.
+  - **The cached store:** before serving a request, the engine checks the store it got belongs to
+    the workspace it just authorised, so a cache bug can't hand one user another's workspace.
+  - **Superuser warning:** at startup, the engine warns when it connects to Postgres as a
+    superuser. The warning includes the SQL for a limited `kestrel_app` role. The local Docker
+    database connects as one, so you'll see it there.
+- **Signing in.** Three bugs stopped it, and are fixed:
+  - **Wrong route:** the sign-in page posted to `/api/auth/signin`, but the engine's route is
+    `/api/auth/login`.
+  - **Malformed workspace IDs:** the engine refused the sign-in request with a "UUID parsing
+    failed" error. `generateUUID` builds IDs from `crypto.getRandomValues` where
+    `crypto.randomUUID` is missing (plain http on a LAN address). A malformed ID already saved in
+    the browser is dropped and replaced.
+  - **Signed straight back out:** in `pnpm dev` the UI always called the engine at `127.0.0.1`.
+    From `localhost` or a LAN address that's another site, so the browser dropped the
+    `SameSite=Lax` session cookie and the next request got a 401. The UI now calls the engine on
+    the page's own hostname (port from `KESTREL_PORT`), unless `KESTREL_ENGINE_URL` is set.
+- **Auth errors are toasts.** Every error in sign-in, forgot and reset password, email
+  verification and the security settings is a toast. On the reset page, the toast has a **Get a new
+  link** button. Field errors such as "That's not your current password" stay under their field.
+- **Readable error messages.** The engine's messages are shown in sentence case. When there's no
+  message, you get a plain explanation instead of axios's "Request failed with status code …". A
+  request the engine couldn't parse says to reload and try again, with the detail in the console.
+- **The engine's API errors are always JSON** (`{"error": "…"}`).
+  - An unknown `/api` path gets a JSON 404 that names the method and path, instead of the UI's HTML
+    404 page.
+  - Axum's own plain-text refusals (a body that isn't valid JSON, a missing field, the wrong method,
+    an oversized body) are wrapped the same way, keeping their status and headers.
 - The browser console no longer warns about `scroll-behavior: smooth` on every load. `<html>` now
   has `data-scroll-behavior="smooth"`, which tells Next.js to turn smooth scrolling off during route
   changes.

@@ -17,20 +17,36 @@ const FETCH_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Parses a spec into a collection. Nothing is saved: the UI adds the collection to the workspace.
 pub async fn import(Json(req): Json<ImportRequest>) -> Result<Json<ImportResult>, ApiError> {
-    let text = match req.source {
-        ImportSource::Text { content } => content,
-        ImportSource::Url { url } => fetch(&url).await.map_err(ApiError::BadRequest)?,
+    let (mut text, base) = match req.source {
+        ImportSource::Text { content } => (content, None),
+        ImportSource::Url { url } => {
+            let text = fetch(&url).await.map_err(ApiError::BadRequest)?;
+            (text, url::Url::parse(url.trim()).ok())
+        }
     };
     if text.len() > MAX_SPEC_BYTES {
         return Err(ApiError::BadRequest("the spec is larger than 10 MB".into()));
     }
+    // External `$ref`s are fetched and bundled in before importing, which only follows local ones.
+    let mut bundle_warnings = Vec::new();
+    if !import::curl::looks_like_curl(&text)
+        && let Ok(mut root) = import::parse(&text)
+        && (root.get("openapi").is_some() || root.get("swagger").is_some())
+        && import::external::has_external_refs(&root)
+    {
+        bundle_warnings =
+            import::external::bundle(&mut root, base.as_ref(), |u: url::Url| async move { fetch(u.as_str()).await })
+                .await;
+        text = root.to_string();
+    }
     // Big specs take a moment to walk; keep it off the async workers.
     let name = req.name;
-    tokio::task::spawn_blocking(move || import::import(&text, name.as_deref()))
+    let mut result = tokio::task::spawn_blocking(move || import::import(&text, name.as_deref()))
         .await
         .map_err(|e| ApiError::Internal(format!("import task failed: {e}")))?
-        .map(Json)
-        .map_err(ApiError::BadRequest)
+        .map_err(ApiError::BadRequest)?;
+    result.warnings.splice(0..0, bundle_warnings);
+    Ok(Json(result))
 }
 
 /// Reads one curl command into an endpoint, for pasting into a request. Nothing is saved.

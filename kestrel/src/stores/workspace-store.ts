@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { toast } from "sonner";
 
 import { errorMessage, getWorkspace, putWorkspace, setSecret } from "@/lib/client";
 import type { Collection } from "@/types/engine/Collection";
@@ -6,6 +7,7 @@ import type { KeyValue } from "@/types/engine/KeyValue";
 import type { Workspace } from "@/types/engine/Workspace";
 import type { Endpoint } from "@/types/engine/Endpoint";
 import type { Saved } from "@/types/engine/Saved";
+import { generateUUID } from "@/lib/utils";
 
 const SAVE_DEBOUNCE_MS = 400;
 
@@ -75,7 +77,7 @@ const withTab = (openIds: string[], id: string | null) =>
   id === null || openIds.includes(id) ? openIds : [...openIds, id];
 
 const newEndpoint = (name: string): Endpoint => ({
-  id: crypto.randomUUID(),
+  id: generateUUID(),
   name,
   group: null,
   method: "GET",
@@ -89,7 +91,7 @@ const newEndpoint = (name: string): Endpoint => ({
 });
 
 const newCollection = (name: string): Collection => ({
-  id: crypto.randomUUID(),
+  id: generateUUID(),
   name,
   vars: {},
   headers: [],
@@ -98,6 +100,10 @@ const newCollection = (name: string): Collection => ({
   source: null,
   schemaDefs: null,
 });
+
+/** Secret values shorter than this aren't scrubbed from bodies; matches the engine's
+ * `redact::MIN_SECRET_LEN`. */
+const MIN_SCRUBBED_SECRET = 3;
 
 /** Name order for the sidebar: ignores case, and puts numbers in order (`v2` before `v10`). */
 export const byName = new Intl.Collator(undefined, { sensitivity: "base", numeric: true });
@@ -369,6 +375,11 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => {
     setSecret: async (env, key, value) => {
       try {
         await setSecret({ environment: env, key, value });
+        if (value !== null && value.length > 0 && value.length < MIN_SCRUBBED_SECRET) {
+          toast.warning(
+            `"${key}" is shorter than ${MIN_SCRUBBED_SECRET} characters, so it isn't hidden in response bodies: it would match ordinary text. It's still hidden in Authorization, Cookie and API-key headers.`,
+          );
+        }
         set((s) => {
           const keys = new Set(s.secretKeys[env] ?? []);
           if (value === null) keys.delete(key);

@@ -151,8 +151,7 @@
   --color-void-300: var(--void-300);
 
   /* Background Images */
-  --background-image-pattern-1: url("/assets/images/pattern-1.png");
-  --background-image-image: url("/assets/images/image.jpg");
+  --background-image-auth: url("/assets/background.jpg");
 
   /* Animations */
   --animate-accordion-down: accordion-down 0.2s ease-out;

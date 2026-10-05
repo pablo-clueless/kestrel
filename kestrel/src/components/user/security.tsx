@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Laptop, Smartphone } from "lucide-react";
 import { toast } from "sonner";
@@ -25,7 +26,7 @@ export const Security = ({ selected }: Props) => {
 
   return (
     <TabPanel selected={selected} value="security">
-      <div className="bg-background flex flex-col gap-8 p-5">
+      <div className="bg-background flex h-[calc(100%-36px)] flex-col gap-4 p-5">
         {accountsOn ? (
           <>
             <ChangePassword />
@@ -98,24 +99,19 @@ const ChangePassword = () => {
             void queryClient.invalidateQueries({ queryKey: SESSIONS_KEY });
           } catch (err) {
             const message = errorMessage(err);
-            if (message === "current password is incorrect") {
+            if (message.toLowerCase() === "current password is incorrect") {
               form.setError("currentPassword", { message: "That's not your current password" });
             } else {
-              form.setError("root", { message });
+              toast.error(message);
             }
           }
         }}
       >
-        {({ field, form, isSubmitting }) => (
+        {({ field, isSubmitting }) => (
           <div className="flex flex-col gap-4">
             {field("currentPassword")}
             {field("newPassword")}
             {field("confirm")}
-            {form.formState.errors.root && (
-              <p role="alert" className="text-destructive text-sm">
-                {form.formState.errors.root.message}
-              </p>
-            )}
             <Button type="submit" className="self-start" disabled={isSubmitting}>
               {isSubmitting ? "Changing…" : "Change password"}
             </Button>
@@ -129,6 +125,9 @@ const ChangePassword = () => {
 const Sessions = () => {
   const queryClient = useQueryClient();
   const sessions = useQuery({ queryKey: SESSIONS_KEY, queryFn: listSessions });
+  useEffect(() => {
+    if (sessions.isError) toast.error(errorMessage(sessions.error));
+  }, [sessions.isError, sessions.error]);
   const revoke = useMutation({
     mutationFn: revokeSession,
     onSuccess: () => {
@@ -149,7 +148,7 @@ const Sessions = () => {
       {sessions.isPending ? (
         <p className="text-muted-foreground text-sm">Loading…</p>
       ) : sessions.isError ? (
-        <p className="text-destructive text-sm">{errorMessage(sessions.error)}</p>
+        <p className="text-muted-foreground text-sm">Couldn&apos;t load your devices.</p>
       ) : (
         <ul className="divide-y rounded-xs border">
           {sessions.data.map((s) => (

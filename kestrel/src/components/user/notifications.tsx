@@ -7,7 +7,7 @@ interface Props {
 export const Notifications = ({ selected }: Props) => {
   return (
     <TabPanel selected={selected} value="notifications">
-      <div className="bg-background p-5">Notifications</div>
+      <div className="bg-background flex h-[calc(100%-36px)] flex-col gap-4 p-5">Notifications</div>
     </TabPanel>
   );
 };

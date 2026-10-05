@@ -7,8 +7,12 @@ use crate::template::request::RenderedRequest;
 pub const REDACTED: &str = "[redacted]";
 
 const SENSITIVE_HEADERS: [&str; 4] = ["authorization", "cookie", "set-cookie", "proxy-authorization"];
-/// Shorter values would redact half of every body.
-const MIN_SECRET_LEN: usize = 3;
+/// Secret values shorter than this aren't scrubbed from text (URLs, bodies): a one- or two-character
+/// value matches ordinary text everywhere and would blank out half of every body. They're still
+/// hidden wherever they travel in a sensitive header (Authorization, Cookie, the API-key header),
+/// since those headers are redacted whole. Deliberate, not an oversight: the UI warns when such a
+/// secret is saved (`workspace-store.ts`, which mirrors this number).
+pub const MIN_SECRET_LEN: usize = 3;
 
 pub struct Redactor {
     headers: Vec<String>,

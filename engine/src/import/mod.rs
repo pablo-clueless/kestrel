@@ -4,9 +4,11 @@
 //!
 //! Works on `serde_json::Value` rather than typed models so one code path covers all three
 //! versions, and so response schemas can be kept verbatim (with their `$ref`s) for contract checks.
-//! Only local `$ref`s (`#/…`) are supported.
+//! The importer follows local `$ref`s (`#/…`); external ones are bundled into the spec first
+//! (`external.rs`), so by the time it runs every ref is local.
 
 pub mod curl;
+pub mod external;
 mod har;
 mod postman;
 mod schema;
@@ -88,7 +90,7 @@ pub fn import(text: &str, name: Option<&str>) -> Result<ImportResult, String> {
         return Err("this is a Postman environment, not a collection; add its variables under Environments".into());
     }
     let (version, format) = detect(&root)?;
-    let mut ctx = Ctx { root: &root, version, warnings: Vec::new(), vars: BTreeMap::new() };
+    let mut ctx = Ctx { root: &root, version, warnings: Vec::new(), vars: BTreeMap::new(), cookie_api_key: None };
 
     let base = ctx.base_url();
     ctx.vars.insert("base".into(), base);
@@ -129,7 +131,7 @@ pub fn import(text: &str, name: Option<&str>) -> Result<ImportResult, String> {
     Ok(ImportResult { collection, format, warnings })
 }
 
-fn parse(text: &str) -> Result<Value, String> {
+pub(crate) fn parse(text: &str) -> Result<Value, String> {
     let trimmed = text.trim_start();
     if trimmed.is_empty() {
         return Err("the document is empty".into());
@@ -163,6 +165,8 @@ struct Ctx<'a> {
     warnings: Vec<String>,
     /// Collection variables: `base` plus one per path parameter.
     vars: BTreeMap<String, String>,
+    /// Set by `auth` for a cookie API key, which goes in the endpoint's `Cookie` header.
+    cookie_api_key: Option<String>,
 }
 
 impl Ctx<'_> {
@@ -212,16 +216,27 @@ impl Ctx<'_> {
         url.trim_end_matches('/').to_owned()
     }
 
+    /// The spec's shared schemas, plus any bundled external documents, for contract checks to
+    /// resolve `$ref`s against. None when there are neither.
     fn schema_defs(&self) -> Option<Value> {
-        let (key, defs) = match self.version {
-            Version::Swagger2 => ("definitions", self.root.get("definitions")?),
-            _ => ("components", self.root.get("components").and_then(|c| c.get("schemas"))?),
-        };
-        let defs = to_json_schema(defs, self.version == Version::OpenApi31);
-        Some(match key {
-            "definitions" => serde_json::json!({ "definitions": defs }),
-            _ => serde_json::json!({ "components": { "schemas": defs } }),
-        })
+        let is_31 = self.version == Version::OpenApi31;
+        let mut out = serde_json::Map::new();
+        match self.version {
+            Version::Swagger2 => {
+                if let Some(defs) = self.root.get("definitions") {
+                    out.insert("definitions".into(), to_json_schema(defs, is_31));
+                }
+            }
+            _ => {
+                if let Some(defs) = self.root.get("components").and_then(|c| c.get("schemas")) {
+                    out.insert("components".into(), serde_json::json!({ "schemas": to_json_schema(defs, is_31) }));
+                }
+            }
+        }
+        if let Some(mounted) = self.root.get(external::MOUNT) {
+            out.insert(external::MOUNT.into(), to_json_schema(mounted, is_31));
+        }
+        (!out.is_empty()).then_some(Value::Object(out))
     }
 
     fn endpoint(&mut self, path: &str, item: &Value, op: &Value, method: HttpMethod) -> Endpoint {
@@ -241,6 +256,8 @@ impl Ctx<'_> {
         let mut headers = Vec::new();
         let mut body = Body::None;
         let mut form = Vec::new();
+        // (name, example, required), sent together as one `Cookie` header.
+        let mut cookies: Vec<(String, String, bool)> = Vec::new();
         for param in self.parameters(item, op) {
             let Some(name) = param.get("name").and_then(Value::as_str).map(str::to_owned) else { continue };
             let location = param.get("in").and_then(Value::as_str).unwrap_or("");
@@ -258,7 +275,7 @@ impl Ctx<'_> {
                         headers.push(KeyValue { key: name, value: self.param_example(&param), enabled: required });
                     }
                 }
-                "cookie" => self.warn("Cookie parameters aren't imported; add a Cookie header by hand."),
+                "cookie" => cookies.push((name, self.param_example(&param), required)),
                 // Swagger 2.0 bodies are parameters.
                 "body" => {
                     let schema = param.get("schema").cloned().unwrap_or(Value::Null);
@@ -281,6 +298,21 @@ impl Ctx<'_> {
         if let Some(request_body) = op.get("requestBody") {
             body = self.request_body(resolve(self.root, request_body));
         }
+        let auth = self.auth(op);
+        if let Some(name) = self.cookie_api_key.take() {
+            cookies.push((name, "{{apiKey}}".into(), true));
+        }
+        if !cookies.is_empty() {
+            // The required ones; or, when none is, all of them with the header switched off.
+            let any_required = cookies.iter().any(|c| c.2);
+            let value = cookies
+                .iter()
+                .filter(|c| c.2 || !any_required)
+                .map(|(k, v, _)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join("; ");
+            headers.push(KeyValue { key: "Cookie".into(), value, enabled: any_required });
+        }
 
         Endpoint {
             id: Uuid::new_v4(),
@@ -291,7 +323,7 @@ impl Ctx<'_> {
             headers,
             query,
             body,
-            auth: self.auth(op),
+            auth,
             expect: self.expectation(op),
             extract: vec![],
         }
@@ -423,8 +455,9 @@ impl Ctx<'_> {
                 let location = match scheme.get("in").and_then(Value::as_str) {
                     Some("query") => ApiKeyLocation::Query,
                     Some("cookie") => {
-                        self.warn("Cookie API keys aren't supported; imported as a header.");
-                        ApiKeyLocation::Header
+                        // Sent in the endpoint's `Cookie` header instead (see `endpoint`).
+                        self.cookie_api_key = Some(name);
+                        return Auth::None;
                     }
                     _ => ApiKeyLocation::Header,
                 };

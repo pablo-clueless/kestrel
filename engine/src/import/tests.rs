@@ -186,3 +186,65 @@ fn imports_swagger_form_data() {
     let parts: Vec<_> = fields.iter().map(|f| (f.key.as_str(), f.kind)).collect();
     assert_eq!(parts, [("name", FieldKind::Text), ("photo", FieldKind::File)]);
 }
+
+/// A spec whose schemas live in another file: bundled, then imported as if they were local, with
+/// examples built from them and contract checks that follow refs into the bundled file.
+#[tokio::test]
+async fn external_refs_are_bundled_and_followed() {
+    let mut root = json!({
+        "openapi": "3.0.3",
+        "info": { "title": "Split", "version": "1" },
+        "servers": [{ "url": "https://api.split.io" }],
+        "paths": { "/pets": { "post": {
+            "operationId": "add",
+            "requestBody": { "content": { "application/json": { "schema": { "$ref": "models.json#/Pet" } } } },
+            "responses": { "201": { "description": "made", "content": { "application/json": {
+                "schema": { "$ref": "models.json#/Pet" } } } } }
+        } } }
+    });
+    let models = r##"{ "Pet": { "type": "object", "required": ["name"],
+        "properties": { "name": { "type": "string", "example": "Rex" }, "owner": { "$ref": "#/Owner" } } },
+        "Owner": { "type": "object", "properties": { "id": { "type": "integer" } } } }"##;
+    let base = url::Url::parse("https://specs.split.io/v1/openapi.json").unwrap();
+    let warnings = external::bundle(&mut root, Some(&base), |u: url::Url| {
+        let found = (u.as_str() == "https://specs.split.io/v1/models.json").then(|| models.to_owned());
+        async move { found.ok_or_else(|| "404".to_owned()) }
+    })
+    .await;
+    assert!(warnings.is_empty(), "{warnings:?}");
+
+    let r = import(&root.to_string(), None).unwrap();
+    let c = &r.collection;
+    let add = endpoint(c, "add");
+    assert_eq!(body_json(add)["name"], "Rex", "the example comes from the bundled schema");
+    let contract = contract_for(c, add);
+    assert!(contract.check(201, br#"{"name":"Rex","owner":{"id":1}}"#).passed);
+    let bad = contract.check(201, br#"{"owner":{"id":"one"}}"#);
+    assert!(!bad.passed, "refs into the bundled file are checked too: {}", bad.message);
+}
+
+#[test]
+fn cookie_parameters_and_cookie_api_keys_become_a_cookie_header() {
+    let spec = json!({
+        "openapi": "3.0.3",
+        "info": { "title": "Cookies", "version": "1" },
+        "servers": [{ "url": "https://c.io" }],
+        "components": { "securitySchemes": { "session": { "type": "apiKey", "in": "cookie", "name": "sid" } } },
+        "security": [{ "session": [] }],
+        "paths": { "/me": { "get": {
+            "operationId": "me",
+            "parameters": [
+                { "name": "lang", "in": "cookie", "required": true, "example": "en" },
+                { "name": "theme", "in": "cookie", "example": "dark" }
+            ],
+            "responses": { "200": { "description": "ok" } }
+        } } }
+    });
+    let r = import(&spec.to_string(), None).unwrap();
+    let me = endpoint(&r.collection, "me");
+    let cookie = me.headers.iter().find(|h| h.key == "Cookie").expect("a Cookie header");
+    assert_eq!(cookie.value, "lang=en; sid={{apiKey}}", "required ones, and the API key");
+    assert!(cookie.enabled);
+    assert!(matches!(me.auth, Auth::None), "the key travels in the cookie, not as auth");
+    assert!(!r.warnings.iter().any(|w| w.contains("Cookie")), "{:?}", r.warnings);
+}
