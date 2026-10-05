@@ -13,6 +13,16 @@ import type { RunKind } from "@/types/engine/RunKind";
 import type { Endpoint } from "@/types/engine/Endpoint";
 import { useRunStore } from "@/stores/run-store";
 import { Switch } from "@/components/ui/switch";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { CompareRuns } from "@/components/run/compare";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { int, ms } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -62,6 +72,15 @@ const duration = (run: RunSummary) => {
 export const History = ({ active }: { active: boolean }) => {
   const [thisEndpoint, setThisEndpoint] = useState(false);
   const [opening, setOpening] = useState<string | null>(null);
+  // Compare mode: rows tick instead of opening; two ticked runs can be compared side by side.
+  const [comparing, setComparing] = useState(false);
+  const [picked, setPicked] = useState<string[]>([]);
+  const [showCompare, setShowCompare] = useState(false);
+  /** Ticks or unticks a run; a third pick replaces the oldest one. */
+  const togglePick = (runId: string) =>
+    setPicked((p) =>
+      p.includes(runId) ? p.filter((id) => id !== runId) : [...p, runId].slice(-2),
+    );
   const workspace = useWorkspaceStore((s) => s.workspace);
   const selected = useSelectedEndpoint();
   const shownRunId = useRunStore((s) => s.runId);
@@ -122,6 +141,34 @@ export const History = ({ active }: { active: boolean }) => {
         >
           Run history
         </span>
+        <div className="flex items-center gap-2">
+          <Button
+            size="sm"
+            variant={comparing ? "default" : "outline"}
+            className="h-7 text-xs"
+            onClick={() => {
+              setComparing((c) => !c);
+              setPicked([]);
+            }}
+          >
+            {comparing ? "Done" : "Compare"}
+          </Button>
+          {comparing && (
+            <Button
+              size="sm"
+              className="h-7 text-xs"
+              disabled={picked.length !== 2}
+              onClick={() => setShowCompare(true)}
+            >
+              Compare {picked.length}/2
+            </Button>
+          )}
+        </div>
+        {comparing && (
+          <p className="text-muted-foreground text-xs">
+            Tick two finished runs, usually of the same endpoint before and after a change.
+          </p>
+        )}
         <label className="text-muted-foreground flex min-w-0 items-center gap-2 text-xs">
           <Switch
             size="sm"
@@ -156,9 +203,17 @@ export const History = ({ active }: { active: boolean }) => {
                     <RunRow
                       run={run}
                       endpoint={run.endpointId ? endpoints.get(run.endpointId) : undefined}
-                      active={run.runId === shownRunId}
+                      active={comparing ? picked.includes(run.runId) : run.runId === shownRunId}
                       loading={opening === run.runId}
-                      onOpen={() => openRun(run)}
+                      pick={
+                        comparing
+                          ? {
+                              picked: picked.includes(run.runId),
+                              disabled: run.status === "running",
+                            }
+                          : undefined
+                      }
+                      onOpen={() => (comparing ? togglePick(run.runId) : openRun(run))}
                     />
                   </li>
                 ))}
@@ -167,6 +222,18 @@ export const History = ({ active }: { active: boolean }) => {
           ))
         )}
       </div>
+
+      <Dialog open={showCompare && picked.length === 2} onOpenChange={setShowCompare}>
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>Compare runs</DialogTitle>
+            <DialogDescription>
+              The older run is &ldquo;before&rdquo;. Changes under 5% (or 1 ms) are shown as ≈.
+            </DialogDescription>
+          </DialogHeader>
+          {picked.length === 2 && <CompareRuns runIds={[picked[0], picked[1]]} />}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };
@@ -176,12 +243,15 @@ const RunRow = ({
   endpoint,
   active,
   loading,
+  pick,
   onOpen,
 }: {
   run: RunSummary;
   endpoint: Endpoint | undefined;
   active: boolean;
   loading: boolean;
+  /** Compare mode: whether this run is ticked, and whether it can be (finished runs only). */
+  pick?: { picked: boolean; disabled: boolean };
   onOpen: () => void;
 }) => {
   const r = run.result;
@@ -190,7 +260,7 @@ const RunRow = ({
   return (
     <button
       onClick={onOpen}
-      disabled={loading}
+      disabled={loading || pick?.disabled}
       className={cn(
         "flex w-full flex-col gap-1.5 rounded-xs px-2 py-2 text-left text-xs transition-colors",
         active ? "bg-muted" : "hover:bg-muted/60",
@@ -198,10 +268,20 @@ const RunRow = ({
       )}
     >
       <div className="flex items-center gap-2">
-        <span
-          className={cn("size-1.5 shrink-0 rounded-full", STATUS_DOT[run.status])}
-          title={run.status}
-        />
+        {pick ? (
+          <Checkbox
+            checked={pick.picked}
+            disabled={pick.disabled}
+            tabIndex={-1}
+            aria-hidden
+            className="pointer-events-none size-3.5"
+          />
+        ) : (
+          <span
+            className={cn("size-1.5 shrink-0 rounded-full", STATUS_DOT[run.status])}
+            title={run.status}
+          />
+        )}
         <span className="w-12 shrink-0 font-medium">{KIND_LABEL[run.kind]}</span>
         <span className="flex min-w-0 flex-1 items-center gap-1.5">
           {run.kind === "fake" ? (
