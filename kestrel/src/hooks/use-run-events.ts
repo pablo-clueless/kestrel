@@ -1,5 +1,6 @@
 "use client";
 
+import { useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 
 import { errorMessage, getReport, runEventsUrl } from "@/lib/client";
@@ -13,6 +14,7 @@ import { useRunStore } from "@/stores/run-store";
  */
 export function useRunEvents() {
   const runId = useRunStore((s) => s.runId);
+  const queryClient = useQueryClient();
 
   useEffect(() => {
     // A finished run shown from history has nothing left to stream.
@@ -26,6 +28,8 @@ export function useRunEvents() {
       applyEvent(event);
       if (event.type === "finished") {
         source.close();
+        // Run history lists it now (it only polls while it already knows of a running one).
+        void queryClient.invalidateQueries({ queryKey: ["runs"] });
         getReport(runId)
           .then(setReport)
           .catch((err) => setError(errorMessage(err)));
@@ -40,5 +44,5 @@ export function useRunEvents() {
     };
 
     return () => source.close();
-  }, [runId]);
+  }, [runId, queryClient]);
 }
