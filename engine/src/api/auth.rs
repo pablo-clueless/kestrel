@@ -15,8 +15,12 @@ use axum::{
 use super::AppState;
 use crate::{
     auth::{
-        AuthRequest, AuthedUser, ChangePasswordRequest, Client, MeResponse, PasswordResetConfirm, PasswordResetRequest,
-        SessionInfo, VerifyEmailRequest, session,
+        AuthRequest, AuthedUser, ChangePasswordRequest, Client, LoginOutcome, MeResponse, PasswordResetConfirm,
+        PasswordResetRequest, SessionInfo, VerifyEmailRequest, session,
+        two_factor::{
+            RecoveryCodes, TwoFactorChallenge, TwoFactorCode, TwoFactorConfirm, TwoFactorLogin, TwoFactorSetup,
+            TwoFactorSetupRequest, TwoFactorStatus,
+        },
     },
     error::ApiError,
 };
@@ -30,6 +34,8 @@ fn is_public(path: &str) -> bool {
         "/health"
             | "/auth/signup"
             | "/auth/login"
+            // The code step of signing in: the password step passed, but there's no session yet.
+            | "/auth/login/2fa"
             | "/auth/logout"
             | "/auth/me"
             // Emailed links are opened signed out (often on another device).
@@ -91,7 +97,7 @@ impl FromRequestParts<AppState> for Caller {
 }
 
 impl Caller {
-    fn client(&self) -> Client<'_> {
+    pub(super) fn client(&self) -> Client<'_> {
         Client { ip: self.ip.as_deref(), user_agent: self.user_agent.as_deref(), origin: self.origin.as_deref() }
     }
 }
@@ -123,8 +129,64 @@ pub async fn login(
     if !state.accounts.enabled {
         return Err(ACCOUNTS_OFF);
     }
-    let (token, me) = state.accounts.login(req, caller.client()).await?;
+    match state.accounts.login(req, caller.client()).await? {
+        LoginOutcome::SignedIn(token, me) => Ok(signed_in(&token, caller.https, me)),
+        // No cookie yet: the code step sets it.
+        LoginOutcome::TwoFactor(challenge) => {
+            Ok(Json(TwoFactorChallenge { two_factor_challenge: challenge }).into_response())
+        }
+    }
+}
+
+/// The code step of signing in, for accounts with two-factor on.
+pub async fn login_two_factor(
+    State(state): State<AppState>,
+    caller: Caller,
+    Json(req): Json<TwoFactorLogin>,
+) -> Result<Response, ApiError> {
+    accounts_on(&state)?;
+    let (token, me) = state.accounts.complete_two_factor(req, caller.client()).await?;
     Ok(signed_in(&token, caller.https, me))
+}
+
+pub async fn two_factor_status(
+    State(state): State<AppState>,
+    signed: SignedIn,
+) -> Result<Json<TwoFactorStatus>, ApiError> {
+    Ok(Json(state.accounts.two_factor_status(&signed.user).await?))
+}
+
+pub async fn two_factor_setup(
+    State(state): State<AppState>,
+    signed: SignedIn,
+    Json(req): Json<TwoFactorSetupRequest>,
+) -> Result<Json<TwoFactorSetup>, ApiError> {
+    Ok(Json(state.accounts.two_factor_setup(&signed.user, req).await?))
+}
+
+pub async fn two_factor_enable(
+    State(state): State<AppState>,
+    signed: SignedIn,
+    Json(req): Json<TwoFactorCode>,
+) -> Result<Json<RecoveryCodes>, ApiError> {
+    Ok(Json(state.accounts.two_factor_enable(&signed.user, req).await?))
+}
+
+pub async fn two_factor_disable(
+    State(state): State<AppState>,
+    signed: SignedIn,
+    Json(req): Json<TwoFactorConfirm>,
+) -> Result<StatusCode, ApiError> {
+    state.accounts.two_factor_disable(&signed.user, req).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn regenerate_recovery_codes(
+    State(state): State<AppState>,
+    signed: SignedIn,
+    Json(req): Json<TwoFactorConfirm>,
+) -> Result<Json<RecoveryCodes>, ApiError> {
+    Ok(Json(state.accounts.regenerate_recovery_codes(&signed.user, req).await?))
 }
 
 /// Ends the session (if any) and clears the cookie. Always succeeds, so a stale cookie can't trap
@@ -141,7 +203,7 @@ pub async fn logout(State(state): State<AppState>, caller: Caller, headers: Head
 /// The signed-in user and their session token, for the account routes that need both. 404 when
 /// accounts are off, 401 without a session (the middleware has normally answered that already).
 pub struct SignedIn {
-    user: AuthedUser,
+    pub(super) user: AuthedUser,
     token: String,
 }
 
@@ -230,6 +292,8 @@ pub async fn resend_verification(
 /// Who's signed in and which workspace to use: `auth: "off"` when accounts are off, `user: null`
 /// when signed out. Always 200, so the sign-in page can learn whether sign-up is open.
 pub async fn me(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<MeResponse>, ApiError> {
+    // The UI's current workspace, kept if the user is still a member of it. Malformed is as good as none.
+    let requested = headers.get(super::WORKSPACE_HEADER).and_then(|v| v.to_str().ok()).and_then(|s| s.parse().ok());
     if !state.accounts.enabled {
         return Ok(Json(state.accounts.me_off()));
     }
@@ -238,7 +302,7 @@ pub async fn me(State(state): State<AppState>, headers: HeaderMap) -> Result<Jso
         None => None,
     };
     Ok(Json(match user {
-        Some(user) => state.accounts.me(&user).await?,
+        Some(user) => state.accounts.me(&user, requested).await?,
         None => state.accounts.me_signed_out(),
     }))
 }
@@ -398,10 +462,7 @@ mod tests {
         let alice_ws = a["workspaceId"].as_str().unwrap();
 
         let saved = json!({ "environments": [{ "name": "alice-only", "vars": {} }] });
-        assert_eq!(
-            send(&app, call("PUT", "/api/workspace", Some(&alice), None, Some(saved))).await.0,
-            StatusCode::NO_CONTENT
-        );
+        assert_eq!(send(&app, call("PUT", "/api/workspace", Some(&alice), None, Some(saved))).await.0, StatusCode::OK);
         let run = json!({ "kind": "fake", "durationMs": 60000 });
         let (status, _, started) = send(&app, call("POST", "/api/runs", Some(&alice), None, Some(run))).await;
         assert_eq!(status, StatusCode::CREATED);
@@ -796,6 +857,421 @@ mod tests {
         assert_eq!(send(&app, reset).await.0, StatusCode::NOT_FOUND);
         let resend = post("/api/auth/verify-email/resend", Some(&cookie), json!({}));
         assert_eq!(send(&app, resend).await.0, StatusCode::NOT_FOUND);
+    }
+
+    /// Shared workspaces: invites `email` to `ws` as `role` and returns the token from the link.
+    async fn invite(app: &Router, owner: &str, ws: &str, email: &str, role: &str) -> String {
+        let body = json!({ "email": email, "role": role });
+        let mut req = post(&format!("/api/workspaces/{ws}/invites"), Some(owner), body);
+        // The link points back at the page that asked, as browsers say in `Origin`.
+        req.headers_mut().insert(header::ORIGIN, "http://localhost:7070".parse().unwrap());
+        let (status, _, created) = send(app, req).await;
+        assert_eq!(status, StatusCode::CREATED, "{created}");
+        created["link"].as_str().unwrap().rsplit_once("token=").unwrap().1.to_owned()
+    }
+
+    fn accept(cookie: &str, token: &str) -> Request<Body> {
+        post("/api/invites/accept", Some(cookie), json!({ "token": token }))
+    }
+
+    /// Shared workspaces: a `write` member works in the admin's workspace; a `read` one only looks.
+    #[tokio::test]
+    async fn write_members_edit_and_read_members_only_look() {
+        let db = require_db!();
+        let app = app(&db, true);
+        let (owner, me) = sign(&app, "/api/auth/signup", "owner@example.com", None).await;
+        let ws = me["workspaceId"].as_str().unwrap().to_owned();
+        let (editor, _) = sign(&app, "/api/auth/signup", "ed@example.com", None).await;
+        let (viewer, _) = sign(&app, "/api/auth/signup", "vi@example.com", None).await;
+
+        let token = invite(&app, &owner, &ws, "Ed@Example.com", "write").await;
+        let (status, _, joined) = send(&app, accept(&editor, &token)).await;
+        assert_eq!((status, joined["workspaceId"].as_str()), (StatusCode::OK, Some(ws.as_str())), "{joined}");
+        let token = invite(&app, &owner, &ws, "vi@example.com", "read").await;
+        assert_eq!(send(&app, accept(&viewer, &token)).await.0, StatusCode::OK);
+
+        // The editor's `me` lists both workspaces and keeps the one the UI asked for.
+        let (_, _, me) = send(&app, call("GET", "/api/auth/me", Some(&editor), Some(&ws), None)).await;
+        assert_eq!(me["workspaceId"].as_str(), Some(ws.as_str()));
+        let roles: Vec<_> = me["workspaces"].as_array().unwrap().iter().map(|w| w["role"].clone()).collect();
+        assert_eq!(roles, [json!("admin"), json!("write")]);
+        assert_eq!(me["workspaces"][1]["name"], "owner's workspace");
+        assert_eq!(me["workspaces"][1]["members"], 3);
+
+        let saved = json!({ "environments": [{ "name": "shared", "vars": {} }] });
+        let put = |cookie: &str| call("PUT", "/api/workspace", Some(cookie), Some(&ws), Some(saved.clone()));
+        assert_eq!(send(&app, put(&editor)).await.0, StatusCode::OK, "editors save");
+        let (status, _, body) = send(&app, put(&viewer)).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert!(body["error"].as_str().unwrap().contains("read access"), "{body}");
+
+        let (status, _, read) = send(&app, call("GET", "/api/workspace", Some(&viewer), Some(&ws), None)).await;
+        assert_eq!((status, &read["workspace"]["environments"][0]["name"]), (StatusCode::OK, &json!("shared")));
+        assert_eq!(send(&app, call("GET", "/api/runs", Some(&viewer), Some(&ws), None)).await.0, StatusCode::OK);
+        let secret = json!({ "environment": "shared", "key": "token", "value": "abc" });
+        let run = json!({ "kind": "fake", "durationMs": 60000 });
+        for (method, path, body) in [
+            ("PUT", "/api/secrets", secret),
+            ("POST", "/api/runs", run.clone()),
+            ("POST", "/api/hosts/confirm", json!({ "host": "example.com" })),
+        ] {
+            let status = send(&app, call(method, path, Some(&viewer), Some(&ws), Some(body))).await.0;
+            assert_eq!(status, StatusCode::FORBIDDEN, "viewer {method} {path}");
+        }
+
+        // A run the editor starts is visible to everyone in the workspace, and stoppable by the owner.
+        let (status, _, started) = send(&app, call("POST", "/api/runs", Some(&editor), Some(&ws), Some(run))).await;
+        assert_eq!(status, StatusCode::CREATED);
+        let run_id = started["runId"].as_str().unwrap();
+        let (_, _, runs) = send(&app, call("GET", "/api/runs", Some(&viewer), Some(&ws), None)).await;
+        assert_eq!(runs[0]["runId"].as_str(), Some(run_id));
+        let stop = call("DELETE", &format!("/api/runs/{run_id}"), Some(&owner), None, None);
+        assert_eq!(send(&app, stop).await.0, StatusCode::ACCEPTED);
+
+        // Downgrading the editor takes effect on their next request.
+        let member = |m: &Value| me["user"]["id"] == m["userId"];
+        let (_, _, list) =
+            send(&app, call("GET", &format!("/api/workspaces/{ws}/members"), Some(&editor), None, None)).await;
+        let ed_id = list["members"].as_array().unwrap().iter().find(|m| member(m)).unwrap()["userId"].clone();
+        assert_eq!(list["invites"], json!([]), "only admins see invites");
+        let demote = call(
+            "PUT",
+            &format!("/api/workspaces/{ws}/members/{}", ed_id.as_str().unwrap()),
+            Some(&owner),
+            None,
+            Some(json!({ "role": "read" })),
+        );
+        assert_eq!(send(&app, demote).await.0, StatusCode::NO_CONTENT);
+        assert_eq!(send(&app, put(&editor)).await.0, StatusCode::FORBIDDEN);
+    }
+
+    /// Shared workspaces: a link works once, only for the address it was sent to, until it expires
+    /// or is withdrawn; re-inviting replaces the old link.
+    #[tokio::test]
+    async fn invite_links_are_single_use_and_bound_to_their_email() {
+        let db = require_db!();
+        let app = app(&db, true);
+        let (owner, me) = sign(&app, "/api/auth/signup", "owner@example.com", None).await;
+        let ws = me["workspaceId"].as_str().unwrap().to_owned();
+        let (ada, _) = sign(&app, "/api/auth/signup", "ada@example.com", None).await;
+        let (eve, _) = sign(&app, "/api/auth/signup", "eve@example.com", None).await;
+
+        let first = invite(&app, &owner, &ws, "ada@example.com", "write").await;
+        let second = invite(&app, &owner, &ws, "ada@example.com", "read").await;
+        let (status, _, body) = send(&app, accept(&ada, &first)).await;
+        assert_eq!(
+            (status, body["error"].as_str()),
+            (StatusCode::BAD_REQUEST, Some("this invite is invalid or has expired")),
+            "replaced"
+        );
+        let (status, _, body) = send(&app, accept(&eve, &second)).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "someone else's invite: {body}");
+        assert_eq!(send(&app, accept(&ada, &second)).await.0, StatusCode::OK, "still good for its addressee");
+        assert_eq!(send(&app, accept(&ada, &second)).await.0, StatusCode::BAD_REQUEST, "single use");
+        let (_, _, me) = send(&app, call("GET", "/api/auth/me", Some(&ada), Some(&ws), None)).await;
+        assert_eq!(me["workspaces"][1]["role"], "read", "the newer invite's role");
+
+        let body = json!({ "email": "ada@example.com", "role": "write" });
+        let (status, _, err) = send(&app, post(&format!("/api/workspaces/{ws}/invites"), Some(&owner), body)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "already a member: {err}");
+        // Admins can be invited too: a workspace can have several.
+        invite(&app, &owner, &ws, "second-admin@example.com", "admin").await;
+
+        // Withdrawn and expired invites stop working; the admins' list shows only live ones.
+        let withdrawn = invite(&app, &owner, &ws, "eve@example.com", "write").await;
+        let (_, _, list) =
+            send(&app, call("GET", &format!("/api/workspaces/{ws}/members"), Some(&owner), None, None)).await;
+        let id = list["invites"][0]["id"].as_str().unwrap().to_owned();
+        let revoke = call("DELETE", &format!("/api/workspaces/{ws}/invites/{id}"), Some(&owner), None, None);
+        assert_eq!(send(&app, revoke).await.0, StatusCode::NO_CONTENT);
+        assert_eq!(send(&app, accept(&eve, &withdrawn)).await.0, StatusCode::BAD_REQUEST);
+        let expiring = invite(&app, &owner, &ws, "eve@example.com", "write").await;
+        let (_, _, list) =
+            send(&app, call("GET", &format!("/api/workspaces/{ws}/members"), Some(&owner), None, None)).await;
+        db.expire_invite(list["invites"][0]["id"].as_str().unwrap().parse().unwrap()).await;
+        assert_eq!(send(&app, accept(&eve, &expiring)).await.0, StatusCode::BAD_REQUEST, "expired");
+        let (_, _, list) =
+            send(&app, call("GET", &format!("/api/workspaces/{ws}/members"), Some(&owner), None, None)).await;
+        let emails: Vec<_> = list["invites"].as_array().unwrap().iter().map(|i| i["email"].clone()).collect();
+        assert_eq!(emails, [json!("second-admin@example.com")], "only the live invite");
+        assert_eq!(db.delete_expired_invites().await.unwrap(), 1);
+    }
+
+    /// Shared workspaces: only admins manage members; there can be several, and always at least one;
+    /// members may leave; outsiders see nothing.
+    #[tokio::test]
+    async fn admins_manage_members_and_one_always_remains() {
+        let db = require_db!();
+        let app = app(&db, true);
+        let (owner, me) = sign(&app, "/api/auth/signup", "owner@example.com", None).await;
+        let ws = me["workspaceId"].as_str().unwrap().to_owned();
+        let owner_id = me["user"]["id"].as_str().unwrap().to_owned();
+        let (ed, ed_me) = sign(&app, "/api/auth/signup", "ed@example.com", None).await;
+        let ed_id = ed_me["user"]["id"].as_str().unwrap().to_owned();
+        let (outsider, _) = sign(&app, "/api/auth/signup", "out@example.com", None).await;
+        let token = invite(&app, &owner, &ws, "ed@example.com", "write").await;
+        send(&app, accept(&ed, &token)).await;
+
+        let members = format!("/api/workspaces/{ws}/members");
+        assert_eq!(send(&app, call("GET", &members, Some(&outsider), None, None)).await.0, StatusCode::NOT_FOUND);
+        let invite_new = |cookie: &str| {
+            let mut req = post(
+                &format!("/api/workspaces/{ws}/invites"),
+                Some(cookie),
+                json!({ "email": "new@example.com", "role": "read" }),
+            );
+            req.headers_mut().insert(header::ORIGIN, "http://localhost:7070".parse().unwrap());
+            req
+        };
+        assert_eq!(send(&app, invite_new(&ed)).await.0, StatusCode::FORBIDDEN, "write members can't invite");
+        let rename = |cookie: &str| {
+            call("PUT", &format!("/api/workspaces/{ws}"), Some(cookie), None, Some(json!({ "name": "Payments" })))
+        };
+        assert_eq!(send(&app, rename(&ed)).await.0, StatusCode::FORBIDDEN);
+        assert_eq!(send(&app, rename(&owner)).await.0, StatusCode::NO_CONTENT);
+        let remove = |cookie: &str, id: &str| call("DELETE", &format!("{members}/{id}"), Some(cookie), None, None);
+        let set_role = |cookie: &str, id: &str, role: &str| {
+            call("PUT", &format!("{members}/{id}"), Some(cookie), None, Some(json!({ "role": role })))
+        };
+        assert_eq!(send(&app, remove(&ed, &owner_id)).await.0, StatusCode::FORBIDDEN, "write members can't remove");
+        assert_eq!(send(&app, set_role(&ed, &ed_id, "admin")).await.0, StatusCode::FORBIDDEN, "or promote themselves");
+        let (status, _, body) = send(&app, remove(&owner, &owner_id)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "the last admin can't leave: {body}");
+        assert!(body["error"].as_str().unwrap().contains("at least one admin"), "{body}");
+        assert_eq!(send(&app, set_role(&owner, &owner_id, "read")).await.0, StatusCode::BAD_REQUEST, "or step down");
+
+        let (_, _, list) = send(&app, call("GET", &members, Some(&ed), None, None)).await;
+        assert_eq!(list["members"][0]["role"], "admin");
+        assert_eq!(
+            (list["members"][1]["email"].as_str(), list["members"][1]["you"].as_bool()),
+            (Some("ed@example.com"), Some(true))
+        );
+        let (_, _, me) = send(&app, call("GET", "/api/auth/me", Some(&ed), Some(&ws), None)).await;
+        assert_eq!(me["workspaces"][1]["name"], "Payments");
+        assert_eq!(me["workspaces"][1]["adminEmails"], json!(["owner@example.com"]));
+
+        // A second admin can do everything the first can, and then the first can step down.
+        assert_eq!(send(&app, set_role(&owner, &ed_id, "admin")).await.0, StatusCode::NO_CONTENT);
+        assert_eq!(send(&app, invite_new(&ed)).await.0, StatusCode::CREATED, "the new admin invites");
+        assert_eq!(send(&app, set_role(&owner, &owner_id, "read")).await.0, StatusCode::NO_CONTENT);
+        assert_eq!(send(&app, set_role(&owner, &ed_id, "read")).await.0, StatusCode::FORBIDDEN, "no longer an admin");
+        assert_eq!(send(&app, remove(&ed, &ed_id)).await.0, StatusCode::BAD_REQUEST, "now ed is the last admin");
+
+        // Leaving: the next request there is a 404, and `me` falls back to the default workspace.
+        assert_eq!(send(&app, remove(&owner, &owner_id)).await.0, StatusCode::NO_CONTENT);
+        assert_eq!(
+            send(&app, call("GET", "/api/workspace", Some(&owner), Some(&ws), None)).await.0,
+            StatusCode::NOT_FOUND
+        );
+        let (_, _, me) = send(&app, call("GET", "/api/auth/me", Some(&owner), Some(&ws), None)).await;
+        assert_ne!(me["workspaceId"].as_str(), Some(ws.as_str()));
+        assert_eq!(me["workspaces"].as_array().unwrap().len(), 1);
+    }
+    /// Shared workspaces: creating extra workspaces, and deleting one with everything in it.
+    #[tokio::test]
+    async fn workspaces_are_created_and_deleted_by_their_admins() {
+        let db = require_db!();
+        let app = app(&db, true);
+        let (owner, me) = sign(&app, "/api/auth/signup", "owner@example.com", None).await;
+        let personal = me["workspaceId"].as_str().unwrap().to_owned();
+        let (ed, _) = sign(&app, "/api/auth/signup", "ed@example.com", None).await;
+
+        let delete =
+            |cookie: &str, id: &str| call("DELETE", &format!("/api/workspaces/{id}"), Some(cookie), None, None);
+        assert_eq!(send(&app, delete(&owner, &personal)).await.0, StatusCode::BAD_REQUEST, "not the only one");
+        let blank = post("/api/workspaces", Some(&owner), json!({ "name": "  " }));
+        assert_eq!(send(&app, blank).await.0, StatusCode::BAD_REQUEST);
+        let (status, _, team) = send(&app, post("/api/workspaces", Some(&owner), json!({ "name": " Team " }))).await;
+        assert_eq!(
+            (status, team["name"].as_str(), team["role"].as_str()),
+            (StatusCode::CREATED, Some("Team"), Some("admin"))
+        );
+        let team_id = team["id"].as_str().unwrap().to_owned();
+
+        let saved = json!({ "environments": [{ "name": "team-only", "vars": {} }] });
+        let put = call("PUT", "/api/workspace", Some(&owner), Some(&team_id), Some(saved));
+        assert_eq!(send(&app, put).await.0, StatusCode::OK);
+        let (_, _, ws) = send(&app, call("GET", "/api/workspace", Some(&owner), Some(&personal), None)).await;
+        assert_eq!(ws["workspace"]["environments"], json!([]), "separate data");
+        let token = invite(&app, &owner, &team_id, "ed@example.com", "write").await;
+        send(&app, accept(&ed, &token)).await;
+        let run = json!({ "kind": "fake", "durationMs": 60000 });
+        assert_eq!(
+            send(&app, call("POST", "/api/runs", Some(&ed), Some(&team_id), Some(run))).await.0,
+            StatusCode::CREATED
+        );
+
+        assert_eq!(send(&app, delete(&ed, &team_id)).await.0, StatusCode::FORBIDDEN, "write members can't delete");
+        assert_eq!(send(&app, delete(&owner, &team_id)).await.0, StatusCode::NO_CONTENT);
+        for cookie in [&owner, &ed] {
+            let status = send(&app, call("GET", "/api/workspace", Some(cookie), Some(&team_id), None)).await.0;
+            assert_eq!(status, StatusCode::NOT_FOUND);
+        }
+        let exists: Option<i32> = sqlx::query_scalar("SELECT 1 FROM pg_namespace WHERE nspname = $1")
+            .bind(db.schema_of(team_id.parse().unwrap()))
+            .fetch_optional(db.pool())
+            .await
+            .unwrap();
+        assert_eq!(exists, None, "the schema is gone");
+        assert_eq!(send(&app, delete(&owner, &personal)).await.0, StatusCode::BAD_REQUEST, "the last one stays");
+    }
+
+    /// Shared workspaces: with email set up, the invite is emailed as well as returned.
+    #[tokio::test]
+    async fn invites_are_emailed_when_mail_is_on() {
+        let db = require_db!();
+        let (app, mailer) = app_with_mail(&db, Some("https://kestrel.test"));
+        let (owner, me) = sign(&app, "/api/auth/signup", "owner@example.com", None).await;
+        let ws = me["workspaceId"].as_str().unwrap().to_owned();
+        let body = json!({ "email": "ada@example.com", "role": "read" });
+        let (_, _, created) = send(&app, post(&format!("/api/workspaces/{ws}/invites"), Some(&owner), body)).await;
+        assert_eq!(created["emailed"], true);
+        let link = created["link"].as_str().unwrap();
+        assert!(link.starts_with("https://kestrel.test/invite?token="), "{link}");
+        let sent = mailer.sent();
+        let email = sent.iter().find(|e| e.to == "ada@example.com").unwrap();
+        assert!(
+            email.body.contains(link)
+                && email.body.contains("owner@example.com")
+                && email.body.contains("with read access")
+        );
+    }
+
+    fn unix_now() -> u64 {
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()
+    }
+
+    /// Signs up `email` and turns two-factor on. Returns the cookie, the base32 secret and the
+    /// recovery codes. The code used to turn it on is for the current step, so the next usable one is
+    /// the following step's.
+    async fn with_two_factor(app: &Router, email: &str) -> (String, String, Vec<String>) {
+        let (cookie, _) = sign(app, "/api/auth/signup", email, None).await;
+        let (status, _, setup) =
+            send(app, post("/api/auth/2fa/setup", Some(&cookie), json!({ "password": "correct horse battery" }))).await;
+        assert_eq!(status, StatusCode::OK, "{setup}");
+        let secret = setup["secret"].as_str().unwrap().to_owned();
+        assert!(setup["otpauthUrl"].as_str().unwrap().starts_with("otpauth://totp/Kestrel:"), "{setup}");
+        let code = crate::auth::totp::code_for(&secret, unix_now());
+        let (status, _, codes) = send(app, post("/api/auth/2fa/enable", Some(&cookie), json!({ "code": code }))).await;
+        assert_eq!(status, StatusCode::OK, "{codes}");
+        let codes = codes["codes"].as_array().unwrap().iter().map(|c| c.as_str().unwrap().to_owned()).collect();
+        (cookie, secret, codes)
+    }
+
+    /// The password step; with two-factor on it returns a challenge and no cookie.
+    async fn password_step(app: &Router, email: &str) -> String {
+        let body = json!({ "email": email, "password": "correct horse battery" });
+        let (status, headers, res) = send(app, post("/api/auth/login", None, body)).await;
+        assert_eq!(status, StatusCode::OK, "{res}");
+        assert!(headers.get(header::SET_COOKIE).is_none(), "no session before the code");
+        res["twoFactorChallenge"].as_str().unwrap_or_else(|| panic!("a challenge: {res}")).to_owned()
+    }
+
+    fn code_step(challenge: &str, code: &str) -> Request<Body> {
+        post("/api/auth/login/2fa", None, json!({ "challenge": challenge, "code": code }))
+    }
+
+    /// Two-factor: setup needs the password and a working code; signing in then needs a code or a
+    /// recovery code, each usable once; turning it off needs the password and a code.
+    #[tokio::test]
+    async fn two_factor_sign_in_needs_a_code_each_used_once() {
+        let db = require_db!();
+        let app = app(&db, true);
+        let (cookie, _) = sign(&app, "/api/auth/signup", "ada@example.com", None).await;
+        let (_, _, status) = send(&app, call("GET", "/api/auth/2fa", Some(&cookie), None, None)).await;
+        assert_eq!(status["enabled"], false);
+        let wrong = post("/api/auth/2fa/setup", Some(&cookie), json!({ "password": "not my password" }));
+        assert_eq!(send(&app, wrong).await.0, StatusCode::BAD_REQUEST, "setup needs the password");
+        let (_, _, setup) =
+            send(&app, post("/api/auth/2fa/setup", Some(&cookie), json!({ "password": "correct horse battery" })))
+                .await;
+        let secret = setup["secret"].as_str().unwrap();
+        let enable = |code: &str| post("/api/auth/2fa/enable", Some(&cookie), json!({ "code": code }));
+        assert_eq!(send(&app, enable("000000")).await.0, StatusCode::BAD_REQUEST, "a wrong code doesn't turn it on");
+        let (_, _, status) = send(&app, call("GET", "/api/auth/2fa", Some(&cookie), None, None)).await;
+        assert_eq!(status["enabled"], false, "not until a code matches");
+        let (status, _, codes) = send(&app, enable(&crate::auth::totp::code_for(secret, unix_now()))).await;
+        assert_eq!(status, StatusCode::OK);
+        let codes: Vec<String> =
+            codes["codes"].as_array().unwrap().iter().map(|c| c.as_str().unwrap().into()).collect();
+        assert_eq!(codes.len(), 10);
+        let (_, _, status) = send(&app, call("GET", "/api/auth/2fa", Some(&cookie), None, None)).await;
+        assert_eq!((status["enabled"].as_bool(), status["recoveryCodesLeft"].as_i64()), (Some(true), Some(10)));
+        let again = post("/api/auth/2fa/setup", Some(&cookie), json!({ "password": "correct horse battery" }));
+        assert_eq!(send(&app, again).await.0, StatusCode::BAD_REQUEST, "can't swap the secret while it's on");
+
+        // Signing in: the password alone gives a challenge, not a session.
+        let challenge = password_step(&app, "ada@example.com").await;
+        assert_eq!(send(&app, code_step(&challenge, "000000")).await.0, StatusCode::UNAUTHORIZED);
+        let next = crate::auth::totp::code_for(secret, unix_now() + 30);
+        let (status, headers, me) = send(&app, code_step(&challenge, &next)).await;
+        assert_eq!(status, StatusCode::OK, "{me}");
+        assert_eq!(me["user"]["email"], "ada@example.com");
+        let signed_in = headers[header::SET_COOKIE].to_str().unwrap().split(';').next().unwrap().to_owned();
+        assert_eq!(send(&app, call("GET", "/api/workspace", Some(&signed_in), None, None)).await.0, StatusCode::OK);
+        assert_eq!(send(&app, code_step(&challenge, &next)).await.0, StatusCode::UNAUTHORIZED, "challenge used up");
+        let challenge = password_step(&app, "ada@example.com").await;
+        assert_eq!(send(&app, code_step(&challenge, &next)).await.0, StatusCode::UNAUTHORIZED, "the code was used");
+
+        // A recovery code works once, typed any way.
+        let typed = codes[0].replace('-', "").to_uppercase();
+        assert_eq!(send(&app, code_step(&challenge, &typed)).await.0, StatusCode::OK);
+        let challenge = password_step(&app, "ada@example.com").await;
+        assert_eq!(send(&app, code_step(&challenge, &codes[0])).await.0, StatusCode::UNAUTHORIZED, "used up");
+    }
+
+    /// Two-factor: new recovery codes replace the old ones; turning it off needs the password and a
+    /// code, after which the password alone signs in again. (Its own account: password
+    /// confirmations are limited to 5 a minute per account.)
+    #[tokio::test]
+    async fn two_factor_recovery_codes_rotate_and_turning_it_off_needs_a_code() {
+        let db = require_db!();
+        let app = app(&db, true);
+        let (cookie, _, codes) = with_two_factor(&app, "ada@example.com").await;
+        let confirm = |path: &str, password: &str, code: &str| {
+            post(path, Some(&cookie), json!({ "password": password, "code": code }))
+        };
+        let (status, _, fresh) =
+            send(&app, confirm("/api/auth/2fa/recovery-codes", "correct horse battery", &codes[1])).await;
+        assert_eq!(status, StatusCode::OK, "{fresh}");
+        let fresh: Vec<String> =
+            fresh["codes"].as_array().unwrap().iter().map(|c| c.as_str().unwrap().into()).collect();
+        let challenge = password_step(&app, "ada@example.com").await;
+        assert_eq!(send(&app, code_step(&challenge, &codes[2])).await.0, StatusCode::UNAUTHORIZED, "old codes stop");
+
+        let wrong_password = confirm("/api/auth/2fa/disable", "not my password", &fresh[0]);
+        assert_eq!(send(&app, wrong_password).await.0, StatusCode::BAD_REQUEST);
+        let wrong_code = confirm("/api/auth/2fa/disable", "correct horse battery", "000000");
+        assert_eq!(send(&app, wrong_code).await.0, StatusCode::BAD_REQUEST);
+        let off = confirm("/api/auth/2fa/disable", "correct horse battery", &fresh[0]);
+        assert_eq!(send(&app, off).await.0, StatusCode::NO_CONTENT);
+        sign(&app, "/api/auth/login", "ada@example.com", None).await;
+        let (_, _, status) = send(&app, call("GET", "/api/auth/2fa", Some(&cookie), None, None)).await;
+        assert_eq!((status["enabled"].as_bool(), status["recoveryCodesLeft"].as_i64()), (Some(false), Some(0)));
+    }
+
+    /// Two-factor: a challenge takes 5 wrong codes, then needs the password again; it can't be made up.
+    #[tokio::test]
+    async fn two_factor_challenges_run_out_and_cant_be_forged() {
+        let db = require_db!();
+        let app = app(&db, true);
+        let (_, secret, _) = with_two_factor(&app, "ada@example.com").await;
+        let challenge = password_step(&app, "ada@example.com").await;
+        for _ in 0..5 {
+            assert_eq!(send(&app, code_step(&challenge, "000000")).await.0, StatusCode::UNAUTHORIZED);
+        }
+        let right = crate::auth::totp::code_for(&secret, unix_now() + 30);
+        let (status, _, body) = send(&app, code_step(&challenge, &right)).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "out of attempts, even with the right code");
+        assert!(body["error"].as_str().unwrap().contains("password again"), "{body}");
+        let forged = crate::auth::session::new_token();
+        assert_eq!(send(&app, code_step(&forged, &right)).await.0, StatusCode::UNAUTHORIZED);
+
+        // The CLI's way out for someone who lost everything.
+        let mut config = Config::new(7070, TOKEN.into(), false, vec![]);
+        config.auth_enabled = true;
+        Accounts::new(Arc::clone(&db), &config).reset_two_factor("ADA@example.com").await.unwrap();
+        sign(&app, "/api/auth/login", "ada@example.com", None).await;
     }
 
     #[tokio::test]

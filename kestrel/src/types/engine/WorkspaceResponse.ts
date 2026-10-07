@@ -8,4 +8,9 @@ export type WorkspaceResponse = { workspace: Workspace,
 /**
  * Environment name → names of the secrets set for it.
  */
-secretKeys: { [key in string]: Array<string> }, };
+secretKeys: { [key in string]: Array<string> }, 
+/**
+ * Bumped by every save. Send it back as `baseRevision` when saving, so a save made without
+ * seeing someone else's changes is refused instead of overwriting them.
+ */
+revision: number, };

@@ -1,7 +1,11 @@
 "use client";
 
-import { ChevronRight, Moon, PanelLeft, Sun } from "lucide-react";
+import { ArrowLeft, ChevronRight, Moon, PanelLeft, Sun } from "lucide-react";
+import { usePathname } from "next/navigation";
 import { useTheme } from "next-themes";
+import Link from "next/link";
+
+import { WORKSPACE_PATH } from "@/hooks/use-to-workspace";
 
 import { useLayoutStore } from "@/stores/layout-store";
 import { EnvironmentBar } from "../workspace";
@@ -43,6 +47,8 @@ export const Header = () => {
   const endpoint = useSelectedEndpoint();
   const { setTheme, theme } = useTheme();
   const isDraft = useSelectedIsDraft();
+  // Settings and Profile share this header; there, the way back replaces the breadcrumb.
+  const onWorkspace = usePathname() === WORKSPACE_PATH;
 
   const toggleTheme = () => setTheme(theme === "dark" ? "light" : "dark");
 
@@ -61,15 +67,24 @@ export const Header = () => {
             )}
           />
         </button>
-        {endpoint && (
-          <nav className="flex min-w-0 items-center gap-1.5" aria-label="Breadcrumb">
-            <span className="text-muted-foreground truncate">
-              {isDraft ? "Unsaved" : (collection?.name ?? "No collection")}
-            </span>
-            <ChevronRight className="text-muted-foreground size-3.5 shrink-0" />
-            <MethodBadge method={endpoint.method} />
-            <span className="truncate font-medium">{endpoint.name || endpoint.url}</span>
-          </nav>
+        {!onWorkspace ? (
+          <Link
+            href={WORKSPACE_PATH}
+            className="text-muted-foreground hover:text-foreground flex items-center gap-1.5 transition-colors"
+          >
+            <ArrowLeft className="size-4" /> Back to workspace
+          </Link>
+        ) : (
+          endpoint && (
+            <nav className="flex min-w-0 items-center gap-1.5" aria-label="Breadcrumb">
+              <span className="text-muted-foreground truncate">
+                {isDraft ? "Unsaved" : (collection?.name ?? "No collection")}
+              </span>
+              <ChevronRight className="text-muted-foreground size-3.5 shrink-0" />
+              <MethodBadge method={endpoint.method} />
+              <span className="truncate font-medium">{endpoint.name || endpoint.url}</span>
+            </nav>
+          )
         )}
       </div>
       <div className="flex items-center gap-2">

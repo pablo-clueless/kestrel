@@ -1,7 +1,15 @@
 import { create } from "zustand";
 import { toast } from "sonner";
 
-import { errorMessage, getWorkspace, putWorkspace, setSecret } from "@/lib/client";
+import {
+  errorMessage,
+  getWorkspace,
+  putWorkspace,
+  setSecret,
+  workspaceConflict,
+  workspaceId,
+} from "@/lib/client";
+import { mergeWorkspace, same } from "@/lib/merge";
 import type { Collection } from "@/types/engine/Collection";
 import type { KeyValue } from "@/types/engine/KeyValue";
 import type { Workspace } from "@/types/engine/Workspace";
@@ -10,11 +18,18 @@ import type { Saved } from "@/types/engine/Saved";
 import { generateUUID } from "@/lib/utils";
 
 const SAVE_DEBOUNCE_MS = 400;
+/** Saves refused because someone else saved first are merged and retried this many times. */
+const SAVE_ATTEMPTS = 4;
 
 type SaveState = "idle" | "saving" | "saved" | "error";
 
 interface WorkspaceState {
   workspace: Workspace | null;
+  /** The workspace as the engine last had it, as far as this tab knows, and its revision: what
+   * edits are made on. A save sends the revision, so the engine refuses it if someone else saved
+   * meanwhile, and the edits are merged into theirs (see `mergeWorkspace`). */
+  base: Workspace | null;
+  revision: number;
   /** Environment → names of secrets set. Values never leave the engine. */
   secretKeys: Record<string, string[]>;
   selectedId: string | null;
@@ -64,9 +79,53 @@ interface WorkspaceState {
   applySaved: (env: string, saved: Saved[]) => void;
   /** Writes pending edits now. Runs call this so the engine sees what's on screen. */
   flush: () => Promise<void>;
+  /** Picks up what others saved (shared workspaces). Skipped while this tab has edits to save:
+   * saving merges theirs in anyway. */
+  refresh: () => Promise<void>;
 }
 
 let saveTimer: ReturnType<typeof setTimeout> | undefined;
+/** Saves run one at a time: two in flight would carry the same base revision, and the second would
+ * be refused by the first. */
+let saving: Promise<void> = Promise.resolve();
+
+/** The active collection and environment are each person's own: kept in this browser per workspace,
+ * never in the shared document. Otherwise a teammate picking their prod environment would pick it
+ * for you too, and the engine (which falls back to the saved one) would send your requests there. */
+const viewKey = () => `kestrel-view:${workspaceId()}`;
+
+type View = { environment: string | null; collection: string | null };
+
+const readView = (): View | null => {
+  try {
+    const raw = localStorage.getItem(viewKey());
+    return raw ? (JSON.parse(raw) as View) : null;
+  } catch {
+    return null;
+  }
+};
+
+const writeView = (ws: Workspace) => {
+  try {
+    const view: View = { environment: ws.activeEnvironment, collection: ws.activeCollection };
+    localStorage.setItem(viewKey(), JSON.stringify(view));
+  } catch {
+    // Storage blocked: the view lasts for this tab only.
+  }
+};
+
+/** The workspace as it's saved: everything but this person's view. */
+const withoutView = (ws: Workspace): Workspace => ({
+  ...ws,
+  activeEnvironment: null,
+  activeCollection: null,
+});
+
+/** `request "Login", variable "token" in environment "local"`, for a toast. */
+const listOf = (items: string[]) =>
+  items.length <= 3
+    ? items.join(", ")
+    : `${items.slice(0, 3).join(", ")} and ${items.length - 3} more`;
 
 /** The collection shown in the sidebar: the saved one, else the first. */
 export const activeCollectionOf = (ws: Workspace | null): Collection | null =>
@@ -165,6 +224,10 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => {
     if (selectedId !== null && !ids.has(selectedId)) select(openIds.at(-1) ?? null);
   };
 
+  /** Changes only this person's view (active collection or environment): nothing to save. */
+  const setView = (patch: Partial<Pick<Workspace, "activeCollection" | "activeEnvironment">>) =>
+    set((s) => (s.workspace ? { workspace: { ...s.workspace, ...patch } } : s));
+
   /** Applies an edit and schedules a save. */
   const edit = (fn: (ws: Workspace) => Workspace) => {
     const ws = get().workspace;
@@ -183,6 +246,8 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => {
 
   return {
     workspace: null,
+    base: null,
+    revision: 0,
     secretKeys: {},
     selectedId: null,
     openIds: [],
@@ -193,15 +258,36 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => {
 
     load: async () => {
       try {
-        const { workspace, secretKeys } = await getWorkspace();
+        const { workspace, secretKeys, revision } = await getWorkspace();
+        // This browser's view of the workspace, or (the first time) whatever the document used to
+        // carry. Names that no longer exist are dropped: an unknown environment fails every send.
+        const view = readView() ?? {
+          environment: workspace.activeEnvironment,
+          collection: workspace.activeCollection,
+        };
+        const local: Workspace = {
+          ...workspace,
+          activeEnvironment: workspace.environments.some((e) => e.name === view.environment)
+            ? view.environment
+            : null,
+          activeCollection: workspace.collections.some((c) => c.id === view.collection)
+            ? view.collection
+            : null,
+        };
         // Nothing is opened for you: the dashboard starts blank until you pick an endpoint.
-        set({ workspace, secretKeys, selectedId: null, openIds: [], loadError: null });
-        // An active environment that doesn't exist (e.g. "No Environment", which the picker used
-        // to save as a name) makes every send and run fail with "unknown environment". Clear it,
-        // and save that, since the engine falls back to the saved one.
-        const active = workspace.activeEnvironment;
-        if (active !== null && !workspace.environments.some((e) => e.name === active)) {
-          get().setActiveEnvironment(null);
+        set({
+          workspace: local,
+          base: workspace,
+          revision,
+          secretKeys,
+          selectedId: null,
+          openIds: [],
+          loadError: null,
+        });
+        // A document saved before the view moved out of it still names an environment, which the
+        // engine falls back to when a request names none. Save it without, once.
+        if (workspace.activeEnvironment !== null || workspace.activeCollection !== null) {
+          edit((ws) => ws);
         }
       } catch (err) {
         set({ loadError: errorMessage(err) });
@@ -245,7 +331,7 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => {
 
     // Only the active collection changes; the selection is left to whoever called (selecting or
     // adding an endpoint), so opening a collection never picks an endpoint for you.
-    setActiveCollection: (id) => edit((ws) => ({ ...ws, activeCollection: id })),
+    setActiveCollection: (id) => setView({ activeCollection: id }),
 
     addCollection: (name) => {
       const collection = newCollection(name);
@@ -340,7 +426,7 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => {
       pruneTabs();
     },
 
-    setActiveEnvironment: (name) => edit((ws) => ({ ...ws, activeEnvironment: name })),
+    setActiveEnvironment: (name) => setView({ activeEnvironment: name }),
 
     addEnvironment: (name) =>
       edit((ws) =>
@@ -404,20 +490,80 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => {
       });
     },
 
-    flush: async () => {
+    flush: () => {
       clearTimeout(saveTimer);
-      const ws = get().workspace;
-      if (!ws || get().saveState !== "saving") return;
-      try {
-        await putWorkspace(ws);
-        // Only mark saved if nothing changed while the request was in flight.
-        if (get().workspace === ws) set({ saveState: "saved", saveError: null });
-      } catch (err) {
-        set({ saveState: "error", saveError: errorMessage(err) });
-        throw err;
-      }
+      const run = saving.then(save, save);
+      saving = run.catch(() => {});
+      return run;
+    },
+
+    refresh: async () => {
+      const { saveState, revision } = get();
+      if (saveState === "saving" || !get().workspace) return;
+      const current = await getWorkspace();
+      // Re-checked after the round trip: an edit made meanwhile will merge theirs in when it saves.
+      if (current.revision === revision || get().saveState === "saving") return;
+      // Nothing unsaved here (`saving` would be set), so theirs is the new state, except for this
+      // tab's view: someone else switching to their prod environment mustn't switch this tab's
+      // sends there. (Merging with nothing changed on this side does exactly that.)
+      const mine = get().workspace ?? current.workspace;
+      set({
+        workspace: mergeWorkspace(mine, mine, current.workspace).merged,
+        base: current.workspace,
+        revision: current.revision,
+        secretKeys: current.secretKeys,
+      });
+      pruneTabs();
     },
   };
+
+  /** Writes what's on screen, merging in anyone else's save that got there first. */
+  async function save() {
+    if (get().saveState !== "saving") return;
+    const conflicts = new Set<string>();
+    for (let attempt = 1; ; attempt++) {
+      const ws = get().workspace;
+      if (!ws) return;
+      try {
+        const revision = await putWorkspace(withoutView(ws), get().revision);
+        set({ base: withoutView(ws), revision });
+        // Only mark saved if nothing changed while the request was in flight.
+        if (get().workspace === ws) set({ saveState: "saved", saveError: null });
+        break;
+      } catch (err) {
+        const conflict = workspaceConflict(err);
+        if (!conflict || attempt === SAVE_ATTEMPTS) {
+          set({ saveState: "error", saveError: errorMessage(err) });
+          throw err;
+        }
+        const theirs = conflict.current;
+        // Edits made while the save was in flight are in `workspace` too, so they're merged as well.
+        const { merged, conflicts: clashes } = mergeWorkspace(
+          get().base ?? theirs.workspace,
+          get().workspace ?? ws,
+          theirs.workspace,
+        );
+        clashes.forEach((c) => conflicts.add(c));
+        set({
+          workspace: merged,
+          base: theirs.workspace,
+          revision: theirs.revision,
+          secretKeys: theirs.secretKeys,
+        });
+        pruneTabs();
+        // Theirs already has everything: nothing of ours to write.
+        if (same(withoutView(merged), theirs.workspace)) {
+          set({ saveState: "saved", saveError: null });
+          break;
+        }
+      }
+    }
+    if (conflicts.size > 0) {
+      toast.warning(
+        `Someone else changed the same things at the same time. Your version was kept for ${listOf([...conflicts])}.`,
+      );
+    }
+  }
 });
 
 /** The selected endpoint, saved or draft. */
@@ -435,3 +581,16 @@ export const useSelectedIsDraft = () =>
   useWorkspaceStore((s) => s.selectedId !== null && s.selectedId in s.drafts);
 
 export const useActiveCollection = () => useWorkspaceStore((s) => activeCollectionOf(s.workspace));
+
+// Remembers the view whenever it changes, whichever action changed it (picking an environment,
+// adding a collection, a merge dropping one that was deleted elsewhere).
+useWorkspaceStore.subscribe((s, prev) => {
+  const [now, before] = [s.workspace, prev.workspace];
+  if (
+    now &&
+    (now.activeEnvironment !== before?.activeEnvironment ||
+      now.activeCollection !== before?.activeCollection)
+  ) {
+    writeView(now);
+  }
+});

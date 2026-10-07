@@ -4,6 +4,7 @@ mod hosts;
 mod import;
 mod runs;
 mod scope;
+mod teams;
 mod ui;
 mod workspace;
 
@@ -47,6 +48,7 @@ pub fn router(state: AppState) -> Router {
     let api = Router::new()
         .route("/health", get(health))
         .route("/workspace", get(workspace::get).put(workspace::put))
+        .route("/workspace/events", get(workspace::events))
         .route("/secrets", put(workspace::set_secret))
         .route("/render", post(workspace::render))
         .route("/send", post(workspace::send))
@@ -62,6 +64,12 @@ pub fn router(state: AppState) -> Router {
         .route("/runs/{id}/report", get(runs::report))
         .route("/auth/signup", post(auth::signup))
         .route("/auth/login", post(auth::login))
+        .route("/auth/login/2fa", post(auth::login_two_factor))
+        .route("/auth/2fa", get(auth::two_factor_status))
+        .route("/auth/2fa/setup", post(auth::two_factor_setup))
+        .route("/auth/2fa/enable", post(auth::two_factor_enable))
+        .route("/auth/2fa/disable", post(auth::two_factor_disable))
+        .route("/auth/2fa/recovery-codes", post(auth::regenerate_recovery_codes))
         .route("/auth/logout", post(auth::logout))
         .route("/auth/me", get(auth::me))
         .route("/auth/password", post(auth::change_password))
@@ -71,6 +79,13 @@ pub fn router(state: AppState) -> Router {
         .route("/auth/password-reset/confirm", post(auth::confirm_password_reset))
         .route("/auth/verify-email", post(auth::verify_email))
         .route("/auth/verify-email/resend", post(auth::resend_verification))
+        .route("/workspaces", get(teams::list).post(teams::create))
+        .route("/workspaces/{id}", put(teams::rename).delete(teams::delete))
+        .route("/workspaces/{id}/members", get(teams::members))
+        .route("/workspaces/{id}/members/{user}", put(teams::set_role).delete(teams::remove_member))
+        .route("/workspaces/{id}/invites", post(teams::invite))
+        .route("/workspaces/{id}/invites/{invite}", axum::routing::delete(teams::revoke_invite))
+        .route("/invites/accept", post(teams::accept_invite))
         // An unknown `/api` path is a JSON 404, not the UI's HTML 404 page.
         .fallback(api_not_found)
         // The last layer added runs first: the guard (token, Host, Origin, content type), then the
@@ -345,10 +360,7 @@ mod tests {
                 .body(Body::from("{}"))
                 .unwrap()
         };
-        assert_eq!(
-            status(&app, req("kestrel.example.com", "https://kestrel.example.com")).await,
-            StatusCode::NO_CONTENT
-        );
+        assert_eq!(status(&app, req("kestrel.example.com", "https://kestrel.example.com")).await, StatusCode::OK);
         assert_eq!(status(&app, req("other.example.com", "https://other.example.com")).await, StatusCode::FORBIDDEN);
     }
 
@@ -815,6 +827,170 @@ mod tests {
         assert!(report.samples.iter().any(|s| s.contract.as_ref().is_some_and(|c| !c.passed)));
     }
 
+    /// Server-state sweeps: setup seeds n rows before each size, every measured query sees exactly n
+    /// (sizes aren't interleaved), teardown runs after each size, and a failing setup stops n growing.
+    #[tokio::test]
+    async fn complexity_with_setup_measures_each_size_against_its_own_state() {
+        use std::{
+            collections::BTreeMap,
+            sync::{Arc, Mutex},
+        };
+
+        use axum::extract::{Query, State as AxState};
+
+        use crate::model::{Body as ReqBody, Collection, Endpoint, HttpMethod};
+
+        #[derive(Default)]
+        struct Server {
+            rows: u64,
+            log: Vec<String>,
+        }
+        type Shared = Arc<Mutex<Server>>;
+        let server: Shared = Arc::default();
+        let target = Router::new()
+            .route(
+                "/seed",
+                axum::routing::post(|AxState(s): AxState<Shared>, Query(q): Query<BTreeMap<String, u64>>| async move {
+                    let mut s = s.lock().unwrap();
+                    s.rows = q["count"];
+                    let entry = format!("seed {}", s.rows);
+                    s.log.push(entry);
+                })
+                .delete(|AxState(s): AxState<Shared>| async move {
+                    let mut s = s.lock().unwrap();
+                    s.rows = 0;
+                    s.log.push("clear".into());
+                }),
+            )
+            .route(
+                "/seed-small-only",
+                axum::routing::post(|Query(q): Query<BTreeMap<String, u64>>| async move {
+                    if q["count"] >= 16 { StatusCode::INTERNAL_SERVER_ERROR } else { StatusCode::NO_CONTENT }
+                }),
+            )
+            .route(
+                "/query",
+                axum::routing::get(|AxState(s): AxState<Shared>, Query(q): Query<BTreeMap<String, u64>>| async move {
+                    let mut s = s.lock().unwrap();
+                    let entry = format!("query {} saw {}", q["n"], s.rows);
+                    s.log.push(entry);
+                }),
+            )
+            .with_state(Arc::clone(&server));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, target).await.unwrap() });
+
+        let ids: [uuid::Uuid; 5] = std::array::from_fn(|_| uuid::Uuid::new_v4());
+        let [query, seed, clear, seed_small, elsewhere] = ids;
+        let at = |id, method, url: &str| Endpoint {
+            id,
+            name: url.rsplit('/').next().unwrap_or_default().into(),
+            group: None,
+            method,
+            url: url.into(),
+            headers: vec![],
+            query: vec![],
+            body: ReqBody::None,
+            auth: Default::default(),
+            expect: None,
+            extract: vec![],
+        };
+        let workspace = Workspace {
+            collections: vec![Collection {
+                headers: Vec::new(),
+                id: uuid::Uuid::new_v4(),
+                name: "c".into(),
+                vars: [("base".to_string(), base)].into(),
+                source: None,
+                groups: Vec::new(),
+                schema_defs: None,
+                endpoints: vec![
+                    at(query, HttpMethod::Get, "{{base}}/query?n={{n}}"),
+                    at(seed, HttpMethod::Post, "{{base}}/seed?count={{n}}"),
+                    at(clear, HttpMethod::Delete, "{{base}}/seed"),
+                    at(seed_small, HttpMethod::Post, "{{base}}/seed-small-only?count={{n}}"),
+                    at(elsewhere, HttpMethod::Post, "http://127.0.0.2:9/seed?count={{n}}"),
+                ],
+            }],
+            ..Default::default()
+        };
+        let db = require_db!();
+        let app = app_with(&db, workspace, Secrets::default()).await;
+        let config = |extra: &str| {
+            format!(
+                r#"{{"kind":"complexity","endpointId":"{query}","minN":1,"maxN":64,"points":4,"samples":3,"warmup":1,"timeoutMs":5000,"keepAlive":true,"slowMs":5000,"budgetMs":60000{extra}}}"#
+            )
+        };
+        let finish = |run_id: uuid::Uuid| {
+            let app = app.clone();
+            async move {
+                let events =
+                    app.clone().oneshot(get(&format!("/api/runs/{run_id}/events")).body(Body::empty()).unwrap());
+                events.await.unwrap().into_body().collect().await.unwrap();
+                let report = app.oneshot(get(&format!("/api/runs/{run_id}/report")).body(Body::empty()).unwrap());
+                json_body::<RunReport>(report.await.unwrap()).await
+            }
+        };
+
+        let both = config(&format!(r#","setupEndpointId":"{seed}","teardownEndpointId":"{clear}""#));
+        let StartRunResponse { run_id } =
+            json_body(app.clone().oneshot(post_json("/api/runs", both)).await.unwrap()).await;
+        let report = finish(run_id).await;
+        assert_eq!(report.status, RunStatus::Completed);
+        assert_eq!(report.total_requests, 12, "4 sizes × 3 samples; setup, teardown and warm-up excluded");
+        let points = report.complexity.expect("complexity result").points;
+        assert_eq!(points.iter().map(|p| p.n).collect::<Vec<_>>(), [1, 4, 16, 64]);
+        assert!(
+            report.notes.iter().any(|n| n.contains("Server state: `seed?count={{n}}` before and `seed` after")),
+            "{:?}",
+            report.notes
+        );
+
+        let log = std::mem::take(&mut server.lock().unwrap().log);
+        // Each size: seed n, then its queries (warm-up and samples), all seeing n rows, then clear.
+        let mut sizes_seen = Vec::new();
+        let mut lines = log.iter().peekable();
+        while let Some(line) = lines.next() {
+            let n: u64 = line
+                .strip_prefix("seed ")
+                .unwrap_or_else(|| panic!("expected a seed, got {line}: {log:?}"))
+                .parse()
+                .unwrap();
+            sizes_seen.push(n);
+            let mut queries = 0;
+            while let Some(q) = lines.next_if(|l| l.starts_with("query")) {
+                assert_eq!(q, &format!("query {n} saw {n}"), "measured against its own state: {log:?}");
+                queries += 1;
+            }
+            assert_eq!(queries, 3 + 1, "1 warm-up + 3 samples at n = {n}");
+            assert_eq!(lines.next().map(String::as_str), Some("clear"), "{log:?}");
+        }
+        sizes_seen.sort_unstable();
+        assert_eq!(sizes_seen, [1, 4, 16, 64]);
+
+        // A setup that fails from n = 16 up: those sizes are dropped, the smaller ones still measured.
+        let failing = config(&format!(r#","setupEndpointId":"{seed_small}""#));
+        let StartRunResponse { run_id } =
+            json_body(app.clone().oneshot(post_json("/api/runs", failing)).await.unwrap()).await;
+        let report = finish(run_id).await;
+        let points = report.complexity.expect("complexity result").points;
+        assert_eq!(points.iter().map(|p| p.n).collect::<Vec<_>>(), [1, 4]);
+        assert!(
+            report.notes.iter().any(|n| n.contains("the setup request `seed-small-only?count={{n}}` failed")),
+            "{:?}",
+            report.notes
+        );
+
+        // On another host: refused up front, since the run's client is pinned to the endpoint's.
+        let res =
+            app.clone().oneshot(post_json("/api/runs", config(&format!(r#","setupEndpointId":"{elsewhere}""#)))).await;
+        let res = res.unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body: serde_json::Value = json_body(res).await;
+        assert!(body["error"].as_str().unwrap().contains("different host"), "{body}");
+    }
+
     #[tokio::test]
     async fn complexity_run_sweeps_every_size_and_fits() {
         use crate::model::{Body as ReqBody, Collection, Endpoint, HttpMethod};
@@ -1031,6 +1207,106 @@ mod tests {
         assert_eq!(status(&app, health.body(Body::empty()).unwrap()).await, StatusCode::OK);
     }
 
+    /// A save based on an old revision is refused with what's there now, and nothing is written; a
+    /// save without a base still goes through (last save wins).
+    #[tokio::test]
+    async fn a_stale_save_is_refused_with_the_current_workspace() {
+        let db = require_db!();
+        let app = empty_app(&db).await;
+        let put = |base: Option<i64>, env: &str| {
+            let uri = match base {
+                Some(b) => format!("/api/workspace?baseRevision={b}"),
+                None => "/api/workspace".into(),
+            };
+            let body = serde_json::json!({ "environments": [{ "name": env, "vars": {} }] }).to_string();
+            Request::put(uri)
+                .header(header::HOST, HOST)
+                .header(TOKEN_HEADER, TOKEN)
+                .header(WORKSPACE_HEADER, WS)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body))
+                .unwrap()
+        };
+        let get = || {
+            Request::get("/api/workspace")
+                .header(header::HOST, HOST)
+                .header(TOKEN_HEADER, TOKEN)
+                .header(WORKSPACE_HEADER, WS)
+                .body(Body::empty())
+                .unwrap()
+        };
+        let loaded: serde_json::Value = json_body(app.clone().oneshot(get()).await.unwrap()).await;
+        let base = loaded["revision"].as_i64().unwrap();
+
+        let res = app.clone().oneshot(put(Some(base), "alice")).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let saved: serde_json::Value = json_body(res).await;
+        assert_eq!(saved["revision"].as_i64(), Some(base + 1));
+
+        // Bob edited the same revision Alice started from.
+        let res = app.clone().oneshot(put(Some(base), "bob")).await.unwrap();
+        assert_eq!(res.status(), StatusCode::CONFLICT);
+        let conflict: serde_json::Value = json_body(res).await;
+        assert_eq!(conflict["code"], "workspaceConflict");
+        assert_eq!(conflict["current"]["revision"].as_i64(), Some(base + 1));
+        assert_eq!(conflict["current"]["workspace"]["environments"][0]["name"], "alice");
+        let now: serde_json::Value = json_body(app.clone().oneshot(get()).await.unwrap()).await;
+        assert_eq!(now["workspace"]["environments"][0]["name"], "alice", "the stale save wrote nothing");
+
+        // Merged onto the current revision, it goes through.
+        assert_eq!(app.clone().oneshot(put(Some(base + 1), "both")).await.unwrap().status(), StatusCode::OK);
+        assert_eq!(app.clone().oneshot(put(None, "forced")).await.unwrap().status(), StatusCode::OK);
+        let now: serde_json::Value = json_body(app.clone().oneshot(get()).await.unwrap()).await;
+        assert_eq!(
+            (now["revision"].as_i64(), &now["workspace"]["environments"][0]["name"]),
+            (Some(base + 3), &serde_json::json!("forced"))
+        );
+    }
+
+    /// The workspace's event stream says the revision at once, then again whenever anyone saves.
+    #[tokio::test]
+    async fn the_workspace_stream_announces_each_save() {
+        let db = require_db!();
+        let app = empty_app(&db).await;
+        let req = |method: &str, uri: &str, body: Option<&str>| {
+            let req = Request::builder()
+                .method(method)
+                .uri(uri)
+                .header(header::HOST, HOST)
+                .header(TOKEN_HEADER, TOKEN)
+                .header(WORKSPACE_HEADER, WS);
+            match body {
+                Some(b) => req.header(header::CONTENT_TYPE, "application/json").body(Body::from(b.to_owned())),
+                None => req.body(Body::empty()),
+            }
+            .unwrap()
+        };
+        let res = app.clone().oneshot(req("GET", "/api/workspace/events", None)).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let mut body = res.into_body();
+        // Reads frames until one carries an event (keep-alive comments carry no `data:`).
+        let mut next_revision = async || loop {
+            let frame = tokio::time::timeout(std::time::Duration::from_secs(5), body.frame())
+                .await
+                .expect("an event within 5 s")
+                .expect("the stream stays open")
+                .unwrap();
+            let text = String::from_utf8(frame.into_data().unwrap().to_vec()).unwrap();
+            if let Some(data) = text.lines().find_map(|l| l.strip_prefix("data: ")) {
+                assert!(text.contains("event: revision"), "{text}");
+                let v: serde_json::Value = serde_json::from_str(data).unwrap();
+                return v["revision"].as_i64().unwrap();
+            }
+        };
+        let first = next_revision().await;
+
+        let saved = app.clone().oneshot(req("PUT", "/api/workspace", Some(r#"{"environments":[]}"#))).await.unwrap();
+        assert_eq!(saved.status(), StatusCode::OK);
+        assert_eq!(next_revision().await, first + 1, "a save is announced");
+        app.clone().oneshot(req("PUT", "/api/workspace", Some(r#"{"environments":[]}"#))).await.unwrap();
+        assert_eq!(next_revision().await, first + 2);
+    }
+
     #[tokio::test]
     async fn workspaces_dont_see_each_others_data_or_runs() {
         let db = require_db!();
@@ -1048,7 +1324,7 @@ mod tests {
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(saved))
             .unwrap();
-        assert_eq!(status(&app, put).await, StatusCode::NO_CONTENT);
+        assert_eq!(status(&app, put).await, StatusCode::OK);
         let res = app.clone().oneshot(as_other(Request::get("/api/workspace")).body(Body::empty()).unwrap()).await;
         let ws: serde_json::Value = json_body(res.unwrap()).await;
         assert_eq!(ws["workspace"]["environments"], serde_json::json!([]));

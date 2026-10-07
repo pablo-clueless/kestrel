@@ -30,4 +30,14 @@ budgetMs: number,
  * exact body is also sent there, so the report can show how much of the growth is transfer
  * and parsing rather than the endpoint's own work.
  */
-baselineEndpointId: string | null, };
+baselineEndpointId: string | null, 
+/**
+ * Server state (HANDOFF → Big-O server-state sweeps): a request sent before each size's samples,
+ * rendered with that size, e.g. `POST /seed?count={{n}}`, so "seed n rows, then time the query"
+ * can be measured. With one set, sizes are swept one at a time instead of in shuffled rounds.
+ */
+setupEndpointId: string | null, 
+/**
+ * Sent after each size's samples (with the same n), e.g. to delete what setup made.
+ */
+teardownEndpointId: string | null, };

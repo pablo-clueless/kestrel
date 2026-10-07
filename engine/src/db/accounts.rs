@@ -12,6 +12,8 @@ pub struct UserRow {
     pub id: Uuid,
     pub password_hash: String,
     pub email_verified: bool,
+    /// Signing in needs a code after the password.
+    pub two_factor: bool,
 }
 
 /// The user behind a valid session.
@@ -57,13 +59,19 @@ pub enum CreateUser {
 
 impl Db {
     pub async fn user_by_email(&self, email: &str) -> anyhow::Result<Option<UserRow>> {
-        let row: Option<(Uuid, String, bool)> = sqlx::query_as(
-            self.auth_sql("SELECT id, password_hash, email_verified_at IS NOT NULL FROM auth.users WHERE email = $1"),
-        )
+        let row: Option<(Uuid, String, bool, bool)> = sqlx::query_as(self.auth_sql(
+            "SELECT id, password_hash, email_verified_at IS NOT NULL, totp_enabled_at IS NOT NULL
+             FROM auth.users WHERE email = $1",
+        ))
         .bind(email)
         .fetch_optional(&self.pool)
         .await?;
-        Ok(row.map(|(id, password_hash, email_verified)| UserRow { id, password_hash, email_verified }))
+        Ok(row.map(|(id, password_hash, email_verified, two_factor)| UserRow {
+            id,
+            password_hash,
+            email_verified,
+            two_factor,
+        }))
     }
 
     /// Creates a user and gives them a workspace in one transaction: `claim` (a browser's existing
@@ -122,22 +130,29 @@ impl Db {
         }
         let workspace = Uuid::new_v4();
         self.ensure_workspace_in(tx, workspace).await?;
-        self.add_owner(tx, workspace, user).await?;
+        self.add_admin(tx, workspace, user).await?;
         Ok(workspace)
     }
 
-    /// Makes `user` the owner of existing workspace `id` if it has no owner. The unique index on
-    /// owners settles a race between two users claiming the same id: only one insert lands.
+    /// Makes `user` the admin of existing workspace `id` if nobody is a member of it yet. The
+    /// workspace's row is locked first, so of two users claiming the same id only one finds it empty.
     async fn claim_workspace(
         &self,
         tx: &mut Transaction<'static, Postgres>,
         user: Uuid,
         id: Uuid,
     ) -> anyhow::Result<bool> {
+        let exists: Option<i32> =
+            sqlx::query_scalar(self.auth_sql("SELECT 1 FROM auth.workspaces WHERE id = $1 FOR UPDATE"))
+                .bind(id)
+                .fetch_optional(&mut **tx)
+                .await?;
+        if exists.is_none() {
+            return Ok(false);
+        }
         let claimed = sqlx::query(self.auth_sql(
             "INSERT INTO auth.memberships (workspace_id, user_id, role)
-             SELECT id, $2, 'owner' FROM auth.workspaces WHERE id = $1
-             ON CONFLICT DO NOTHING",
+             SELECT $1, $2, 'admin' WHERE NOT EXISTS (SELECT 1 FROM auth.memberships WHERE workspace_id = $1)",
         ))
         .bind(id)
         .bind(user)
@@ -146,14 +161,14 @@ impl Db {
         Ok(claimed.rows_affected() == 1)
     }
 
-    async fn add_owner(
+    async fn add_admin(
         &self,
         tx: &mut Transaction<'static, Postgres>,
         workspace: Uuid,
         user: Uuid,
     ) -> anyhow::Result<()> {
         sqlx::query(
-            self.auth_sql("INSERT INTO auth.memberships (workspace_id, user_id, role) VALUES ($1, $2, 'owner')"),
+            self.auth_sql("INSERT INTO auth.memberships (workspace_id, user_id, role) VALUES ($1, $2, 'admin')"),
         )
         .bind(workspace)
         .bind(user)
@@ -174,17 +189,6 @@ impl Db {
         .bind(user)
         .fetch_optional(&mut **tx)
         .await?)
-    }
-
-    pub async fn is_member(&self, user: Uuid, workspace: Uuid) -> anyhow::Result<bool> {
-        let found: Option<i32> = sqlx::query_scalar(
-            self.auth_sql("SELECT 1 FROM auth.memberships WHERE user_id = $1 AND workspace_id = $2"),
-        )
-        .bind(user)
-        .bind(workspace)
-        .fetch_optional(&self.pool)
-        .await?;
-        Ok(found.is_some())
     }
 
     pub async fn create_session(
@@ -242,6 +246,14 @@ impl Db {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+
+    /// A user's email and whether it's verified, by id.
+    pub async fn user_by_id(&self, user: Uuid) -> anyhow::Result<Option<(String, bool)>> {
+        Ok(sqlx::query_as(self.auth_sql("SELECT email, email_verified_at IS NOT NULL FROM auth.users WHERE id = $1"))
+            .bind(user)
+            .fetch_optional(&self.pool)
+            .await?)
     }
 
     pub async fn password_hash(&self, user: Uuid) -> anyhow::Result<Option<String>> {

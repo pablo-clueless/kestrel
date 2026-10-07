@@ -20,6 +20,8 @@
 pub mod accounts;
 pub mod crypto;
 pub mod import_sqlite;
+pub mod teams;
+pub mod two_factor;
 
 use anyhow::Context;
 use sqlx::{
@@ -85,6 +87,57 @@ const AUTH_MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX email_tokens_by_user ON auth.email_tokens (user_id, purpose);
     "#,
+    // 4: shared workspaces. Members are editors or viewers besides the one owner; workspaces get a
+    // name; invites are emailed links, stored hashed like every other token, one live invite per
+    // address per workspace.
+    r#"
+    ALTER TABLE auth.memberships DROP CONSTRAINT memberships_role_check;
+    ALTER TABLE auth.memberships ADD CONSTRAINT memberships_role_check CHECK (role IN ('owner', 'editor', 'viewer'));
+    ALTER TABLE auth.workspaces ADD COLUMN name text;
+    CREATE TABLE auth.invites (
+        id uuid PRIMARY KEY,
+        token_hash bytea NOT NULL UNIQUE,
+        workspace_id uuid NOT NULL REFERENCES auth.workspaces (id) ON DELETE CASCADE,
+        email text NOT NULL,
+        role text NOT NULL CHECK (role IN ('editor', 'viewer')),
+        invited_by uuid REFERENCES auth.users (id) ON DELETE SET NULL,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        expires_at timestamptz NOT NULL,
+        UNIQUE (workspace_id, email)
+    );
+    "#,
+    // 5: roles become admin / write / read. Any number of admins (owners become admins), so the
+    // one-owner index goes; claiming a browser's workspace takes a row lock instead (`accounts.rs`).
+    r#"
+    ALTER TABLE auth.memberships DROP CONSTRAINT memberships_role_check;
+    DROP INDEX auth.one_owner_per_workspace;
+    UPDATE auth.memberships SET role = CASE role WHEN 'owner' THEN 'admin' WHEN 'editor' THEN 'write' ELSE 'read' END;
+    ALTER TABLE auth.memberships ADD CONSTRAINT memberships_role_check CHECK (role IN ('admin', 'write', 'read'));
+    CREATE INDEX memberships_admins ON auth.memberships (workspace_id) WHERE role = 'admin';
+    ALTER TABLE auth.invites DROP CONSTRAINT invites_role_check;
+    UPDATE auth.invites SET role = CASE role WHEN 'editor' THEN 'write' ELSE 'read' END;
+    ALTER TABLE auth.invites ADD CONSTRAINT invites_role_check CHECK (role IN ('admin', 'write', 'read'));
+    "#,
+    // 6: two-factor sign-in. The TOTP secret is encrypted like workspace secrets (`crypto`); it's
+    // set, unconfirmed, at setup and counts once `totp_enabled_at` is. `totp_last_step` is the last
+    // time step a code was accepted for, so a code can't be used twice. Recovery codes and the
+    // half-signed-in challenge are stored hashed, like every other token.
+    r#"
+    ALTER TABLE auth.users ADD COLUMN totp_secret bytea;
+    ALTER TABLE auth.users ADD COLUMN totp_enabled_at timestamptz;
+    ALTER TABLE auth.users ADD COLUMN totp_last_step bigint;
+    CREATE TABLE auth.recovery_codes (
+        user_id uuid NOT NULL REFERENCES auth.users (id) ON DELETE CASCADE,
+        code_hash bytea NOT NULL,
+        PRIMARY KEY (user_id, code_hash)
+    );
+    CREATE TABLE auth.login_challenges (
+        token_hash bytea PRIMARY KEY,
+        user_id uuid NOT NULL REFERENCES auth.users (id) ON DELETE CASCADE,
+        attempts int NOT NULL DEFAULT 0,
+        expires_at timestamptz NOT NULL
+    );
+    "#,
 ];
 
 /// Bump with a new entry; never edit a shipped one. Applied to every workspace schema, with
@@ -119,6 +172,11 @@ pub const WORKSPACE_MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX runs_by_start ON runs (started_at_ms DESC);
     CREATE TABLE confirmed_hosts (host text PRIMARY KEY, confirmed_at timestamptz NOT NULL DEFAULT now());
+    "#,
+    // 2: a revision, bumped by every workspace save, so a save based on an older one can be refused
+    // instead of overwriting someone else's changes (shared workspaces).
+    r#"
+    ALTER TABLE workspace_meta ADD COLUMN revision bigint NOT NULL DEFAULT 0;
     "#,
 ];
 
