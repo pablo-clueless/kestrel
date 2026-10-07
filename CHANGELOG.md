@@ -12,6 +12,85 @@ No version has been tagged yet (engine and UI are both `0.1.0`), so the entries 
 
 ### Added
 
+- **Two-factor sign-in.** In **Profile → Security**, turn on codes from an authenticator app
+  (1Password, Google Authenticator, Authy, …). After that, signing in asks for a code after your
+  password.
+  - **Turning it on:** confirm your password, scan the QR code (or type the key), and enter the
+    code the app shows. You then get 10 recovery codes, shown once; copy or download them.
+  - **Recovery codes:** each signs you in once, in place of a code, if you lose your phone. The
+    Security tab says how many are left, and can make new ones; the old ones then stop working.
+  - **Turning it off,** or making new recovery codes, needs your password and a current code.
+  - **Protections:** a code works once, even within its 30 seconds. The code step expires after 5
+    minutes or 5 wrong codes, and then you start again from the password. Code attempts are also
+    limited per account.
+  - **Password reset doesn't skip it:** after a reset, signing in still asks for a code.
+  - **Locked out:** whoever runs the engine can turn it off for an account with
+    `engine user reset-2fa <email>`.
+  - **Storage:** the secret is encrypted at rest with `KESTREL_SECRETS_KEY`, like workspace
+    secrets. Recovery codes are stored hashed.
+- **Big-O against server state.** Some endpoints get slower with how much data the server holds,
+  not with how big the request is. Big-O and payload scaling can now set up that data for each
+  size, so you can measure "seed n rows, then time the query".
+  - **Setup:** pick a request to send before each size, using `{{n}}` as usual, e.g.
+    `POST /seed?count={{n}}`.
+  - **Teardown (optional):** pick a request to send after each size's samples, e.g. to delete what
+    setup made.
+  - **How it runs:** with either one set, sizes are measured one at a time, in random order, each
+    straight after its own setup (plus two unmeasured warm-up requests). Without them, sizes are
+    still interleaved in shuffled rounds as before.
+  - **If setup fails** (no 2xx), that size and every larger one are dropped, with a note in the
+    report. A failed teardown is noted too.
+  - **Same host:** both requests must be on the same host as the endpoint being measured.
+- **Your selected environment and collection are your own.** They're remembered in this browser,
+  per workspace, instead of being saved into the workspace for everyone.
+  - **What it fixes:** in a shared workspace, a teammate picking `prod` could make your next page
+    load open on `prod` too, and your requests would go there.
+  - **Fewer saves:** switching environment or collection no longer saves the workspace, so
+    teammates' tabs don't reload anything when you do.
+  - **Upgrading:** the first time you open a workspace, Kestrel picks up the choice it used to save,
+    then stops saving it.
+- **Two people editing one workspace no longer overwrite each other.** Before, the last save
+  replaced the whole workspace, so a teammate's changes (or another tab's) could quietly vanish.
+  - **Saves are checked:** each save says which version of the workspace it was made on. If someone
+    else saved since, the engine refuses it instead of overwriting their changes.
+  - **Your edits are merged in:** Kestrel then combines your changes with theirs and saves again.
+    Changes to different requests, environment variables or collection settings all survive, even in
+    the same collection.
+  - **Real clashes:** if you both changed the same request or the same variable, your version is kept
+    and a notice names what was overwritten. Something deleted on one side but edited on the other is
+    kept, with your edits.
+  - **Seeing others' changes:** the engine announces every save, so your sidebar and open tabs
+    update within a moment of a teammate's save (or your own in another tab), without a reload.
+    This works in background tabs, and in a workspace as soon as it's shared. The environment you've picked stays yours: a teammate switching to theirs
+    doesn't change where your requests go.
+- **Shared workspaces.** With accounts on, a workspace can have more than one person in it. Open
+  **Settings** to manage the workspace you're in.
+  - **Roles:** each member has one of three.
+    - **Admin:** can do everything, including inviting people, changing roles, removing members,
+      and renaming or deleting the workspace. Whoever creates a workspace is its admin, and there
+      can be several.
+    - **Write:** changes requests, environments and secrets, sends requests and runs tests.
+    - **Read:** sees the workspace and run results but can't change anything, send requests or start
+      runs. The status bar says "Read-only".
+    - The engine enforces all of this, not just the UI.
+  - **Always an admin:** a workspace can't be left without one. The last admin can't leave or step
+    down until they've made someone else an admin.
+  - **Invites:** enter an email address and a role, admin included. With email set up
+    (`KESTREL_SMTP_*`) the link is emailed; either way you get the link to copy and send yourself. A
+    link works once, for 7 days, and only for the address it was sent to. Inviting the same address
+    again replaces the old link. Admins see invites that haven't been accepted yet and can withdraw
+    them.
+  - **Joining:** opening the link signs you in (or up) and adds the workspace to your list. Signed
+    in with a different address, you're offered the chance to switch accounts.
+  - **More than one workspace:** create new ones in **Settings** (you can be admin of up to 20). The new
+    switcher at the top of the sidebar lists every workspace you're in, with your role, and opens
+    another. Each workspace has its own collections, environments, secrets and runs; everyone in a
+    workspace sees its runs.
+  - **Leaving and removing:** anyone can leave (except the last admin), and admins can remove anyone
+    or change their role. Someone removed is moved to their own workspace on their next request.
+  - **Deleting:** an admin can delete a workspace, as long as it isn't their only one. Its runs are
+    stopped and its data is deleted for everyone.
+  - Unnamed workspaces show as "<first admin>'s workspace".
 - **Token refresh during load tests.** Switch on **Keep a token fresh**, choose the request that
   gets a token and how often to fetch one (every 5 minutes by default). Long runs, soaks above all,
   no longer end in a wall of 401s when a token expires.
@@ -83,7 +162,7 @@ No version has been tagged yet (engine and UI are both `0.1.0`), so the entries 
 - **Payload scaling test** ("Payload scaling" in the run panel). It runs Big-O's sweep with the size
   in bytes (1 kB to 1 MB by default) and reads the results as bytes.
   - **Sizing the payload:** use `{{n:string}}` in the body, or `{{n}}` in a parameter that grows the
-    response, such as a page size. Unlike Big-O, it works for GET requests too.
+    response, such as a page size. Like Big-O, it works for GET requests too.
   - **Fixed cost and throughput:** a straight line through latency against the bytes sent and
     received gives what a request costs whatever its size, and the effective MB/s for the bytes on
     top.
@@ -301,6 +380,16 @@ No version has been tagged yet (engine and UI are both `0.1.0`), so the entries 
 
 ### Changed
 
+- **Read access is read-only on screen too.** Before, someone with read access could type into
+  the editors, but the engine refused the saves, so their edits silently went nowhere.
+  - **Request editor:** the name, method, URL, Send button and the contents of every tab
+    (query, headers, body, auth, On Response) are disabled. The tabs themselves still switch, so
+    every part of a request can be looked at.
+  - **Environments and collection settings:** viewable, with every field disabled.
+  - **Sidebar:** the actions to import, add, delete and group are hidden.
+  - **Run panel:** Run and Stop are disabled, with a note saying why.
+- **Run needs a selected endpoint for every test type.** **Fake (no traffic)** used to run without
+  one. With nothing selected, the Run panel now says to pick an endpoint in the sidebar.
 - **README rewritten** to cover what Kestrel does and how to run it: every test type (spike,
   breakpoint, rate-limit, concurrency included), every import format, getting started, Docker, the
   reference server, main settings and responsible use. It links to the hosted app at
@@ -360,6 +449,20 @@ No version has been tagged yet (engine and UI are both `0.1.0`), so the entries 
 
 ### Fixed
 
+- **Big-O works for GET requests again.** The Run panel disabled Big-O for GET, HEAD, OPTIONS and
+  DELETE requests, on the grounds that they have no body. But the size can go in the URL or query
+  too, for example `?limit={{n}}`, and the engine has always accepted that.
+  - **Every test type works with every method now.** If the size marker is missing, the panel says
+    how to add it.
+  - **Spaces inside the braces:** a size marker like `{{ n }}` is now recognised. Before, the panel
+    warned that the size marker was missing, even though the engine accepted it.
+- **Settings and Profile have a way back to the workspace.** Before, the only way back was the
+  browser's back button.
+  - **Header:** these pages show **Back to workspace** where the breadcrumb usually is.
+  - **Logo:** the Kestrel logo in the sidebar goes to the workspace from any page.
+  - **Sidebar:** opening a request, adding one, or opening a run in History from these pages now
+    goes to the workspace to show it. Before, it changed the selection on a page that doesn't show
+    requests.
 - **The workspace page no longer crashes with "Maximum update depth exceeded".** The run panel's
   list of token requests, added with token refresh, was rebuilt as a new array on every store
   read, so React re-rendered without end. It's now derived once per change of the collections.

@@ -1,7 +1,9 @@
 //! Big-O: how does latency grow with input size? HANDOFF → Test catalogue → Big-O.
 //!
 //! Sizes are sampled in shuffled rounds (one request per size per round), not one size at a time
-//! from small to large, so warm-up, GC and cache effects don't line up with n. Every request gets
+//! from small to large, so warm-up, GC and cache effects don't line up with n. With a setup or teardown
+//! request (server state, e.g. `seed n rows`) they can't be interleaved, so sizes go one at a time, in
+//! random order. Every request gets
 //! fresh random contents from the size generators. Medians per size are fitted in `stats::fit`.
 
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
@@ -42,7 +44,21 @@ pub struct Prepared {
     pub payload: bool,
     /// Where each sample's body is also sent, as a payload baseline. See [`Prepared::with_baseline`].
     pub baseline: Option<Baseline>,
+    /// Sent before each size's samples, rendered with that n. See [`Prepared::with_state`].
+    pub setup: Option<StateRequest>,
+    /// Sent after each size's samples.
+    pub teardown: Option<StateRequest>,
 }
+
+/// A setup or teardown request of a server-state sweep.
+pub struct StateRequest {
+    pub name: String,
+    pub request: CompiledRequest,
+}
+
+/// Unmeasured requests at each size after its setup, so the first measured one doesn't pay for cold
+/// caches the setup left behind.
+const STATE_WARMUP: u32 = 2;
 
 /// The echo endpoint of a payload baseline: same body and headers, its own method and URL.
 pub struct Baseline {
@@ -64,6 +80,24 @@ impl Prepared {
             ));
         }
         self.baseline = Some(Baseline { name, method: echo.method, url: echo.url });
+        Ok(self)
+    }
+
+    /// Adds a setup or teardown request. Like the baseline, it must be on the endpoint's origin.
+    pub fn with_state(mut self, setup: Option<StateRequest>, teardown: Option<StateRequest>) -> Result<Self, String> {
+        let main = self.request.preview()?;
+        for (what, state) in [("setup", &setup), ("teardown", &teardown)] {
+            let Some(state) = state else { continue };
+            if state.request.preview()?.url.origin() != main.url.origin() {
+                return Err(format!(
+                    "the {what} request `{}` is on a different host; it must be on {}",
+                    state.name,
+                    main.url.origin().ascii_serialization()
+                ));
+            }
+        }
+        self.setup = setup;
+        self.teardown = teardown;
         Ok(self)
     }
 }
@@ -89,7 +123,18 @@ pub async fn prepare(
     };
     let sizes = geometric_sizes(cfg.min_n, cfg.max_n, cfg.points);
     let budget = Duration::from_millis(cfg.budget_ms.into()).min(budget_cap);
-    Ok(Prepared { cfg, request, target, target_info, sizes, budget, payload: false, baseline: None })
+    Ok(Prepared {
+        cfg,
+        request,
+        target,
+        target_info,
+        sizes,
+        budget,
+        payload: false,
+        baseline: None,
+        setup: None,
+        teardown: None,
+    })
 }
 
 /// `points` sizes from `min` to `max`, evenly spaced on a log scale, rounded and deduplicated.
@@ -138,6 +183,138 @@ impl SizeData {
     }
 }
 
+/// What the sweep should do after one measured request.
+enum Flow {
+    Next,
+    Cancelled,
+}
+
+/// Everything a sweep accumulates, whichever order it samples sizes in.
+struct Sweep<'a> {
+    run: &'a Run,
+    p: &'a Prepared,
+    timeout: Duration,
+    slow_ms: f64,
+    data: BTreeMap<u64, SizeData>,
+    /// Sizes still being sampled. Dropping a size drops every larger one too.
+    active: Vec<u64>,
+    notes: Vec<String>,
+    statuses: BTreeMap<u16, u64>,
+    errors: ErrorCounts,
+    total: u64,
+    total_errors: u64,
+    samples: Vec<Sample>,
+    have_success_sample: bool,
+    error_samples: usize,
+    last_progress: Instant,
+    baseline_failures: u32,
+}
+
+impl Sweep<'_> {
+    /// Stops sampling `n` and everything larger.
+    fn drop_from(&mut self, n: u64, note: String) {
+        self.notes.push(note);
+        self.active.retain(|&m| m < n);
+    }
+
+    /// One measured request at size `n` (plus its baseline echo), with the bookkeeping that drops
+    /// sizes that fail or are too slow.
+    async fn measure(&mut self, n: u64, round: u32, rounds: u32) -> Flow {
+        let p = self.p;
+        let req = match p.request.render_sized(n) {
+            Ok(r) => r,
+            Err(msg) => {
+                self.drop_from(n, format!("Couldn't render the request at n = {n}: {msg}"));
+                return Flow::Next;
+            }
+        };
+        let outcome = tokio::select! {
+            _ = self.run.cancel.cancelled() => return Flow::Cancelled,
+            o = client::execute(&p.target.client, &req, self.timeout) => o.classify_with(&p.cfg.ok_statuses),
+        };
+
+        self.total += 1;
+        let d = self.data.get_mut(&n).expect("size is tracked");
+        d.tries += 1;
+        if let Some(code) = outcome.status {
+            *self.statuses.entry(code).or_default() += 1;
+        }
+        match &outcome.error {
+            None => {
+                d.latencies_ms.push(outcome.total.as_secs_f64() * 1000.0);
+                d.request_bytes.push(req.body.as_ref().map_or(0, |b| b.len() as u64));
+                d.response_bytes.push(outcome.body.len() as u64);
+            }
+            Some((class, _)) => {
+                d.errors += 1;
+                self.errors.add(*class);
+                self.total_errors += 1;
+            }
+        }
+        // The same body to the echo endpoint, straight after, so both see the same conditions.
+        if let (Some(base), None) = (&p.baseline, &outcome.error) {
+            let mut echo = req.clone();
+            echo.method = base.method;
+            echo.url = base.url.clone();
+            let echoed = tokio::select! {
+                _ = self.run.cancel.cancelled() => return Flow::Cancelled,
+                o = client::execute(&p.target.client, &echo, self.timeout) => o,
+            };
+            let d = self.data.get_mut(&n).expect("size is tracked");
+            if echoed.is_success() {
+                d.baseline_ms.push(echoed.total.as_secs_f64() * 1000.0);
+            } else {
+                self.baseline_failures += 1;
+            }
+        }
+
+        let want_sample =
+            if outcome.is_success() { !self.have_success_sample } else { self.error_samples < MAX_ERROR_SAMPLES };
+        if want_sample {
+            let redactor = Redactor::new(p.request.api_key_header.as_deref(), &p.request.secret_values, Some(&req));
+            self.samples.push(sample::build(&req, &outcome, &redactor, SAMPLE_BODY_BYTES));
+            if outcome.is_success() { self.have_success_sample = true } else { self.error_samples += 1 }
+        }
+
+        // Stop increasing n once a size fails too often.
+        let d = &self.data[&n];
+        if d.tries as usize >= MIN_TRIES_BEFORE_DROPPING && f64::from(d.errors) / f64::from(d.tries) > MAX_ERROR_RATE {
+            let reason = outcome.error.as_ref().map(|(_, m)| m.clone()).unwrap_or_default();
+            self.drop_from(n, format!("Stopped increasing n at {n}: most requests failed ({reason})."));
+        }
+
+        // Stop increasing n as soon as a size is slower than the per-request limit, rather than
+        // waiting for more samples of something that takes seconds per request.
+        if self.data[&n].point(n).is_some_and(|pt| pt.median_ms > self.slow_ms) && self.active.iter().any(|&m| m >= n) {
+            let limit = p.cfg.slow_ms;
+            self.drop_from(
+                n,
+                format!("Stopped increasing n at {n}: its median exceeded the {limit} ms per-request limit."),
+            );
+        }
+
+        if self.last_progress.elapsed() >= BUCKET_INTERVAL {
+            publish_progress(self.run, &self.data, round, rounds);
+            self.last_progress = Instant::now();
+        }
+        Flow::Next
+    }
+
+    /// Sends a setup or teardown request at size `n`. `Err` with why it failed.
+    async fn state(&self, state: &StateRequest, n: u64) -> Result<(), String> {
+        let req = state.request.render_sized(n)?;
+        let outcome = tokio::select! {
+            _ = self.run.cancel.cancelled() => return Ok(()),
+            o = client::execute(&self.p.target.client, &req, self.timeout) => o,
+        };
+        match (&outcome.error, outcome.status) {
+            (Some((_, msg)), _) => Err(msg.clone()),
+            (None, Some(code)) if !(200..300).contains(&code) => Err(format!("status {code}")),
+            _ => Ok(()),
+        }
+    }
+}
+
 pub async fn run(run: Arc<Run>, p: Prepared) {
     run.publish(RunEvent::Started(StartedEvent {
         run_id: run.id,
@@ -145,137 +322,125 @@ pub async fn run(run: Arc<Run>, p: Prepared) {
         started_at_ms: run.started_at_ms,
     }));
 
-    let timeout = Duration::from_millis(p.cfg.timeout_ms.into());
-    let slow = Duration::from_millis(p.cfg.slow_ms.into()).as_secs_f64() * 1000.0;
     let started = Instant::now();
-    let mut data: BTreeMap<u64, SizeData> = p.sizes.iter().map(|&n| (n, SizeData::default())).collect();
-    let mut active: Vec<u64> = p.sizes.clone();
-    let mut notes = Vec::new();
-    let mut statuses: BTreeMap<u16, u64> = BTreeMap::new();
-    let mut errors = ErrorCounts::default();
-    let (mut total, mut total_errors) = (0u64, 0u64);
-    let mut samples: Vec<Sample> = Vec::new();
-    let (mut have_success_sample, mut error_samples) = (false, 0);
-    let mut last_progress = Instant::now();
+    let mut s = Sweep {
+        run: &run,
+        p: &p,
+        timeout: Duration::from_millis(p.cfg.timeout_ms.into()),
+        slow_ms: Duration::from_millis(p.cfg.slow_ms.into()).as_secs_f64() * 1000.0,
+        data: p.sizes.iter().map(|&n| (n, SizeData::default())).collect(),
+        active: p.sizes.clone(),
+        notes: Vec::new(),
+        statuses: BTreeMap::new(),
+        errors: ErrorCounts::default(),
+        total: 0,
+        total_errors: 0,
+        samples: Vec::new(),
+        have_success_sample: false,
+        error_samples: 0,
+        last_progress: Instant::now(),
+        baseline_failures: 0,
+    };
     let mut status = RunStatus::Completed;
-    let mut baseline_failures = 0u32;
-
-    // Warm up once, at the middle size.
-    let mid = p.sizes[p.sizes.len() / 2];
-    for _ in 0..p.cfg.warmup {
-        let Ok(req) = p.request.render_sized(mid) else { break };
-        tokio::select! {
-            _ = run.cancel.cancelled() => { status = RunStatus::Cancelled; break; }
-            _ = client::execute(&p.target.client, &req, timeout) => {}
-        }
-    }
-
     let rounds = p.cfg.samples;
-    let mut round = 0;
-    'rounds: while round < rounds && status == RunStatus::Completed {
-        let mut order = active.clone();
+    let budget_note = |done: String| format!("Stopped at the {} s time budget after {done}.", p.budget.as_secs());
+
+    if p.setup.is_some() || p.teardown.is_some() {
+        // Server state: each size needs its own state in place while it's measured, so sizes can't
+        // be interleaved. They're taken one at a time, in random order, so slow drift on the server
+        // still doesn't line up with n.
+        let mut order = p.sizes.clone();
         order.shuffle(&mut rand::rng());
-        for n in order {
-            // Dropped earlier in this round (too slow or failing).
-            if !active.contains(&n) {
+        let mut done = 0;
+        'sizes: for n in order {
+            if !s.active.contains(&n) {
                 continue;
             }
             if started.elapsed() >= p.budget {
-                notes.push(format!(
-                    "Stopped at the {} s time budget after {round} of {rounds} rounds.",
-                    p.budget.as_secs()
-                ));
-                break 'rounds;
+                s.notes.push(budget_note(format!("{done} of {} sizes", p.sizes.len())));
+                break;
             }
-            let req = match p.request.render_sized(n) {
-                Ok(r) => r,
-                Err(msg) => {
-                    notes.push(format!("Couldn't render the request at n = {n}: {msg}"));
-                    active.retain(|&m| m < n);
+            if let Some(setup) = &p.setup
+                && let Err(why) = s.state(setup, n).await
+            {
+                s.drop_from(
+                    n,
+                    format!("Stopped increasing n at {n}: the setup request `{}` failed ({why}).", setup.name),
+                );
+                continue;
+            }
+            for _ in 0..p.cfg.warmup.min(STATE_WARMUP) {
+                let Ok(req) = p.request.render_sized(n) else { break };
+                tokio::select! {
+                    _ = run.cancel.cancelled() => { status = RunStatus::Cancelled; break 'sizes; }
+                    _ = client::execute(&p.target.client, &req, s.timeout) => {}
+                }
+            }
+            for _ in 0..rounds {
+                if !s.active.contains(&n) || started.elapsed() >= p.budget {
+                    break;
+                }
+                if let Flow::Cancelled = s.measure(n, done, p.sizes.len() as u32).await {
+                    status = RunStatus::Cancelled;
+                    break 'sizes;
+                }
+            }
+            if let Some(teardown) = &p.teardown
+                && let Err(why) = s.state(teardown, n).await
+            {
+                s.notes.push(format!(
+                    "The teardown request `{}` failed at n = {n} ({why}); later sizes may have started from \
+                     leftover state.",
+                    teardown.name
+                ));
+            }
+            done += 1;
+        }
+        let setup = p.setup.as_ref().map(|r| format!("`{}` before", r.name));
+        let teardown = p.teardown.as_ref().map(|r| format!("`{}` after", r.name));
+        s.notes.push(format!(
+            "Server state: {} each size's samples, one size at a time in random order.",
+            [setup, teardown].into_iter().flatten().collect::<Vec<_>>().join(" and ")
+        ));
+        publish_progress(&run, &s.data, done, p.sizes.len() as u32);
+    } else {
+        // Warm up once, at the middle size.
+        let mid = p.sizes[p.sizes.len() / 2];
+        for _ in 0..p.cfg.warmup {
+            let Ok(req) = p.request.render_sized(mid) else { break };
+            tokio::select! {
+                _ = run.cancel.cancelled() => { status = RunStatus::Cancelled; break; }
+                _ = client::execute(&p.target.client, &req, s.timeout) => {}
+            }
+        }
+
+        let mut round = 0;
+        'rounds: while round < rounds && status == RunStatus::Completed {
+            let mut order = s.active.clone();
+            order.shuffle(&mut rand::rng());
+            for n in order {
+                // Dropped earlier in this round (too slow or failing).
+                if !s.active.contains(&n) {
                     continue;
                 }
-            };
-            let outcome = tokio::select! {
-                _ = run.cancel.cancelled() => { status = RunStatus::Cancelled; break 'rounds; }
-                o = client::execute(&p.target.client, &req, timeout) => o.classify_with(&p.cfg.ok_statuses),
-            };
-
-            total += 1;
-            let d = data.get_mut(&n).expect("size is tracked");
-            d.tries += 1;
-            if let Some(code) = outcome.status {
-                *statuses.entry(code).or_default() += 1;
-            }
-            match &outcome.error {
-                None => {
-                    d.latencies_ms.push(outcome.total.as_secs_f64() * 1000.0);
-                    d.request_bytes.push(req.body.as_ref().map_or(0, |b| b.len() as u64));
-                    d.response_bytes.push(outcome.body.len() as u64);
+                if started.elapsed() >= p.budget {
+                    s.notes.push(budget_note(format!("{round} of {rounds} rounds")));
+                    break 'rounds;
                 }
-                Some((class, _)) => {
-                    d.errors += 1;
-                    errors.add(*class);
-                    total_errors += 1;
+                if let Flow::Cancelled = s.measure(n, round, rounds).await {
+                    status = RunStatus::Cancelled;
+                    break 'rounds;
                 }
             }
-            // The same body to the echo endpoint, straight after, so both see the same conditions.
-            if let (Some(base), None) = (&p.baseline, &outcome.error) {
-                let mut echo = req.clone();
-                echo.method = base.method;
-                echo.url = base.url.clone();
-                let echoed = tokio::select! {
-                    _ = run.cancel.cancelled() => { status = RunStatus::Cancelled; break 'rounds; }
-                    o = client::execute(&p.target.client, &echo, timeout) => o,
-                };
-                let d = data.get_mut(&n).expect("size is tracked");
-                if echoed.is_success() {
-                    d.baseline_ms.push(echoed.total.as_secs_f64() * 1000.0);
-                } else {
-                    baseline_failures += 1;
-                }
+            if s.active.is_empty() {
+                break;
             }
-            let d = data.get_mut(&n).expect("size is tracked");
-
-            let want_sample =
-                if outcome.is_success() { !have_success_sample } else { error_samples < MAX_ERROR_SAMPLES };
-            if want_sample {
-                let redactor = Redactor::new(p.request.api_key_header.as_deref(), &p.request.secret_values, Some(&req));
-                samples.push(sample::build(&req, &outcome, &redactor, SAMPLE_BODY_BYTES));
-                if outcome.is_success() { have_success_sample = true } else { error_samples += 1 }
-            }
-
-            // Stop increasing n once a size fails too often.
-            if d.tries as usize >= MIN_TRIES_BEFORE_DROPPING
-                && f64::from(d.errors) / f64::from(d.tries) > MAX_ERROR_RATE
-            {
-                let reason = outcome.error.as_ref().map(|(_, m)| m.clone()).unwrap_or_default();
-                notes.push(format!("Stopped increasing n at {n}: most requests failed ({reason})."));
-                active.retain(|&m| m < n);
-            }
-
-            // Stop increasing n as soon as a size is slower than the per-request limit, rather than
-            // waiting for more samples of something that takes seconds per request.
-            if data[&n].point(n).is_some_and(|pt| pt.median_ms > slow) && active.iter().any(|&m| m >= n) {
-                notes.push(format!(
-                    "Stopped increasing n at {n}: its median exceeded the {} ms per-request limit.",
-                    p.cfg.slow_ms
-                ));
-                active.retain(|&m| m < n);
-            }
-
-            if last_progress.elapsed() >= BUCKET_INTERVAL {
-                publish_progress(&run, &data, round, rounds);
-                last_progress = Instant::now();
-            }
+            round += 1;
         }
-
-        if active.is_empty() {
-            break;
-        }
-        round += 1;
+        publish_progress(&run, &s.data, round, rounds);
     }
-    publish_progress(&run, &data, round, rounds);
 
+    let Sweep { data, mut notes, statuses, errors, total, total_errors, samples, baseline_failures, .. } = s;
     let points: Vec<ComplexityPoint> = data.iter().filter_map(|(&n, d)| d.point(n)).collect();
     let stats: Vec<SizeStats> =
         points.iter().map(|p| SizeStats { n: p.n as f64, median: p.median_ms, p25: p.p25_ms, p75: p.p75_ms }).collect();
@@ -321,7 +486,6 @@ pub async fn run(run: Arc<Run>, p: Prepared) {
         ..RunReport::base(run.id, run.config.clone(), status, run.started_at_ms, now_ms())
     });
 }
-
 fn publish_progress(run: &Run, data: &BTreeMap<u64, SizeData>, round: u32, rounds: u32) {
     let points = data.iter().filter_map(|(&n, d)| d.point(n)).collect();
     run.publish(RunEvent::Complexity(ComplexityProgress { round, rounds, points }));

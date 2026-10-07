@@ -5,8 +5,14 @@ use axum::{
     body::Bytes,
     extract::{Query, State},
     http::{HeaderMap, StatusCode, header},
+    response::{
+        IntoResponse, Response,
+        sse::{Event, KeepAlive, Sse},
+    },
 };
+use futures::Stream;
 use serde::Deserialize;
+use std::convert::Infallible;
 
 use super::{AppState, Scope};
 use crate::{
@@ -18,8 +24,9 @@ use crate::{
     error::ApiError,
     extract,
     model::{
-        ExtractTarget, FileRef, Saved, SendResponse, SetSecretRequest, TryRequest, Workspace, WorkspaceResponse,
-        store::WorkspaceStore,
+        ExtractTarget, FileRef, SaveWorkspaceQuery, SaveWorkspaceResponse, Saved, SendResponse, SetSecretRequest,
+        TryRequest, Workspace, WorkspaceConflict, WorkspaceResponse,
+        store::{Save, WorkspaceStore},
     },
     redact::Redactor,
     template::request::CompiledRequest,
@@ -29,10 +36,40 @@ const SEND_BODY_BYTES: usize = 256 * 1024;
 const DEFAULT_SEND_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub async fn get(scope: Scope) -> Json<WorkspaceResponse> {
-    Json(WorkspaceResponse { workspace: scope.store.workspace(), secret_keys: scope.store.secret_keys() })
+    Json(response(&scope.store))
 }
 
-pub async fn put(scope: Scope, Json(workspace): Json<Workspace>) -> Result<StatusCode, ApiError> {
+/// `GET /api/workspace/events` (SSE): the workspace's revision now, then each time anyone saves it,
+/// so open tabs pick up other members' changes at once instead of polling. Each event's data is
+/// `{"revision": n}`; the tab fetches the workspace when it differs from its own.
+pub async fn events(scope: Scope) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let mut revisions = scope.store.revisions();
+    let stream = async_stream::stream! {
+        loop {
+            let revision = *revisions.borrow_and_update();
+            yield Ok(Event::default().event("revision").data(serde_json::json!({ "revision": revision }).to_string()));
+            // Ends when the store is dropped (the workspace was deleted); the tab then reconnects
+            // and gets a 404, which sends it home.
+            if revisions.changed().await.is_err() {
+                return;
+            }
+        }
+    };
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+fn response(store: &WorkspaceStore) -> WorkspaceResponse {
+    let (workspace, revision) = store.versioned();
+    WorkspaceResponse { workspace, secret_keys: store.secret_keys(), revision }
+}
+
+/// Saves the workspace. With `baseRevision`, only if nobody has saved since: otherwise 409 with what's
+/// there now ([`WorkspaceConflict`]), for the UI to merge into and try again.
+pub async fn put(
+    scope: Scope,
+    Query(q): Query<SaveWorkspaceQuery>,
+    Json(workspace): Json<Workspace>,
+) -> Result<Response, ApiError> {
     let mut names = HashSet::new();
     if let Some(dup) = workspace.environments.iter().find(|e| !names.insert(e.name.as_str())) {
         return Err(ApiError::BadRequest(format!("duplicate environment name `{}`", dup.name)));
@@ -46,8 +83,19 @@ pub async fn put(scope: Scope, Json(workspace): Json<Workspace>) -> Result<Statu
     if let Some(dup) = workspace.collections.iter().flat_map(|c| &c.endpoints).find(|e| !ids.insert(e.id)) {
         return Err(ApiError::BadRequest(format!("duplicate endpoint id {}", dup.id)));
     }
-    scope.store.save_workspace(workspace).await.map_err(|e| ApiError::Internal(format!("{e:#}")))?;
-    Ok(StatusCode::NO_CONTENT)
+    let saved = scope.store.save_workspace_if(workspace, q.base_revision).await;
+    Ok(match saved.map_err(|e| ApiError::Internal(format!("{e:#}")))? {
+        Save::Saved(revision) => Json(SaveWorkspaceResponse { revision }).into_response(),
+        Save::Stale { workspace, revision } => {
+            let current = WorkspaceResponse { workspace, secret_keys: scope.store.secret_keys(), revision };
+            let conflict = WorkspaceConflict {
+                error: "someone else saved this workspace since you loaded it".into(),
+                code: "workspaceConflict".into(),
+                current,
+            };
+            (StatusCode::CONFLICT, Json(conflict)).into_response()
+        }
+    })
 }
 
 pub async fn set_secret(scope: Scope, Json(req): Json<SetSecretRequest>) -> Result<StatusCode, ApiError> {

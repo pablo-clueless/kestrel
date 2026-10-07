@@ -33,9 +33,28 @@ pub struct WorkspaceStore {
     db: Arc<Db>,
     /// Held across a write's database round trip, which a `std` lock can't be.
     write: tokio::sync::Mutex<()>,
-    workspace: RwLock<Workspace>,
+    /// The workspace and its revision, under one lock: a reader must never pair one with the other's
+    /// successor, or a client could save over changes it never saw.
+    workspace: RwLock<Versioned>,
+    /// The revision, for whoever wants to know when it changes (`GET /api/workspace/events`): only
+    /// the latest value matters, so a slow listener just sees the newest one.
+    revisions: tokio::sync::watch::Sender<i64>,
     secrets: RwLock<Secrets>,
     hosts: RwLock<BTreeSet<String>>,
+}
+
+#[derive(Default)]
+struct Versioned {
+    workspace: Workspace,
+    revision: i64,
+}
+
+/// What a conditional save came to.
+pub enum Save {
+    /// Saved as this new revision.
+    Saved(i64),
+    /// Someone saved since the caller's base revision. Nothing was written; this is what's there now.
+    Stale { workspace: Workspace, revision: i64 },
 }
 
 /// Where compiled requests read uploaded files from. Compiling is synchronous, so files are
@@ -81,7 +100,7 @@ impl WorkspaceStore {
     pub async fn open(db: Arc<Db>, id: Uuid) -> anyhow::Result<Self> {
         let schema = db.ensure_workspace(id).await?;
         let mut tx = db.pinned(&schema).await?;
-        let workspace = read_workspace(&mut tx).await?;
+        let (workspace, revision) = read_workspace(&mut tx).await?;
 
         let mut secrets = Secrets::new();
         let rows: Vec<(String, String, Vec<u8>)> =
@@ -98,7 +117,8 @@ impl WorkspaceStore {
             schema,
             db,
             write: tokio::sync::Mutex::new(()),
-            workspace: RwLock::new(workspace),
+            workspace: RwLock::new(Versioned { workspace, revision }),
+            revisions: tokio::sync::watch::Sender::new(revision),
             secrets: RwLock::new(secrets),
             hosts: RwLock::new(hosts.into_iter().collect()),
         })
@@ -113,6 +133,7 @@ impl WorkspaceStore {
             db,
             write: tokio::sync::Mutex::new(()),
             workspace: RwLock::default(),
+            revisions: tokio::sync::watch::Sender::new(0),
             secrets: RwLock::default(),
             hosts: RwLock::default(),
         }
@@ -121,7 +142,7 @@ impl WorkspaceStore {
     /// Replaces the in-memory workspace without touching the database (tests with no Postgres).
     #[cfg(test)]
     pub fn set_workspace_for_tests(&self, workspace: Workspace) {
-        *self.workspace.write().unwrap() = workspace;
+        self.workspace.write().unwrap().workspace = workspace;
     }
 
     async fn tx(&self) -> anyhow::Result<Transaction<'static, Postgres>> {
@@ -129,7 +150,18 @@ impl WorkspaceStore {
     }
 
     pub fn workspace(&self) -> Workspace {
-        self.workspace.read().unwrap().clone()
+        self.workspace.read().unwrap().workspace.clone()
+    }
+
+    /// Follows the revision: the current one at once, then each new one as it's saved.
+    pub fn revisions(&self) -> tokio::sync::watch::Receiver<i64> {
+        self.revisions.subscribe()
+    }
+
+    /// The workspace and its revision, read together.
+    pub fn versioned(&self) -> (Workspace, i64) {
+        let v = self.workspace.read().unwrap();
+        (v.workspace.clone(), v.revision)
     }
 
     pub fn secrets(&self) -> Secrets {
@@ -146,15 +178,40 @@ impl WorkspaceStore {
         self.hosts.read().unwrap().iter().cloned().collect()
     }
 
-    /// Replaces the workspace. Only collections and environments whose content changed are
-    /// rewritten; removed ones are deleted.
-    pub async fn save_workspace(&self, workspace: Workspace) -> anyhow::Result<()> {
+    /// Replaces the workspace whatever was saved meanwhile. Returns the new revision.
+    #[cfg(test)]
+    pub async fn save_workspace(&self, workspace: Workspace) -> anyhow::Result<i64> {
+        match self.save_workspace_if(workspace, None).await? {
+            Save::Saved(revision) => Ok(revision),
+            Save::Stale { .. } => unreachable!("an unconditional save is never stale"),
+        }
+    }
+
+    /// Replaces the workspace if it's still at revision `base` (`None`: whatever it's at). Only
+    /// collections and environments whose content changed are rewritten; removed ones are deleted.
+    /// The revision is checked in the database under a row lock, not just in this cache, so it holds
+    /// even if a second engine instance writes too.
+    pub async fn save_workspace_if(&self, workspace: Workspace, base: Option<i64>) -> anyhow::Result<Save> {
         let _write = self.write.lock().await;
         let mut tx = self.tx().await?;
-        write_workspace(&mut tx, &workspace).await?;
+        let current: i64 = sqlx::query_scalar("SELECT revision FROM workspace_meta FOR UPDATE")
+            .fetch_optional(&mut *tx)
+            .await?
+            .unwrap_or(0);
+        if base.is_some_and(|base| base != current) {
+            let (workspace, revision) = read_workspace(&mut tx).await?;
+            tx.rollback().await?;
+            // The database is the authority; bring the cache up to it while we're here.
+            *self.workspace.write().unwrap() = Versioned { workspace: workspace.clone(), revision };
+            self.revisions.send_replace(revision);
+            return Ok(Save::Stale { workspace, revision });
+        }
+        let revision = current + 1;
+        write_workspace(&mut tx, &workspace, revision).await?;
         tx.commit().await?;
-        *self.workspace.write().unwrap() = workspace;
-        Ok(())
+        *self.workspace.write().unwrap() = Versioned { workspace, revision };
+        self.revisions.send_replace(revision);
+        Ok(Save::Saved(revision))
     }
 
     pub async fn set_secret(&self, environment: &str, key: &str, value: Option<String>) -> anyhow::Result<()> {
@@ -287,11 +344,15 @@ impl WorkspaceStore {
     }
 }
 
-async fn read_workspace(tx: &mut Transaction<'static, Postgres>) -> anyhow::Result<Workspace> {
-    let meta: Option<String> = sqlx::query_scalar("SELECT doc FROM workspace_meta").fetch_optional(&mut **tx).await?;
-    let mut workspace: Workspace = match meta {
-        Some(doc) => serde_json::from_str(&doc).context("stored workspace settings are invalid")?,
-        None => Workspace::default(),
+/// The workspace and its revision (0 for one never saved).
+async fn read_workspace(tx: &mut Transaction<'static, Postgres>) -> anyhow::Result<(Workspace, i64)> {
+    let meta: Option<(String, i64)> =
+        sqlx::query_as("SELECT doc, revision FROM workspace_meta").fetch_optional(&mut **tx).await?;
+    let (mut workspace, revision): (Workspace, i64) = match meta {
+        Some((doc, revision)) => {
+            (serde_json::from_str(&doc).context("stored workspace settings are invalid")?, revision)
+        }
+        None => (Workspace::default(), 0),
     };
     let docs: Vec<String> =
         sqlx::query_scalar("SELECT doc FROM collections ORDER BY position").fetch_all(&mut **tx).await?;
@@ -304,17 +365,23 @@ async fn read_workspace(tx: &mut Transaction<'static, Postgres>) -> anyhow::Resu
         let vars = serde_json::from_str(&vars).context("stored environment variables are invalid")?;
         workspace.environments.push(Environment { name, vars });
     }
-    Ok(workspace)
+    Ok((workspace, revision))
 }
 
 /// Upserts each collection and environment (skipping rows whose values are unchanged) and deletes
-/// the ones no longer present.
-async fn write_workspace(tx: &mut Transaction<'static, Postgres>, workspace: &Workspace) -> anyhow::Result<()> {
+/// the ones no longer present, and records `revision`.
+async fn write_workspace(
+    tx: &mut Transaction<'static, Postgres>,
+    workspace: &Workspace,
+    revision: i64,
+) -> anyhow::Result<()> {
     let meta = Workspace { collections: vec![], environments: vec![], ..workspace.clone() };
     sqlx::query(
-        "INSERT INTO workspace_meta (id, doc) VALUES (1, $1) ON CONFLICT (id) DO UPDATE SET doc = excluded.doc",
+        "INSERT INTO workspace_meta (id, doc, revision) VALUES (1, $1, $2)
+         ON CONFLICT (id) DO UPDATE SET doc = excluded.doc, revision = excluded.revision",
     )
     .bind(serde_json::to_string(&meta)?)
+    .bind(revision)
     .execute(&mut **tx)
     .await?;
 
@@ -404,6 +471,7 @@ mod tests {
         let ws = reopened.workspace();
         assert_eq!(ws.collections.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["a", "b"]);
         assert_eq!(ws.active_collection, Some(b.id));
+        assert_eq!(reopened.versioned().1, 1, "the revision is stored, not just cached");
         assert_eq!(ws.environments[0].vars["k"], "v");
         assert_eq!(reopened.secrets()["local"]["token"], "s3cret");
         assert_eq!(reopened.confirmed_hosts(), ["api.example.com"]);

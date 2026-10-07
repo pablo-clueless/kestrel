@@ -16,6 +16,7 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useValues } from "@/hooks/use-values";
+import { useCanEdit } from "@/hooks/use-me";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import {
@@ -48,8 +49,8 @@ const TESTS: { kind: TestKind; label: string }[] = [
 /** The Select's value for "no token request chosen" (Base UI needs a non-empty value). */
 const NO_TOKEN = "__kestrel_no_token__";
 
-/** The Select's value for "no baseline" (Base UI needs a non-empty value). */
-const NO_BASELINE = "__kestrel_no_baseline__";
+/** The Select's value for "no endpoint" (Base UI needs a non-empty value). */
+const NO_ENDPOINT = "__kestrel_no_endpoint__";
 
 /** The engine's limits on one concurrency run, whatever the in-flight cap. */
 const MAX_BURST = 1_000;
@@ -64,8 +65,9 @@ const WRITE_METHODS = ["POST", "PUT", "PATCH", "DELETE"];
 /** Above this rate with keep-alive off, the client can run out of ephemeral ports (TIME_WAIT). */
 const PORT_EXHAUSTION_RPS = 200;
 
-/** Matches the engine's size generators: {{n}}, {{n:int_array}}, {{n:string}}, {{n:object_array}}. */
-const SIZE_GENERATOR = /{{s*n(:(int_array|string|object_array))?s*}}/;
+/** Matches the engine's size generators: {{n}}, {{n:int_array}}, {{n:string}}, {{n:object_array}},
+ * with any spaces inside the braces (the engine trims them). */
+const SIZE_GENERATOR = /{{\s*n(:(int_array|string|object_array))?\s*}}/;
 
 const usesSize = (e: Endpoint) =>
   [e.url, ...e.query.map((q) => q.value), ...e.headers.map((h) => h.value), ...bodyTexts(e)].some(
@@ -93,9 +95,6 @@ const bodyTexts = ({ body }: Endpoint): string[] => {
       return body.fields.filter((f) => f.enabled && f.kind === "text").map((f) => f.value);
   }
 };
-
-/** Methods that don't send a body, so there's no input to grow for a Big-O sweep. */
-const BODYLESS_METHODS: Endpoint["method"][] = ["GET", "HEAD", "OPTIONS", "DELETE"];
 
 /** The rate of each breakpoint step: start, then +percent (at least +1) up to max. Same as the engine. */
 const breakpointRates = (start: number, percent: number, max: number) => {
@@ -166,6 +165,9 @@ const DEFAULTS = {
   payloadMax: 1_000_000,
   /** Big-O and payload scaling: an echo endpoint to send the same bodies to ("" = none). */
   baselineId: "",
+  /** Big-O and payload scaling: server-state requests sent before / after each size ("" = none). */
+  setupId: "",
+  teardownId: "",
   // Big-O
   minN: 1,
   maxN: 16_384,
@@ -259,6 +261,8 @@ export const RunControls = () => {
     payloadMin,
     payloadMax,
     baselineId,
+    setupId,
+    teardownId,
     probes,
     abandoned,
     abandonConcurrency,
@@ -298,6 +302,12 @@ export const RunControls = () => {
     kind === "payload" ? (["payloadMin", "payloadMax"] as const) : (["minN", "maxN"] as const);
   const sweepMin = kind === "payload" ? payloadMin : minN;
   const sweepMax = kind === "payload" ? payloadMax : maxN;
+
+  /** Endpoints of this collection other than the selected one, for the baseline and state pickers. */
+  const others = (collection?.endpoints ?? []).filter((e) => e.id !== endpoint?.id);
+  /** `id` if it's still an endpoint of this collection (a picked one may since have been deleted). */
+  const inCollection = (id: string) =>
+    id && collection?.endpoints.some((e) => e.id === id) ? id : null;
 
   const buildConfig = (): RunConfig => {
     if (kind === "fake") return { kind, durationMs: Math.round(durationS * 1000) };
@@ -341,8 +351,9 @@ export const RunControls = () => {
         maxN: sweepMax,
         points: sizes,
         samples: rounds,
-        baselineEndpointId:
-          baselineId && collection?.endpoints.some((e) => e.id === baselineId) ? baselineId : null,
+        baselineEndpointId: inCollection(baselineId),
+        setupEndpointId: inCollection(setupId),
+        teardownEndpointId: inCollection(teardownId),
         warmup,
         slowMs,
         budgetMs: Math.round(budgetS * 1000),
@@ -538,15 +549,13 @@ export const RunControls = () => {
   const num = (key: NumberSetting) => (e: React.ChangeEvent<HTMLInputElement>) =>
     set(key, Number(e.target.value));
   const needsEndpoint = kind !== "fake";
-  const bodyless = !!endpoint && BODYLESS_METHODS.includes(endpoint.method);
-
-  // Big-O needs a body; switching to a bodyless request drops back to the default test.
-  useEffect(() => {
-    if (bodyless && kind === "complexity" && !running) {
-      set("kind", DEFAULTS.kind);
-      clear();
-    }
-  }, [bodyless, kind, running, set, clear]);
+  const canEdit = useCanEdit();
+  /** Why Run can't be pressed, when the reason isn't already on screen. */
+  const runHint = !canEdit
+    ? "You have read access to this workspace, so you can watch runs but not start or stop them."
+    : !endpoint && !running
+      ? "Select an endpoint in the sidebar to run a test."
+      : null;
 
   return (
     <div className="flex h-full flex-col">
@@ -583,18 +592,12 @@ export const RunControls = () => {
               <SelectValue placeholder="Select a test" />
             </SelectTrigger>
             <SelectContent>
+              {/* Every test works with every method: Big-O and payload scaling need a {{n…}}
+                  size marker, which can be in the URL or query as well as the body, and say so
+                  below when it's missing. */}
               {TESTS.map((t) => (
-                <SelectItem
-                  key={t.kind}
-                  value={t.kind}
-                  disabled={t.kind === "complexity" && bodyless}
-                >
+                <SelectItem key={t.kind} value={t.kind}>
                   {t.label}
-                  {t.kind === "complexity" && bodyless && (
-                    <span className="text-muted-foreground normal-case">
-                      (needs a request body)
-                    </span>
-                  )}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -1074,39 +1077,46 @@ export const RunControls = () => {
               </Field>
             </div>
             <Field label="Payload baseline (echo)">
-              <Select
-                value={baselineId || NO_BASELINE}
+              <EndpointPick
+                value={baselineId}
+                onChange={(id) => set("baselineId", id)}
+                endpoints={others}
                 disabled={running}
-                onValueChange={(v) => set("baselineId", v === NO_BASELINE ? "" : String(v))}
-                items={[
-                  { value: NO_BASELINE, label: "None" },
-                  ...(collection?.endpoints ?? [])
-                    .filter((e) => e.id !== endpoint?.id)
-                    .map((e) => ({ value: e.id, label: `${e.method} ${e.name || e.url}` })),
-                ]}
-              >
-                <SelectTrigger className="w-full text-xs">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={NO_BASELINE}>None</SelectItem>
-                  {(collection?.endpoints ?? [])
-                    .filter((e) => e.id !== endpoint?.id)
-                    .map((e) => (
-                      <SelectItem key={e.id} value={e.id}>
-                        {e.method} {e.name || e.url}
-                      </SelectItem>
-                    ))}
-                </SelectContent>
-              </Select>
+              />
               <p className="text-muted-foreground text-xs">
                 Sends each body to this endpoint too (e.g. one that echoes it back), to show how
                 much of the growth is just moving and parsing the bytes. Must be on the same host.
               </p>
             </Field>
+            <Field label="Server state: setup">
+              <EndpointPick
+                value={setupId}
+                onChange={(id) => set("setupId", id)}
+                endpoints={others}
+                disabled={running}
+              />
+              <p className="text-muted-foreground text-xs">
+                Sent before each size, with the same <code>{"{{n}}"}</code>, e.g.{" "}
+                <code>{"POST /seed?count={{n}}"}</code>, to measure a query against n rows of data.
+                Must be on the same host and answer 2xx; a failure stops the sweep growing.
+              </p>
+            </Field>
+            <Field label="Server state: teardown">
+              <EndpointPick
+                value={teardownId}
+                onChange={(id) => set("teardownId", id)}
+                endpoints={others}
+                disabled={running}
+              />
+              <p className="text-muted-foreground text-xs">
+                Sent after each size&apos;s samples, e.g. to delete what setup made.
+              </p>
+            </Field>
             <p className="text-muted-foreground text-xs">
-              Sizes are spaced geometrically and sampled in shuffled rounds. A size slower than the
-              limit stops the sweep from growing further.
+              {setupId || teardownId
+                ? "With server state, sizes are measured one at a time in random order, each after its own setup."
+                : "Sizes are spaced geometrically and sampled in shuffled rounds."}{" "}
+              A size slower than the limit stops the sweep from growing further.
               {kind === "payload" &&
                 " The results add MB/s and latency against the bytes sent and received, and the cost a request has whatever its size."}
             </p>
@@ -1359,7 +1369,8 @@ export const RunControls = () => {
         {error && <p className="text-destructive">{error}</p>}
       </div>
 
-      <div className="flex gap-2 border-t p-4">
+      {runHint && <p className="text-muted-foreground border-t px-4 pt-3 text-xs">{runHint}</p>}
+      <div className={cn("flex gap-2 p-4", !runHint && "border-t")}>
         <Button
           className="flex-1"
           size="lg"
@@ -1369,7 +1380,10 @@ export const RunControls = () => {
             start.isPending ||
             !health.isSuccess ||
             overCaps.length > 0 ||
-            (needsEndpoint && (!endpoint || isDraft))
+            !canEdit ||
+            // Every test runs from a selected endpoint, even the fake one that sends nothing.
+            !endpoint ||
+            (needsEndpoint && isDraft)
           }
         >
           <Play /> Run
@@ -1378,7 +1392,7 @@ export const RunControls = () => {
           variant="outline"
           size="lg"
           onClick={() => stop.mutate()}
-          disabled={!running || stop.isPending}
+          disabled={!running || stop.isPending || !canEdit}
         >
           <Square /> Stop
         </Button>
@@ -1395,6 +1409,41 @@ export const RunControls = () => {
     </div>
   );
 };
+
+/** A dropdown of other endpoints, with "None" (an empty `value`). */
+const EndpointPick = ({
+  value,
+  onChange,
+  endpoints,
+  disabled,
+}: {
+  value: string;
+  onChange: (id: string) => void;
+  endpoints: Endpoint[];
+  disabled?: boolean;
+}) => (
+  <Select
+    value={value || NO_ENDPOINT}
+    disabled={disabled}
+    onValueChange={(v) => onChange(v === NO_ENDPOINT ? "" : String(v))}
+    items={[
+      { value: NO_ENDPOINT, label: "None" },
+      ...endpoints.map((e) => ({ value: e.id, label: `${e.method} ${e.name || e.url}` })),
+    ]}
+  >
+    <SelectTrigger className="w-full text-xs">
+      <SelectValue />
+    </SelectTrigger>
+    <SelectContent>
+      <SelectItem value={NO_ENDPOINT}>None</SelectItem>
+      {endpoints.map((e) => (
+        <SelectItem key={e.id} value={e.id}>
+          {e.method} {e.name || e.url}
+        </SelectItem>
+      ))}
+    </SelectContent>
+  </Select>
+);
 
 const Field = ({ label, children }: { label: string; children: React.ReactNode }) => (
   <div className="flex min-w-0 flex-col gap-1.5">

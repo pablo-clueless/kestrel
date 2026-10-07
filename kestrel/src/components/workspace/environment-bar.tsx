@@ -6,6 +6,8 @@ import { useState } from "react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "../ui/sheet";
 import { useWorkspaceStore } from "@/stores/workspace-store";
+import { useCanEdit } from "@/hooks/use-me";
+import { Editable } from "../shared/editable";
 import { EnvironmentEditor } from "./environment-editor";
 import { Button } from "@/components/ui/button";
 
@@ -16,6 +18,7 @@ const NONE = "__kestrel_no_environment__";
 export const EnvironmentBar = () => {
   const { workspace, setActiveEnvironment } = useWorkspaceStore();
   const [open, setOpen] = useState(false);
+  const canEdit = useCanEdit();
   const envs = workspace?.environments ?? [];
   const active = workspace?.activeEnvironment;
   const value = active && envs.some((e) => e.name === active) ? active : NONE;
@@ -59,11 +62,12 @@ export const EnvironmentBar = () => {
             <SheetDescription>
               Variables and write-only secrets. The active environment overrides collection
               variables.
+              {!canEdit && " You have read access here, so you can look but not change them."}
             </SheetDescription>
           </SheetHeader>
-          <div className="px-4 pb-6">
+          <Editable className="px-4 pb-6">
             <EnvironmentEditor />
-          </div>
+          </Editable>
         </SheetContent>
       </Sheet>
     </div>

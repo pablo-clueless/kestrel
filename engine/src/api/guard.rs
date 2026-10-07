@@ -56,7 +56,8 @@ fn check(cfg: &Config, req: &Request) -> Result<(), ApiError> {
     Ok(())
 }
 
-/// `EventSource` can't set headers, so only the SSE endpoint accepts `?token=`.
+/// `EventSource` can't set headers, so the SSE endpoints (a run's events, the workspace's revisions),
+/// and only they, accept `?token=`.
 fn query_token(req: &Request) -> Option<&str> {
     if req.method() != Method::GET || !req.uri().path().ends_with("/events") {
         return None;

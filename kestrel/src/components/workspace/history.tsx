@@ -12,6 +12,7 @@ import type { RunStatus } from "@/types/engine/RunStatus";
 import type { RunKind } from "@/types/engine/RunKind";
 import type { Endpoint } from "@/types/engine/Endpoint";
 import { useRunStore } from "@/stores/run-store";
+import { useToWorkspace } from "@/hooks/use-to-workspace";
 import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -84,6 +85,7 @@ export const History = ({ active }: { active: boolean }) => {
   const workspace = useWorkspaceStore((s) => s.workspace);
   const selected = useSelectedEndpoint();
   const shownRunId = useRunStore((s) => s.runId);
+  const toWorkspace = useToWorkspace();
 
   const runs = useQuery({
     queryKey: ["runs"],
@@ -114,6 +116,7 @@ export const History = ({ active }: { active: boolean }) => {
   }, [runs.data, thisEndpoint, selected]);
 
   const openRun = async (run: RunSummary) => {
+    toWorkspace();
     const { select } = useWorkspaceStore.getState();
     const { attach, showReport } = useRunStore.getState();
     // Select first: the Run panel keeps a shown run only if it belongs to the selected endpoint.
