@@ -13,6 +13,7 @@ import { useMe } from "@/hooks/use-me";
 import { Form } from "../form";
 import { Button } from "../ui/button";
 import { TabPanel } from "../shared";
+import { TwoFactor } from "./two-factor";
 
 interface Props {
   selected: string;
@@ -30,6 +31,7 @@ export const Security = ({ selected }: Props) => {
         {accountsOn ? (
           <>
             <ChangePassword />
+            <TwoFactor />
             <Sessions />
           </>
         ) : (

@@ -888,6 +888,14 @@ pub struct ComplexityConfig {
     /// and parsing rather than the endpoint's own work.
     #[serde(default)]
     pub baseline_endpoint_id: Option<Uuid>,
+    /// Server state (HANDOFF → Big-O server-state sweeps): a request sent before each size's samples,
+    /// rendered with that size, e.g. `POST /seed?count={{n}}`, so "seed n rows, then time the query"
+    /// can be measured. With one set, sizes are swept one at a time instead of in shuffled rounds.
+    #[serde(default)]
+    pub setup_endpoint_id: Option<Uuid>,
+    /// Sent after each size's samples (with the same n), e.g. to delete what setup made.
+    #[serde(default)]
+    pub teardown_endpoint_id: Option<Uuid>,
 }
 
 /// Latency at one size. Medians use successful requests only.

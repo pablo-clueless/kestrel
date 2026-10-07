@@ -22,6 +22,7 @@ import { GroupPicker } from "./group-picker";
 import { JsonEditor } from "./json-editor";
 import { Label, Tabs } from "./fields";
 import { cn } from "@/lib/utils";
+import { Editable } from "../shared/editable";
 import {
   useActiveCollection,
   useSelectedEndpoint,
@@ -116,60 +117,62 @@ export const RequestEditor = () => {
 
   return (
     <div className="flex flex-col gap-3 text-xs">
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex min-w-0 flex-1 items-center gap-1">
-          <GroupPicker
-            value={endpoint.group}
-            groups={groups}
-            onChange={(group) => {
-              // A group made here is kept like one made in the sidebar, so it survives emptying.
-              if (group && collection) addGroup(collection.id, group);
-              patch({ group });
-            }}
-          />
-          <Input
-            className={cn("max-w-100 border-none px-2 font-medium", XS)}
-            value={endpoint.name}
-            placeholder="Endpoint name"
-            onChange={(e) => patch({ name: e.target.value })}
-          />
+      <Editable className="flex flex-col gap-3">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex min-w-0 flex-1 items-center gap-1">
+            <GroupPicker
+              value={endpoint.group}
+              groups={groups}
+              onChange={(group) => {
+                // A group made here is kept like one made in the sidebar, so it survives emptying.
+                if (group && collection) addGroup(collection.id, group);
+                patch({ group });
+              }}
+            />
+            <Input
+              className={cn("max-w-100 border-none px-2 font-medium", XS)}
+              value={endpoint.name}
+              placeholder="Endpoint name"
+              onChange={(e) => patch({ name: e.target.value })}
+            />
+          </div>
+          {isDraft && (
+            <Button variant="outline" className={XS} onClick={() => saveDraft(endpoint.id)}>
+              <Save /> Save to {collection?.name ?? "a new collection"}
+            </Button>
+          )}
         </div>
-        {isDraft && (
-          <Button variant="outline" className={XS} onClick={() => saveDraft(endpoint.id)}>
-            <Save /> Save to {collection?.name ?? "a new collection"}
+        <div className="flex gap-2">
+          <Select value={endpoint.method} onValueChange={(v) => patch({ method: v as HttpMethod })}>
+            <SelectTrigger className={cn("w-25 font-mono", XS)}>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {METHODS.map((m) => (
+                <SelectItem key={m} value={m}>
+                  {m}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Input
+            className={cn("flex-1 font-mono", XS)}
+            value={endpoint.url}
+            placeholder="{{base}}/path, or paste a curl command"
+            onChange={(e) => patch({ url: e.target.value })}
+            onPaste={(e) => {
+              const text = e.clipboardData.getData("text");
+              if (!looksLikeCurl(text)) return;
+              e.preventDefault();
+              void pasteCurl(text);
+            }}
+            onKeyDown={(e) => e.key === "Enter" && send(endpoint, environment)}
+          />
+          <Button className={XS} onClick={() => send(endpoint, environment)} disabled={pending}>
+            <Send /> Send
           </Button>
-        )}
-      </div>
-      <div className="flex gap-2">
-        <Select value={endpoint.method} onValueChange={(v) => patch({ method: v as HttpMethod })}>
-          <SelectTrigger className={cn("w-25 font-mono", XS)}>
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {METHODS.map((m) => (
-              <SelectItem key={m} value={m}>
-                {m}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <Input
-          className={cn("flex-1 font-mono", XS)}
-          value={endpoint.url}
-          placeholder="{{base}}/path, or paste a curl command"
-          onChange={(e) => patch({ url: e.target.value })}
-          onPaste={(e) => {
-            const text = e.clipboardData.getData("text");
-            if (!looksLikeCurl(text)) return;
-            e.preventDefault();
-            void pasteCurl(text);
-          }}
-          onKeyDown={(e) => e.key === "Enter" && send(endpoint, environment)}
-        />
-        <Button className={XS} onClick={() => send(endpoint, environment)} disabled={pending}>
-          <Send /> Send
-        </Button>
-      </div>
+        </div>
+      </Editable>
       <RenderedPreview endpoint={endpoint} environment={environment} />
       {endpoint.expect && (
         <p className="text-muted-foreground flex flex-wrap items-center gap-1.5 text-xs">
@@ -193,24 +196,27 @@ export const RequestEditor = () => {
           { id: "after", label: "On Response", count: endpoint.extract?.length ?? 0 },
         ]}
       />
-      {tab === "query" && (
-        <KeyValueEditor rows={endpoint.query} onChange={(query) => patch({ query })} />
-      )}
-      {tab === "headers" && (
-        <div className="flex flex-col gap-2">
-          <KeyValueEditor rows={endpoint.headers} onChange={(headers) => patch({ headers })} />
-          {sharedHeaders.length > 0 && (
-            <p className="text-muted-foreground text-xs">
-              Also sends {sharedHeaders.join(", ")} from the collection settings, unless set here.
-            </p>
-          )}
-        </div>
-      )}
-      {tab === "body" && <BodyEditor body={endpoint.body} onChange={(body) => patch({ body })} />}
-      {tab === "auth" && <AuthEditor auth={endpoint.auth} onChange={(auth) => patch({ auth })} />}
-      {tab === "after" && (
-        <ExtractEditor rules={endpoint.extract} onChange={(extract) => patch({ extract })} />
-      )}
+      {/* The tabs above stay usable, so read access can look at every part of the request. */}
+      <Editable>
+        {tab === "query" && (
+          <KeyValueEditor rows={endpoint.query} onChange={(query) => patch({ query })} />
+        )}
+        {tab === "headers" && (
+          <div className="flex flex-col gap-2">
+            <KeyValueEditor rows={endpoint.headers} onChange={(headers) => patch({ headers })} />
+            {sharedHeaders.length > 0 && (
+              <p className="text-muted-foreground text-xs">
+                Also sends {sharedHeaders.join(", ")} from the collection settings, unless set here.
+              </p>
+            )}
+          </div>
+        )}
+        {tab === "body" && <BodyEditor body={endpoint.body} onChange={(body) => patch({ body })} />}
+        {tab === "auth" && <AuthEditor auth={endpoint.auth} onChange={(auth) => patch({ auth })} />}
+        {tab === "after" && (
+          <ExtractEditor rules={endpoint.extract} onChange={(extract) => patch({ extract })} />
+        )}
+      </Editable>
     </div>
   );
 };

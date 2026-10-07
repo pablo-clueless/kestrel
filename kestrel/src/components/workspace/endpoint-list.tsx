@@ -7,6 +7,8 @@ import { useMemo, useState } from "react";
 import { activeCollectionOf, byName, groupsOf, useWorkspaceStore } from "@/stores/workspace-store";
 import { groupKey, useLayoutStore } from "@/stores/layout-store";
 import { InlineNameForm } from "@/components/shared/inline-name-form";
+import { useToWorkspace } from "@/hooks/use-to-workspace";
+import { useCanEdit } from "@/hooks/use-me";
 import { MethodBadge } from "@/components/shared/method-badge";
 import type { Collection } from "@/types/engine/Collection";
 import type { Endpoint } from "@/types/engine/Endpoint";
@@ -32,6 +34,8 @@ export const EndpointList = ({ collection }: { collection: Collection }) => {
   const { selectedId, select, addEndpoint, removeEndpoint, addGroup, removeGroup } =
     useWorkspaceStore();
   const setActiveCollection = useWorkspaceStore((s) => s.setActiveCollection);
+  const toWorkspace = useToWorkspace();
+  const canEdit = useCanEdit();
   const isActive = useWorkspaceStore((s) => activeCollectionOf(s.workspace)?.id === collection.id);
   // Several collections can be open in the sidebar, but the editor and "add endpoint" work on the
   // active one, so acting inside this list makes its collection active first.
@@ -90,26 +94,31 @@ export const EndpointList = ({ collection }: { collection: Collection }) => {
                   <span className="truncate">{group}</span>
                   <span className="text-muted-foreground/70 shrink-0">{endpoints.length}</span>
                 </button>
-                <button
-                  className={cn(hoverAction, "hover:text-primary")}
-                  onClick={() => {
-                    activate();
-                    expandGroup(collection.id, group);
-                    addEndpoint(group);
-                  }}
-                  aria-label={`Add endpoint to ${group}`}
-                  title="Add endpoint to this group"
-                >
-                  <Plus className="size-3.5" />
-                </button>
-                <button
-                  className={cn(hoverAction, "hover:text-red-600")}
-                  onClick={() => removeGroup(collection.id, group)}
-                  aria-label={`Delete group ${group}`}
-                  title="Delete group (its endpoints stay, ungrouped)"
-                >
-                  <Trash2 className="size-3.5" />
-                </button>
+                {canEdit && (
+                  <>
+                    <button
+                      className={cn(hoverAction, "hover:text-primary")}
+                      onClick={() => {
+                        activate();
+                        expandGroup(collection.id, group);
+                        addEndpoint(group);
+                        toWorkspace();
+                      }}
+                      aria-label={`Add endpoint to ${group}`}
+                      title="Add endpoint to this group"
+                    >
+                      <Plus className="size-3.5" />
+                    </button>
+                    <button
+                      className={cn(hoverAction, "hover:text-red-600")}
+                      onClick={() => removeGroup(collection.id, group)}
+                      aria-label={`Delete group ${group}`}
+                      title="Delete group (its endpoints stay, ungrouped)"
+                    >
+                      <Trash2 className="size-3.5" />
+                    </button>
+                  </>
+                )}
               </div>
             )}
             <AnimatePresence initial={false}>
@@ -133,18 +142,21 @@ export const EndpointList = ({ collection }: { collection: Collection }) => {
                         onClick={() => {
                           activate();
                           select(e.id);
+                          toWorkspace();
                         }}
                       >
                         <MethodBadge method={e.method} short className="w-11" />
                         <span className="truncate">{e.name || e.url}</span>
                       </button>
-                      <button
-                        className={cn(hoverAction, "hover:text-red-600")}
-                        onClick={() => removeEndpoint(e.id)}
-                        aria-label={`Delete ${e.name}`}
-                      >
-                        <Trash2 className="size-3.5" />
-                      </button>
+                      {canEdit && (
+                        <button
+                          className={cn(hoverAction, "hover:text-red-600")}
+                          onClick={() => removeEndpoint(e.id)}
+                          aria-label={`Delete ${e.name}`}
+                        >
+                          <Trash2 className="size-3.5" />
+                        </button>
+                      )}
                     </motion.div>
                   ))}
                 </motion.div>
@@ -163,23 +175,26 @@ export const EndpointList = ({ collection }: { collection: Collection }) => {
           onCancel={() => setAddingGroup(false)}
         />
       )}
-      <div className="flex items-center gap-3 px-2">
-        <button
-          className="text-muted-foreground hover:text-primary flex items-center gap-1 text-xs"
-          onClick={() => {
-            activate();
-            addEndpoint();
-          }}
-        >
-          <Plus className="size-3.5" /> Add endpoint
-        </button>
-        <button
-          className="text-muted-foreground hover:text-primary flex items-center gap-1 text-xs"
-          onClick={() => setAddingGroup(true)}
-        >
-          <FolderPlus className="size-3.5" /> New group
-        </button>
-      </div>
+      {canEdit && (
+        <div className="flex items-center gap-3 px-2">
+          <button
+            className="text-muted-foreground hover:text-primary flex items-center gap-1 text-xs"
+            onClick={() => {
+              activate();
+              addEndpoint();
+              toWorkspace();
+            }}
+          >
+            <Plus className="size-3.5" /> Add endpoint
+          </button>
+          <button
+            className="text-muted-foreground hover:text-primary flex items-center gap-1 text-xs"
+            onClick={() => setAddingGroup(true)}
+          >
+            <FolderPlus className="size-3.5" /> New group
+          </button>
+        </div>
+      )}
     </motion.div>
   );
 };

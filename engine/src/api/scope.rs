@@ -1,18 +1,27 @@
-//! Which workspace a request acts on. See `model::workspaces`.
+//! Which workspace a request acts on, and what the caller may do there. See `model::workspaces`.
 //!
-//! Accounts off: the `X-Kestrel-Workspace` id, which is the only credential.
-//! Accounts on: the signed-in user's workspace. The header (or `?workspace=`) may name one of the
-//! user's own workspaces; naming any other is a 404, as if it didn't exist.
+//! Accounts off: the `X-Kestrel-Workspace` id, which is the only credential; the caller is its admin.
+//! Accounts on: the signed-in user's workspace. The header (or `?workspace=`) may name any workspace
+//! the user is a member of; naming any other is a 404, as if it didn't exist.
+//!
+//! Read-only members are refused anything but reading here, in one place, so a new route that changes or sends
+//! something is closed to them by default rather than by remembering to check.
 
 use std::sync::Arc;
 
-use axum::{extract::FromRequestParts, http::request::Parts};
+use axum::{
+    extract::FromRequestParts,
+    http::{Method, request::Parts},
+};
 use uuid::Uuid;
 
 use super::AppState;
-use crate::{auth::AuthedUser, error::ApiError, model::store::WorkspaceStore};
+use crate::{auth::AuthedUser, db::teams::Role, error::ApiError, model::store::WorkspaceStore};
 
 pub const WORKSPACE_HEADER: &str = "x-kestrel-workspace";
+
+/// `POST` routes that only read: `read` members may use them.
+const READ_ONLY_POSTS: &[&str] = &["/render"];
 
 /// The caller's workspace. `EventSource` can't set headers, so `?workspace=` works too.
 pub struct Scope {
@@ -31,13 +40,19 @@ impl FromRequestParts<AppState> for Scope {
             .map(|s| Uuid::try_parse(s).map_err(|_| ApiError::BadRequest("invalid X-Kestrel-Workspace header".into())))
             .transpose()?;
 
-        let id = if state.accounts.enabled {
+        let (id, role) = if state.accounts.enabled {
             // Set by the session middleware, which has already turned away requests without one.
             let user = parts.extensions.get::<AuthedUser>().ok_or(ApiError::Unauthorized("sign in first"))?;
             state.accounts.workspace_for(user, requested).await?
         } else {
-            requested.ok_or_else(|| ApiError::BadRequest("missing X-Kestrel-Workspace header".into()))?
+            let id = requested.ok_or_else(|| ApiError::BadRequest("missing X-Kestrel-Workspace header".into()))?;
+            (id, Role::Admin)
         };
+        if !role.can_edit() && !reads_only(parts) {
+            return Err(ApiError::Forbidden(
+                "you have read access to this workspace, so you can't change it or send requests; ask an admin for write access",
+            ));
+        }
         let store = state.workspaces.get(id).await.map_err(|e| ApiError::Internal(format!("{e:#}")))?;
         // Defence in depth: never serve a store for a workspace other than the one just authorised,
         // whatever a cache bug might hand back.
@@ -46,5 +61,41 @@ impl FromRequestParts<AppState> for Scope {
             return Err(ApiError::Internal("workspace mismatch; the request was refused".into()));
         }
         Ok(Self { id, store })
+    }
+}
+
+/// Whether the request only reads the workspace: `GET`/`HEAD`, or a `POST` known to only read.
+fn reads_only(parts: &Parts) -> bool {
+    let path = parts.uri.path();
+    // Nested routers may or may not see the `/api` prefix; accept both.
+    let path = path.strip_prefix("/api").unwrap_or(path);
+    matches!(parts.method, Method::GET | Method::HEAD)
+        || (parts.method == Method::POST && READ_ONLY_POSTS.contains(&path))
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::http::Request;
+
+    use super::*;
+
+    #[test]
+    fn only_reads_are_open_to_read_members() {
+        let reads = |method: &str, uri: &str| {
+            reads_only(&Request::builder().method(method).uri(uri).body(()).unwrap().into_parts().0)
+        };
+        assert!(reads("GET", "/api/workspace"));
+        assert!(reads("GET", "/api/runs/x/events?workspace=y"));
+        assert!(reads("POST", "/api/render"));
+        assert!(reads("POST", "/render"), "nested routers may strip /api");
+        for (method, uri) in [
+            ("PUT", "/api/workspace"),
+            ("POST", "/api/send"),
+            ("POST", "/api/runs"),
+            ("DELETE", "/api/runs/x"),
+            ("POST", "/api/render/x"),
+        ] {
+            assert!(!reads(method, uri), "{method} {uri}");
+        }
     }
 }

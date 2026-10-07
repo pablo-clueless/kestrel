@@ -306,6 +306,40 @@ pub struct WorkspaceResponse {
     pub workspace: Workspace,
     /// Environment name → names of the secrets set for it.
     pub secret_keys: BTreeMap<String, Vec<String>>,
+    /// Bumped by every save. Send it back as `baseRevision` when saving, so a save made without
+    /// seeing someone else's changes is refused instead of overwriting them.
+    #[ts(type = "number")]
+    pub revision: i64,
+}
+
+/// `PUT /api/workspace?baseRevision=…`: the query.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveWorkspaceQuery {
+    /// The revision the edits were made on. Omitted: save whatever is there (last save wins).
+    #[serde(default)]
+    pub base_revision: Option<i64>,
+}
+
+/// `PUT /api/workspace` succeeded.
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct SaveWorkspaceResponse {
+    #[ts(type = "number")]
+    pub revision: i64,
+}
+
+/// `PUT /api/workspace` was refused with 409: someone saved since `baseRevision`. Nothing was
+/// written. `current` is what's there now, to merge the edits into and save again.
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct WorkspaceConflict {
+    pub error: String,
+    /// Always `"workspaceConflict"`.
+    pub code: String,
+    pub current: WorkspaceResponse,
 }
 
 /// `POST /api/render` and `POST /api/send`. Takes the endpoint inline so unsaved drafts can be tried.

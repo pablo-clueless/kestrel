@@ -25,6 +25,9 @@ import { EndpointList } from "./endpoint-list";
 import { KeyValueEditor } from "./key-value-editor";
 import { ImportDialog } from "./import-dialog";
 import { useValues } from "@/hooks/use-values";
+import { useWorkspaceSync } from "@/hooks/use-workspace-sync";
+import { useCanEdit } from "@/hooks/use-me";
+import { Editable } from "../shared/editable";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { Label } from "./fields";
@@ -79,6 +82,8 @@ export const CollectionList = () => {
   useEffect(() => {
     void load();
   }, [load]);
+  useWorkspaceSync();
+  const canEdit = useCanEdit();
 
   // A collection you've just made or imported becomes active and opens, so you can see it. Nothing
   // else opens by itself: not the active collection after a reload, nor the one that becomes
@@ -118,24 +123,28 @@ export const CollectionList = () => {
           >
             <ChevronsDownUp className="size-4" />
           </button>
-          <button
-            className="text-muted-foreground hover:text-primary"
-            onClick={() => set("importing", true)}
-            disabled={!workspace}
-            aria-label="Import API spec"
-            title="Import OpenAPI / Swagger"
-          >
-            <FileUp className="size-4" />
-          </button>
-          <button
-            className="text-muted-foreground hover:text-primary"
-            onClick={() => set("adding", true)}
-            disabled={!workspace}
-            aria-label="New collection"
-            title="New empty collection"
-          >
-            <Plus className="size-4" />
-          </button>
+          {canEdit && (
+            <button
+              className="text-muted-foreground hover:text-primary"
+              onClick={() => set("importing", true)}
+              disabled={!workspace}
+              aria-label="Import API spec"
+              title="Import OpenAPI / Swagger"
+            >
+              <FileUp className="size-4" />
+            </button>
+          )}
+          {canEdit && (
+            <button
+              className="text-muted-foreground hover:text-primary"
+              onClick={() => set("adding", true)}
+              disabled={!workspace}
+              aria-label="New collection"
+              title="New empty collection"
+            >
+              <Plus className="size-4" />
+            </button>
+          )}
         </motion.div>
       </motion.div>
       <AnimatePresence initial={false}>
@@ -187,13 +196,15 @@ export const CollectionList = () => {
                 >
                   <Settings2 className="size-3.5" />
                 </button>
-                <button
-                  className={cn(hoverAction, "hover:text-red-600")}
-                  onClick={() => set("deleting", c)}
-                  aria-label={`Delete ${c.name}`}
-                >
-                  <Trash2 className="size-3.5" />
-                </button>
+                {canEdit && (
+                  <button
+                    className={cn(hoverAction, "hover:text-red-600")}
+                    onClick={() => set("deleting", c)}
+                    aria-label={`Delete ${c.name}`}
+                  >
+                    <Trash2 className="size-3.5" />
+                  </button>
+                )}
               </motion.div>
               <AnimatePresence initial={false}>
                 {isOpen && (
@@ -246,13 +257,15 @@ const CollectionSettingsDialog = ({
         </DialogHeader>
         {live && (
           <motion.div className="flex flex-col gap-4 text-sm">
-            <label className="flex flex-col gap-1.5">
-              <Label>Name</Label>
-              <Input
-                value={live.name}
-                onChange={(e) => renameCollection(live.id, e.target.value)}
-              />
-            </label>
+            <Editable>
+              <label className="flex flex-col gap-1.5">
+                <Label>Name</Label>
+                <Input
+                  value={live.name}
+                  onChange={(e) => renameCollection(live.id, e.target.value)}
+                />
+              </label>
+            </Editable>
             <motion.div className="">
               <div role="tablist" aria-label="Collection settings tabs" className="flex">
                 {TABS.map(({ id, label, icon: Icon }) => (
@@ -276,64 +289,66 @@ const CollectionSettingsDialog = ({
                   </button>
                 ))}
               </div>
-              {tab === "variables" && (
-                <div
-                  role="tabpanel"
-                  id="tabpanel-variables"
-                  aria-labelledby="tab-variables"
-                  className="bg-background flex flex-col gap-1.5 p-2"
-                >
-                  <p className="text-muted-foreground text-xs">
-                    Defaults for <code>{"{{…}}"}</code> in this collection&apos;s endpoints. The
-                    active environment&apos;s variables and secrets override them.
-                  </p>
-                  {Object.entries(live.vars).map(([k, v]) => (
-                    <motion.div key={k} className="flex items-center gap-4">
-                      <span className="w-24 shrink-0 truncate font-mono text-xs" title={k}>
-                        {k}
-                      </span>
-                      <Input
-                        className="flex-1 font-mono"
-                        value={v}
-                        onChange={(e) => setCollectionVar(live.id, k, e.target.value)}
-                      />
-                      <button
-                        className="text-muted-foreground hover:text-red-500"
-                        onClick={() => setCollectionVar(live.id, k, null)}
-                        aria-label={`Remove ${k}`}
-                      >
-                        <Trash className="size-4" />
-                      </button>
-                    </motion.div>
-                  ))}
-                  <AddPairForm
-                    noun="Variable"
-                    keyPlaceholder="base"
-                    valuePlaceholder="https://api.example.com"
-                    keyClassName="w-24"
-                    onAdd={(key, value) => setCollectionVar(live.id, key, value)}
-                  />
-                </div>
-              )}
-              {tab === "headers" && (
-                <div
-                  role="tabpanel"
-                  id="tabpanel-headers"
-                  aria-labelledby="tab-headers"
-                  className="bg-background flex flex-col gap-1.5 p-2"
-                >
-                  <p className="text-muted-foreground text-xs">
-                    Sent with every endpoint in this collection, on Send and in runs. Values may use{" "}
-                    <code>{"{{variables}}"}</code>. An endpoint&apos;s own header or auth with the
-                    same name wins.
-                  </p>
-                  <KeyValueEditor
-                    rows={live.headers ?? []}
-                    onChange={(headers) => setCollectionHeaders(live.id, headers)}
-                    keyPlaceholder="X-Tenant"
-                  />
-                </div>
-              )}
+              <Editable>
+                {tab === "variables" && (
+                  <div
+                    role="tabpanel"
+                    id="tabpanel-variables"
+                    aria-labelledby="tab-variables"
+                    className="bg-background flex flex-col gap-1.5 p-2"
+                  >
+                    <p className="text-muted-foreground text-xs">
+                      Defaults for <code>{"{{…}}"}</code> in this collection&apos;s endpoints. The
+                      active environment&apos;s variables and secrets override them.
+                    </p>
+                    {Object.entries(live.vars).map(([k, v]) => (
+                      <motion.div key={k} className="flex items-center gap-4">
+                        <span className="w-24 shrink-0 truncate font-mono text-xs" title={k}>
+                          {k}
+                        </span>
+                        <Input
+                          className="flex-1 font-mono"
+                          value={v}
+                          onChange={(e) => setCollectionVar(live.id, k, e.target.value)}
+                        />
+                        <button
+                          className="text-muted-foreground hover:text-red-500"
+                          onClick={() => setCollectionVar(live.id, k, null)}
+                          aria-label={`Remove ${k}`}
+                        >
+                          <Trash className="size-4" />
+                        </button>
+                      </motion.div>
+                    ))}
+                    <AddPairForm
+                      noun="Variable"
+                      keyPlaceholder="base"
+                      valuePlaceholder="https://api.example.com"
+                      keyClassName="w-24"
+                      onAdd={(key, value) => setCollectionVar(live.id, key, value)}
+                    />
+                  </div>
+                )}
+                {tab === "headers" && (
+                  <div
+                    role="tabpanel"
+                    id="tabpanel-headers"
+                    aria-labelledby="tab-headers"
+                    className="bg-background flex flex-col gap-1.5 p-2"
+                  >
+                    <p className="text-muted-foreground text-xs">
+                      Sent with every endpoint in this collection, on Send and in runs. Values may
+                      use <code>{"{{variables}}"}</code>. An endpoint&apos;s own header or auth with
+                      the same name wins.
+                    </p>
+                    <KeyValueEditor
+                      rows={live.headers ?? []}
+                      onChange={(headers) => setCollectionHeaders(live.id, headers)}
+                      keyPlaceholder="X-Tenant"
+                    />
+                  </div>
+                )}
+              </Editable>
             </motion.div>
           </motion.div>
         )}

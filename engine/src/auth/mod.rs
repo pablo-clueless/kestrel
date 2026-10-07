@@ -6,6 +6,9 @@ pub mod mail;
 pub mod password;
 pub mod rate_limit;
 pub mod session;
+pub mod teams;
+pub mod totp;
+pub mod two_factor;
 
 use std::{sync::Arc, time::Duration};
 
@@ -18,11 +21,13 @@ use crate::{
     db::{
         Db,
         accounts::{CreateUser, EmailPurpose},
+        teams::Role,
     },
     error::ApiError,
 };
 use mail::Mailer;
 use rate_limit::RateLimiter;
+use teams::WorkspaceInfo;
 
 /// How long an emailed link works.
 const VERIFY_LIFETIME: Duration = Duration::from_secs(24 * 60 * 60);
@@ -86,8 +91,11 @@ pub struct MeResponse {
     pub mail: bool,
     /// The signed-in user; `None` when signed out or when auth is off.
     pub user: Option<UserInfo>,
-    /// The workspace the UI should use (it sends this as `X-Kestrel-Workspace`).
+    /// The workspace the UI should use (it sends this as `X-Kestrel-Workspace`): the one it asked
+    /// for if the user is still a member, else their default.
     pub workspace_id: Option<Uuid>,
+    /// Every workspace the user belongs to, with their role in each. Empty when signed out or off.
+    pub workspaces: Vec<WorkspaceInfo>,
 }
 
 #[derive(Debug, Deserialize, TS)]
@@ -159,12 +167,25 @@ pub struct Accounts {
     by_email: RateLimiter,
     by_ip: RateLimiter,
     password_changes: RateLimiter,
+    /// Two-factor codes tried per account, at sign-in or in settings, whatever the challenge: a
+    /// 6-digit code has a million values, so guesses must stay few.
+    two_factor_attempts: RateLimiter,
     /// `None` when `KESTREL_SMTP_HOST` is unset: verification and reset are then unavailable.
     mailer: Option<Arc<Mailer>>,
     public_url: Option<String>,
     /// Emails sent to one address, whoever asks: a few per quarter hour, so the reset form can't be
     /// used to flood someone's inbox.
     mail_per_address: RateLimiter,
+    /// Invites made per workspace per hour, emailed or not.
+    invites: RateLimiter,
+}
+
+/// What the password step of signing in came to.
+pub enum LoginOutcome {
+    /// Signed in: the session token, and who's signed in.
+    SignedIn(String, MeResponse),
+    /// The account has two-factor on: a code must follow, with this challenge.
+    TwoFactor(String),
 }
 
 /// Same message for a wrong password and an unknown email, so it doesn't reveal who has an account.
@@ -179,6 +200,7 @@ impl Accounts {
             by_email: RateLimiter::per_minute(5),
             by_ip: RateLimiter::per_minute(20),
             password_changes: RateLimiter::per_minute(5),
+            two_factor_attempts: RateLimiter::per_minute(10),
             mailer: config.smtp.as_ref().and_then(|smtp| match Mailer::smtp(smtp) {
                 Ok(mailer) => Some(Arc::new(mailer)),
                 // `serve` builds the mailer first and refuses to start if it fails, so this is
@@ -190,6 +212,7 @@ impl Accounts {
             }),
             public_url: config.public_url.clone(),
             mail_per_address: RateLimiter::new(3, Duration::from_secs(15 * 60)),
+            invites: RateLimiter::new(20, Duration::from_secs(60 * 60)),
         }
     }
 
@@ -201,7 +224,14 @@ impl Accounts {
     }
 
     pub fn me_off(&self) -> MeResponse {
-        MeResponse { auth: AuthMode::Off, signup: false, mail: false, user: None, workspace_id: None }
+        MeResponse {
+            auth: AuthMode::Off,
+            signup: false,
+            mail: false,
+            user: None,
+            workspace_id: None,
+            workspaces: Vec::new(),
+        }
     }
 
     pub fn me_signed_out(&self) -> MeResponse {
@@ -211,6 +241,7 @@ impl Accounts {
             mail: self.mailer.is_some(),
             user: None,
             workspace_id: None,
+            workspaces: Vec::new(),
         }
     }
 
@@ -249,19 +280,19 @@ impl Accounts {
         self.start_session(user, client).await
     }
 
-    pub async fn login(&self, req: AuthRequest, client: Client<'_>) -> Result<(String, MeResponse), ApiError> {
+    pub async fn login(&self, req: AuthRequest, client: Client<'_>) -> Result<LoginOutcome, ApiError> {
         let email = normalize_email(&req.email).map_err(|_| ApiError::Unauthorized(BAD_CREDENTIALS))?;
         self.rate_limit(&email, client.ip)?;
         let user = self.db.user_by_email(&email).await.map_err(internal)?;
         let (id, stored) = match user {
-            Some(u) => (Some((u.id, u.email_verified)), Some(u.password_hash)),
+            Some(u) => (Some((u.id, u.email_verified, u.two_factor)), Some(u.password_hash)),
             None => (None, None),
         };
         let outdated = stored.as_deref().is_some_and(password::needs_rehash);
         if !password::verify(req.password.clone(), stored).await {
             return Err(ApiError::Unauthorized(BAD_CREDENTIALS));
         }
-        let (id, email_verified) = id.expect("verify only succeeds for a known user");
+        let (id, email_verified, two_factor) = id.expect("verify only succeeds for a known user");
         // The one moment the password is known: upgrade a hash made with older parameters.
         // Best effort, since the sign-in itself has succeeded either way.
         if outdated {
@@ -270,8 +301,12 @@ impl Accounts {
                 tracing::warn!("couldn't rehash the password of {email}: {err:#}");
             }
         }
+        if two_factor {
+            return Ok(LoginOutcome::TwoFactor(self.two_factor_challenge(id).await?));
+        }
         self.db.ensure_user_workspace(id, req.workspace).await.map_err(internal)?;
-        self.start_session(AuthedUser { id, email, email_verified }, client).await
+        let (token, me) = self.start_session(AuthedUser { id, email, email_verified }, client).await?;
+        Ok(LoginOutcome::SignedIn(token, me))
     }
 
     /// Emails a password reset link if `email` has an account. The answer is the same either way,
@@ -412,7 +447,7 @@ impl Accounts {
         }
     }
 
-    /// Deletes expired sessions and email links now, then once a day. They're already refused when
+    /// Deletes expired sessions, email links and invites now, then once a day. They're already refused when
     /// used; this only keeps the tables from growing.
     pub fn spawn_session_sweeper(self: &Arc<Self>) {
         let accounts = Arc::clone(self);
@@ -428,17 +463,27 @@ impl Accounts {
                 if let Err(err) = accounts.db.delete_expired_email_tokens().await {
                     tracing::warn!("couldn't delete expired email links: {err:#}");
                 }
+                if let Err(err) = accounts.db.delete_expired_invites().await {
+                    tracing::warn!("couldn't delete expired invites: {err:#}");
+                }
+                if let Err(err) = accounts.db.delete_expired_login_challenges().await {
+                    tracing::warn!("couldn't delete expired sign-in challenges: {err:#}");
+                }
             }
         });
     }
 
-    async fn start_session(&self, user: AuthedUser, client: Client<'_>) -> Result<(String, MeResponse), ApiError> {
+    pub(super) async fn start_session(
+        &self,
+        user: AuthedUser,
+        client: Client<'_>,
+    ) -> Result<(String, MeResponse), ApiError> {
         let token = session::new_token();
         self.db
             .create_session(&session::hash(&token), user.id, session::LIFETIME, client.user_agent, client.ip)
             .await
             .map_err(internal)?;
-        let me = self.me(&user).await?;
+        let me = self.me(&user, None).await?;
         Ok((token, me))
     }
 
@@ -456,26 +501,33 @@ impl Accounts {
         Ok(Some(AuthedUser { id: found.user_id, email: found.email, email_verified: found.email_verified }))
     }
 
-    pub async fn me(&self, user: &AuthedUser) -> Result<MeResponse, ApiError> {
-        let workspace = self.workspace_for(user, None).await?;
+    /// Who's signed in and their workspaces. `requested` (the UI's current choice) is kept if they're
+    /// still a member of it; otherwise, e.g. after being removed from it, they're sent to their default
+    /// rather than shown an error.
+    pub async fn me(&self, user: &AuthedUser, requested: Option<Uuid>) -> Result<MeResponse, ApiError> {
+        // A user always has one (made at sign-up), but repair rather than fail if not.
+        let default = self.db.ensure_user_workspace(user.id, None).await.map_err(internal)?;
+        let workspaces = self.workspaces(user).await?;
+        let workspace = requested.filter(|id| workspaces.iter().any(|w| w.id == *id)).unwrap_or(default);
         Ok(MeResponse {
             auth: AuthMode::On,
             signup: self.signup_open,
             mail: self.mailer.is_some(),
             user: Some(UserInfo { id: user.id, email: user.email.clone(), email_verified: user.email_verified }),
             workspace_id: Some(workspace),
+            workspaces,
         })
     }
 
-    /// The workspace a signed-in request acts on: `requested` if the user is a member of it (a
-    /// workspace they aren't a member of is a 404, as if it didn't exist), else their default.
-    pub async fn workspace_for(&self, user: &AuthedUser, requested: Option<Uuid>) -> Result<Uuid, ApiError> {
-        match requested {
-            Some(id) if self.db.is_member(user.id, id).await.map_err(internal)? => Ok(id),
-            Some(_) => Err(ApiError::NotFound("workspace not found")),
-            // A user always has one (made at sign-up), but repair rather than fail if not.
-            None => self.db.ensure_user_workspace(user.id, None).await.map_err(internal),
-        }
+    /// The workspace a signed-in request acts on, and the user's role in it: `requested` if the user
+    /// is a member of it (a workspace they aren't a member of is a 404, as if it didn't exist), else
+    /// their default.
+    pub async fn workspace_for(&self, user: &AuthedUser, requested: Option<Uuid>) -> Result<(Uuid, Role), ApiError> {
+        let id = match requested {
+            Some(id) => id,
+            None => self.db.ensure_user_workspace(user.id, None).await.map_err(internal)?,
+        };
+        Ok((id, self.role(user, id).await?))
     }
 
     /// Creates an account from the CLI (`engine user add`), even when sign-up is closed. Returns

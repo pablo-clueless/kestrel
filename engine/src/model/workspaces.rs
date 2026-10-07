@@ -51,6 +51,11 @@ impl Workspaces {
         open.stores.insert(id, (Arc::clone(&store), tick));
         Ok(store)
     }
+
+    /// Drops workspace `id`'s cached store, after the workspace was deleted.
+    pub fn forget(&self, id: Uuid) {
+        self.open.lock().unwrap().stores.remove(&id);
+    }
 }
 
 impl Open {

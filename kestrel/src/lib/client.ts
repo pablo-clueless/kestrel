@@ -1,6 +1,22 @@
 import axios from "axios";
 
+import type { WorkspaceNameRequest } from "@/types/engine/WorkspaceNameRequest";
+import type { AcceptInviteResponse } from "@/types/engine/AcceptInviteResponse";
 import type { ChangePasswordRequest } from "@/types/engine/ChangePasswordRequest";
+import type { MembersResponse } from "@/types/engine/MembersResponse";
+import type { SaveWorkspaceResponse } from "@/types/engine/SaveWorkspaceResponse";
+import type { WorkspaceConflict } from "@/types/engine/WorkspaceConflict";
+import type { SetRoleRequest } from "@/types/engine/SetRoleRequest";
+import type { InviteRequest } from "@/types/engine/InviteRequest";
+import type { InviteCreated } from "@/types/engine/InviteCreated";
+import type { WorkspaceInfo } from "@/types/engine/WorkspaceInfo";
+import type { Role } from "@/types/engine/Role";
+import type { TwoFactorChallenge } from "@/types/engine/TwoFactorChallenge";
+import type { TwoFactorConfirm } from "@/types/engine/TwoFactorConfirm";
+import type { TwoFactorStatus } from "@/types/engine/TwoFactorStatus";
+import type { TwoFactorLogin } from "@/types/engine/TwoFactorLogin";
+import type { TwoFactorSetup } from "@/types/engine/TwoFactorSetup";
+import type { RecoveryCodes } from "@/types/engine/RecoveryCodes";
 import type { PasswordResetConfirm } from "@/types/engine/PasswordResetConfirm";
 import type { WorkspaceResponse } from "@/types/engine/WorkspaceResponse";
 import type { SetSecretRequest } from "@/types/engine/SetSecretRequest";
@@ -105,6 +121,16 @@ engine.interceptors.response.use(undefined, (err) => {
     // eslint-disable-next-line @next/next/no-location-assign-relative-destination
     window.location.assign("/");
   }
+  // Removed from the current workspace (or it was deleted) by someone else. Reloading asks
+  // `/auth/me` again, which falls back to the user's default workspace. Routes that name a
+  // workspace in the path report their own 404s.
+  const body = axios.isAxiosError(err)
+    ? (err.response?.data as { error?: string } | undefined)
+    : undefined;
+  if (body?.error === "workspace not found" && !url.startsWith("/workspaces")) {
+    // eslint-disable-next-line @next/next/no-location-assign-relative-destination
+    window.location.assign("/workspace");
+  }
   return Promise.reject(err);
 });
 
@@ -120,13 +146,42 @@ const MODES = {
   signup: "signup",
 };
 /** Signs in or creates an account. Sends this browser's existing workspace, which a first sign-in
- * adopts if nobody owns it, so work done before signing up isn't lost. */
+ * adopts if nobody owns it, so work done before signing up isn't lost. An account with two-factor on
+ * gets a challenge instead, to finish with `completeTwoFactor`. */
 export const authenticate = async (mode: "signin" | "signup", email: string, password: string) => {
   const req: AuthRequest = { email, password, workspace: storedWorkspaceId() };
-  const me = (await engine.post<MeResponse>(`/auth/${MODES[mode]}`, req)).data;
+  const res = (await engine.post<MeResponse | TwoFactorChallenge>(`/auth/${MODES[mode]}`, req))
+    .data;
+  if ("twoFactorChallenge" in res) return res;
+  if (res.workspaceId) setWorkspaceId(res.workspaceId);
+  return res;
+};
+
+/** The code step of signing in: a code from the authenticator app, or a recovery code. */
+export const completeTwoFactor = async (challenge: string, code: string) => {
+  const req: TwoFactorLogin = { challenge, code };
+  const me = (await engine.post<MeResponse>("/auth/login/2fa", req)).data;
   if (me.workspaceId) setWorkspaceId(me.workspaceId);
   return me;
 };
+
+export const twoFactorStatus = async () => (await engine.get<TwoFactorStatus>("/auth/2fa")).data;
+
+/** A new secret for the authenticator app; not on until `enableTwoFactor` confirms a code. */
+export const setupTwoFactor = async (password: string) =>
+  (await engine.post<TwoFactorSetup>("/auth/2fa/setup", { password })).data;
+
+/** Turns two-factor on with a code from the app. Returns recovery codes, shown once. */
+export const enableTwoFactor = async (code: string) =>
+  (await engine.post<RecoveryCodes>("/auth/2fa/enable", { code })).data.codes;
+
+export const disableTwoFactor = async (req: TwoFactorConfirm) => {
+  await engine.post("/auth/2fa/disable", req);
+};
+
+/** New recovery codes; the old ones stop working. */
+export const regenerateRecoveryCodes = async (req: TwoFactorConfirm) =>
+  (await engine.post<RecoveryCodes>("/auth/2fa/recovery-codes", req)).data.codes;
 
 export const signOut = async () => {
   await engine.post("/auth/logout");
@@ -164,6 +219,53 @@ export const resendVerification = async () => {
   await engine.post("/auth/verify-email/resend");
 };
 
+/** Opens another of the user's workspaces. A full load, so nothing from the old one (its collections,
+ * drafts, runs) stays in memory. */
+export const switchWorkspace = (id: string) => {
+  setWorkspaceId(id);
+  // eslint-disable-next-line @next/next/no-location-assign-relative-destination
+  window.location.assign("/workspace");
+};
+
+export const listWorkspaces = async () => (await engine.get<WorkspaceInfo[]>("/workspaces")).data;
+
+export const createWorkspace = async (name: string) =>
+  (await engine.post<WorkspaceInfo>("/workspaces", { name } satisfies WorkspaceNameRequest)).data;
+
+export const renameWorkspace = async (id: string, name: string) => {
+  await engine.put(`/workspaces/${id}`, { name } satisfies WorkspaceNameRequest);
+};
+
+/** Deletes the workspace and everything in it, for every member. Admins only. */
+export const deleteWorkspace = async (id: string) => {
+  await engine.delete(`/workspaces/${id}`);
+};
+
+/** Members, and (for admins) invites not yet accepted. */
+export const listMembers = async (id: string) =>
+  (await engine.get<MembersResponse>(`/workspaces/${id}/members`)).data;
+
+/** Invites someone by email. The link comes back whether or not it was emailed. */
+export const inviteMember = async (id: string, req: InviteRequest) =>
+  (await engine.post<InviteCreated>(`/workspaces/${id}/invites`, req)).data;
+
+export const revokeInvite = async (id: string, inviteId: string) => {
+  await engine.delete(`/workspaces/${id}/invites/${inviteId}`);
+};
+
+export const setMemberRole = async (id: string, userId: string, role: Role) => {
+  await engine.put(`/workspaces/${id}/members/${userId}`, { role } satisfies SetRoleRequest);
+};
+
+/** An admin removing someone, or (with your own id) leaving. The last admin can't. */
+export const removeMember = async (id: string, userId: string) => {
+  await engine.delete(`/workspaces/${id}/members/${userId}`);
+};
+
+/** Joins the workspace an invite link is for. Only works signed in as the invited address. */
+export const acceptInvite = async (token: string) =>
+  (await engine.post<AcceptInviteResponse>("/invites/accept", { token })).data;
+
 /** Engine version and its caps (what runs may ask for). */
 export const getHealth = async () => (await engine.get<HealthResponse>("/health")).data;
 
@@ -190,8 +292,20 @@ export const getReportCsv = async (runId: string) =>
 
 export const getWorkspace = async () => (await engine.get<WorkspaceResponse>("/workspace")).data;
 
-export const putWorkspace = async (workspace: Workspace) => {
-  await engine.put("/workspace", workspace);
+/** Saves the workspace if nobody has saved since `baseRevision`; see `workspaceConflict` for when
+ * someone has. Returns the new revision. */
+export const putWorkspace = async (workspace: Workspace, baseRevision: number) =>
+  (
+    await engine.put<SaveWorkspaceResponse>("/workspace", workspace, {
+      params: { baseRevision },
+    })
+  ).data.revision;
+
+/** If a save was refused because someone else saved first, what the engine has now. */
+export const workspaceConflict = (err: unknown): WorkspaceConflict | null => {
+  if (!axios.isAxiosError(err) || err.response?.status !== 409) return null;
+  const body = err.response.data as Partial<WorkspaceConflict> | undefined;
+  return body?.code === "workspaceConflict" ? (body as WorkspaceConflict) : null;
 };
 
 /** Secrets are write-only: `value: null` deletes. */
@@ -246,6 +360,11 @@ export const unconfirmedHost = (err: unknown): string | null => {
  * The session cookie goes along as a cookie (open it with `withCredentials: true`). */
 export const runEventsUrl = (runId: string) =>
   `${engineUrl()}/api/runs/${runId}/events?token=${encodeURIComponent(token())}&workspace=${encodeURIComponent(workspaceId())}`;
+
+/** The workspace's revision stream (`GET /api/workspace/events`): announces every save. Same query
+ * params as `runEventsUrl`, for the same reason. */
+export const workspaceEventsUrl = () =>
+  `${engineUrl()}/api/workspace/events?token=${encodeURIComponent(token())}&workspace=${encodeURIComponent(workspaceId())}`;
 
 /** Sentence case: the engine writes its messages in lower case. */
 const sentence = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);

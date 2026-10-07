@@ -165,6 +165,17 @@ impl RunRegistry {
         runs
     }
 
+    /// Stops and forgets every run of `workspace`, which is being deleted.
+    pub fn cancel_workspace(&self, workspace: Uuid) {
+        self.runs.write().unwrap().retain(|_, run| {
+            let keep = run.workspace != workspace;
+            if !keep {
+                run.cancel.cancel();
+            }
+            keep
+        });
+    }
+
     pub fn evict_after(self: &Arc<Self>, id: Uuid, delay: Duration) {
         let registry = Arc::clone(self);
         tokio::spawn(async move {

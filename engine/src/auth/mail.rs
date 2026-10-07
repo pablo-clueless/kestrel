@@ -97,6 +97,22 @@ pub fn verification(to: &str, link: &str) -> Email {
     }
 }
 
+/// The subject stays fixed: the workspace name is chosen by whoever invites, so it only goes in
+/// the body, next to who sent it.
+/// `access` reads after the workspace name: "as an admin", "with write access", "with read access".
+pub fn invite(to: &str, inviter: &str, workspace: &str, access: &str, link: &str) -> Email {
+    Email {
+        to: to.to_owned(),
+        subject: "You're invited to a Kestrel workspace".into(),
+        body: format!(
+            "{inviter} invited you to the Kestrel workspace \"{workspace}\" {access}. To join, open \
+             this link and sign in (or create an account) with this email address:\n\n{link}\n\n\
+             The link works once and expires in 7 days. If you weren't expecting this, you can \
+             ignore this email.\n"
+        ),
+    }
+}
+
 pub fn password_reset(to: &str, link: &str) -> Email {
     Email {
         to: to.to_owned(),
