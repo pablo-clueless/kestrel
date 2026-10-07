@@ -24,7 +24,9 @@ usage: engine                        serve the API and UI
        engine import-sqlite [dir]    copy SQLite workspaces (<dir>/<id>/kestrel.db) into Postgres;
                                      dir defaults to $KESTREL_WORKSPACE_DIR/workspaces
        engine user add <email>       create an account (works with KESTREL_SIGNUP=closed); prints
-                                     a generated password once";
+                                     a generated password once
+       engine user reset-2fa <email> turn off two-factor sign-in for an account whose owner lost both
+                                     their authenticator and their recovery codes";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -42,6 +44,7 @@ async fn main() -> anyhow::Result<()> {
         ["import-sqlite"] => import_sqlite(None).await,
         ["import-sqlite", dir] => import_sqlite(Some(PathBuf::from(dir))).await,
         ["user", "add", email] => add_user(email).await,
+        ["user", "reset-2fa", email] => reset_two_factor(email).await,
         ["help" | "-h" | "--help"] => {
             println!("{USAGE}");
             Ok(())
@@ -88,6 +91,14 @@ async fn import_sqlite(dir: Option<PathBuf>) -> anyhow::Result<()> {
         tracing::error!("workspace {id}: {err:#}");
     }
     anyhow::ensure!(summary.failed.is_empty(), "{} workspace(s) failed to import", summary.failed.len());
+    Ok(())
+}
+
+async fn reset_two_factor(email: &str) -> anyhow::Result<()> {
+    let config = config::Config::from_env()?;
+    let db = connect(&config).await?;
+    auth::Accounts::new(db, &config).reset_two_factor(email).await?;
+    println!("two-factor sign-in is off for {email}; they sign in with their password and can turn it on again");
     Ok(())
 }
 

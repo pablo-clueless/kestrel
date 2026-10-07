@@ -74,7 +74,7 @@ fn aad(workspace: Uuid, environment: &str, key: &str) -> String {
     format!("{workspace}/{}:{environment}/{key}", environment.len())
 }
 
-fn decode_hex(hex: &str) -> anyhow::Result<Vec<u8>> {
+pub(crate) fn decode_hex(hex: &str) -> anyhow::Result<Vec<u8>> {
     anyhow::ensure!(hex.len().is_multiple_of(2), "odd number of hex characters");
     (0..hex.len())
         .step_by(2)

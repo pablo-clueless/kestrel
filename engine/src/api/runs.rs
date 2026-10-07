@@ -171,6 +171,21 @@ async fn prepare(state: &AppState, scope: &Scope, config: &RunConfig) -> Result<
                     .unwrap_or_default();
                 prepared = prepared.with_baseline(name, &echo).map_err(ApiError::BadRequest)?;
             }
+            if cfg.setup_endpoint_id.is_some() || cfg.teardown_endpoint_id.is_some() {
+                let state = async |id: Option<uuid::Uuid>| -> Result<Option<complexity::StateRequest>, ApiError> {
+                    let Some(id) = id else { return Ok(None) };
+                    let (request, _) = compile_endpoint(scope, id, cfg.environment.as_deref()).await?;
+                    let name = scope
+                        .store
+                        .workspace()
+                        .endpoint(id)
+                        .map(|e| if e.name.is_empty() { e.url.clone() } else { e.name.clone() })
+                        .unwrap_or_default();
+                    Ok(Some(complexity::StateRequest { name, request }))
+                };
+                let (setup, teardown) = (state(cfg.setup_endpoint_id).await?, state(cfg.teardown_endpoint_id).await?);
+                prepared = prepared.with_state(setup, teardown).map_err(ApiError::BadRequest)?;
+            }
             Ok(Prepared::Complexity(Box::new(prepared)))
         }
         RunConfig::Concurrency(cfg) => {

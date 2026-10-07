@@ -2,9 +2,13 @@
 
 import { Folder, RotateCcwClock, type LucideIcon } from "lucide-react";
 import Image from "next/image";
+import Link from "next/link";
+
+import { WORKSPACE_PATH } from "@/hooks/use-to-workspace";
 
 import { useLayoutStore, type SidebarTab } from "@/stores/layout-store";
 import { CollectionList, History } from "../workspace";
+import { WorkspaceSwitcher } from "./workspace-switcher";
 import { cn } from "cn";
 
 const IMAGE = "/assets/logo.png";
@@ -36,10 +40,15 @@ export const Sidebar = () => {
         )}
       >
         <div className="flex h-14 shrink-0 items-center gap-2 border-b px-4 font-semibold">
-          <div className="relative aspect-[4.2/1] w-1/3">
+          <Link
+            href={WORKSPACE_PATH}
+            aria-label="Kestrel: go to the workspace"
+            className="relative aspect-[4.2/1] w-1/3"
+          >
             <Image alt="Kestrel" className="" fill src={IMAGE} />
-          </div>
+          </Link>
         </div>
+        <WorkspaceSwitcher />
         <div role="tablist" aria-label="Sidebar" className="flex shrink-0">
           {TABS.map(({ id, label, icon: Icon }) => (
             <button
