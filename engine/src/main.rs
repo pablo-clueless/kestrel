@@ -175,11 +175,33 @@ async fn serve() -> anyhow::Result<()> {
 
     // With the peer address, for per-IP sign-in rate limits.
     axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
-        })
+        .with_graceful_shutdown(shutdown_signal())
         .await?;
     Ok(())
+}
+
+/// Ctrl-C, or SIGTERM on Unix. Platforms (Render, Fly, `docker stop`) stop the container with
+/// SIGTERM, and as PID 1 the engine would otherwise ignore it until the SIGKILL.
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        match signal(SignalKind::terminate()) {
+            Ok(mut term) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = term.recv() => {}
+                }
+            }
+            Err(_) => {
+                let _ = tokio::signal::ctrl_c().await;
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }
 
 /// Binds `addr`. An IPv6 address also accepts IPv4 on every OS: Linux does this by default, Windows
@@ -187,6 +209,11 @@ async fn serve() -> anyhow::Result<()> {
 fn listen(addr: SocketAddr) -> std::io::Result<tokio::net::TcpListener> {
     use socket2::{Domain, Socket, Type};
     let socket = Socket::new(Domain::for_address(addr), Type::STREAM, None)?;
+    // What std's `TcpListener::bind` does on Unix: without it, a restart fails with "Address already
+    // in use" while the previous process's connections sit in TIME_WAIT. Not on Windows, where
+    // SO_REUSEADDR lets another process take a port that is in use.
+    #[cfg(unix)]
+    socket.set_reuse_address(true)?;
     if addr.is_ipv6() {
         socket.set_only_v6(false)?;
     }
