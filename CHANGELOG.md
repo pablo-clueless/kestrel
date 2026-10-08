@@ -453,6 +453,11 @@ No version has been tagged yet (engine and UI are both `0.1.0`), so the entries 
   "next/font/google queries have exactly one entry", which came from Turbopack's Google Fonts loader
   when it handled JetBrains Mono. DM Sans and JetBrains Mono now ship with the UI as variable latin
   `.woff2` files in `kestrel/src/app/fonts/`, so the build no longer fetches from Google.
+- **The engine restarts cleanly in a container.** A restart on Render failed with "Address already
+  in use (os error 98)": the engine opened its port without `SO_REUSEADDR`, so the previous
+  process's connections blocked it. The engine now sets that option on Linux and macOS, as Rust's
+  standard listener does. It also stops on SIGTERM, which Render, Fly and `docker stop` send;
+  before, it only stopped on Ctrl-C and ignored SIGTERM until it was force-killed.
 - **Big-O works for GET requests again.** The Run panel disabled Big-O for GET, HEAD, OPTIONS and
   DELETE requests, on the grounds that they have no body. But the size can go in the URL or query
   too, for example `?limit={{n}}`, and the engine has always accepted that.
