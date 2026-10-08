@@ -449,6 +449,10 @@ No version has been tagged yet (engine and UI are both `0.1.0`), so the entries 
 
 ### Fixed
 
+- **The Docker image builds again.** `pnpm build` failed on a clean build (Render, for one) with
+  "next/font/google queries have exactly one entry", which came from Turbopack's Google Fonts loader
+  when it handled JetBrains Mono. DM Sans and JetBrains Mono now ship with the UI as variable latin
+  `.woff2` files in `kestrel/src/app/fonts/`, so the build no longer fetches from Google.
 - **Big-O works for GET requests again.** The Run panel disabled Big-O for GET, HEAD, OPTIONS and
   DELETE requests, on the grounds that they have no body. But the size can go in the URL or query
   too, for example `?limit={{n}}`, and the engine has always accepted that.
