@@ -1,20 +1,26 @@
-import { DM_Sans, JetBrains_Mono } from "next/font/google";
 import { ThemeProvider } from "next-themes";
+import localFont from "next/font/local";
 import type { Metadata } from "next";
 
 import { Providers } from "@/components/providers";
 import { Toaster } from "@/components/ui/sonner";
 import "./globals.css";
 
-const dm_sans = DM_Sans({
-  subsets: ["latin"],
+// Self-hosted (latin subset, variable weight) rather than next/font/google: Turbopack's Google font
+// loader failed clean Docker builds ("next/font/google queries have exactly one entry"), and this
+// keeps the build off the network.
+const dm_sans = localFont({
+  src: "./fonts/dm-sans-latin.woff2",
   variable: "--font-dm-sans",
+  weight: "100 1000",
+  display: "swap",
 });
 
-const jetbrains_mono = JetBrains_Mono({
-  subsets: ["latin"],
+const jetbrains_mono = localFont({
+  src: "./fonts/jetbrains-mono-latin.woff2",
   variable: "--font-jetbrains-mono",
-  weight: ["400", "700"],
+  weight: "100 800",
+  display: "swap",
 });
 
 export const metadata: Metadata = {
