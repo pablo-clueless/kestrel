@@ -165,6 +165,11 @@ impl RunRegistry {
         runs
     }
 
+    /// Runs still going, across every workspace (the admin overview).
+    pub fn running(&self) -> usize {
+        self.runs.read().unwrap().values().filter(|r| matches!(r.status(), RunStatus::Running)).count()
+    }
+
     /// Stops and forgets every run of `workspace`, which is being deleted.
     pub fn cancel_workspace(&self, workspace: Uuid) {
         self.runs.write().unwrap().retain(|_, run| {

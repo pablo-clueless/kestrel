@@ -18,6 +18,7 @@
 //!   (`api::scope`), and the engine warns at startup when it connects as a superuser.
 
 pub mod accounts;
+pub mod admin;
 pub mod crypto;
 pub mod import_sqlite;
 pub mod teams;
@@ -137,6 +138,12 @@ const AUTH_MIGRATIONS: &[&str] = &[
         attempts int NOT NULL DEFAULT 0,
         expires_at timestamptz NOT NULL
     );
+    "#,
+    // 7: a display name (optional; the UI falls back to the email), and disabling an account from
+    // the admin pages: a disabled account can't sign in, and its sessions are ended when it's set.
+    r#"
+    ALTER TABLE auth.users ADD COLUMN name text;
+    ALTER TABLE auth.users ADD COLUMN disabled_at timestamptz;
     "#,
 ];
 

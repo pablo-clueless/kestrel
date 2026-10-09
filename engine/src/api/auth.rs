@@ -15,8 +15,9 @@ use axum::{
 use super::AppState;
 use crate::{
     auth::{
-        AuthRequest, AuthedUser, ChangePasswordRequest, Client, LoginOutcome, MeResponse, PasswordResetConfirm,
-        PasswordResetRequest, SessionInfo, VerifyEmailRequest, session,
+        AuthRequest, AuthedUser, ChangePasswordRequest, Client, DeleteAccountRequest, LoginOutcome, MeResponse,
+        PasswordResetConfirm, PasswordResetRequest, ProfileRequest, SessionInfo, SessionsEnded, VerifyEmailRequest,
+        session,
         two_factor::{
             RecoveryCodes, TwoFactorChallenge, TwoFactorCode, TwoFactorConfirm, TwoFactorLogin, TwoFactorSetup,
             TwoFactorSetupRequest, TwoFactorStatus,
@@ -242,6 +243,36 @@ pub async fn revoke_session(
 ) -> Result<StatusCode, ApiError> {
     state.accounts.revoke_session(&signed.user, &id).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Signs out every session but this one.
+pub async fn sign_out_others(State(state): State<AppState>, signed: SignedIn) -> Result<Json<SessionsEnded>, ApiError> {
+    let ended = state.accounts.sign_out_others(&signed.user, &signed.token).await?;
+    Ok(Json(SessionsEnded { ended: ended as u32 }))
+}
+
+pub async fn set_profile(
+    State(state): State<AppState>,
+    signed: SignedIn,
+    Json(req): Json<ProfileRequest>,
+) -> Result<StatusCode, ApiError> {
+    state.accounts.set_name(&signed.user, &req.name).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Deletes the signed-in account (and the workspaces only it was in, whose runs are stopped and
+/// stores dropped), and clears the cookie: its session went with it.
+pub async fn delete_account(
+    State(state): State<AppState>,
+    caller: Caller,
+    signed: SignedIn,
+    Json(req): Json<DeleteAccountRequest>,
+) -> Result<Response, ApiError> {
+    for workspace in state.accounts.delete_account(&signed.user, req).await? {
+        state.runs.cancel_workspace(workspace);
+        state.workspaces.forget(workspace);
+    }
+    Ok((StatusCode::NO_CONTENT, [(header::SET_COOKIE, session::clear_cookie(caller.https))]).into_response())
 }
 
 fn accounts_on(state: &AppState) -> Result<(), ApiError> {
