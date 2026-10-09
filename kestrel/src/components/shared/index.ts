@@ -1,5 +1,6 @@
 export * from "./auth-gate";
 export * from "./card";
+export * from "./confirm-button";
 export * from "./header";
 export * from "./loader";
 export * from "./method-badge";
