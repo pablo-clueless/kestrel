@@ -14,6 +14,8 @@ pub struct UserRow {
     pub email_verified: bool,
     /// Signing in needs a code after the password.
     pub two_factor: bool,
+    /// Disabled from the admin pages: can't sign in.
+    pub disabled: bool,
 }
 
 /// The user behind a valid session.
@@ -22,6 +24,7 @@ pub struct SessionUser {
     pub user_id: Uuid,
     pub email: String,
     pub email_verified: bool,
+    pub name: Option<String>,
     /// Whether `last_seen_at` is old enough to be bumped (at most once a minute).
     pub stale: bool,
 }
@@ -59,18 +62,20 @@ pub enum CreateUser {
 
 impl Db {
     pub async fn user_by_email(&self, email: &str) -> anyhow::Result<Option<UserRow>> {
-        let row: Option<(Uuid, String, bool, bool)> = sqlx::query_as(self.auth_sql(
-            "SELECT id, password_hash, email_verified_at IS NOT NULL, totp_enabled_at IS NOT NULL
+        let row: Option<(Uuid, String, bool, bool, bool)> = sqlx::query_as(self.auth_sql(
+            "SELECT id, password_hash, email_verified_at IS NOT NULL, totp_enabled_at IS NOT NULL,
+                    disabled_at IS NOT NULL
              FROM auth.users WHERE email = $1",
         ))
         .bind(email)
         .fetch_optional(&self.pool)
         .await?;
-        Ok(row.map(|(id, password_hash, email_verified, two_factor)| UserRow {
+        Ok(row.map(|(id, password_hash, email_verified, two_factor, disabled)| UserRow {
             id,
             password_hash,
             email_verified,
             two_factor,
+            disabled,
         }))
     }
 
@@ -213,18 +218,25 @@ impl Db {
         Ok(())
     }
 
-    /// The live session with this hash, if any. Expired sessions count as absent.
+    /// The live session with this hash, if any. Expired sessions, and those of a disabled account
+    /// (ended when it's disabled, but checked here too), count as absent.
     pub async fn session(&self, id_hash: &[u8]) -> anyhow::Result<Option<SessionUser>> {
-        let row: Option<(Uuid, String, bool, bool)> = sqlx::query_as(self.auth_sql(
-            "SELECT s.user_id, u.email, u.email_verified_at IS NOT NULL,
+        let row: Option<(Uuid, String, bool, Option<String>, bool)> = sqlx::query_as(self.auth_sql(
+            "SELECT s.user_id, u.email, u.email_verified_at IS NOT NULL, u.name,
                     s.last_seen_at < now() - interval '1 minute'
              FROM auth.sessions s JOIN auth.users u ON u.id = s.user_id
-             WHERE s.id_hash = $1 AND s.expires_at > now()",
+             WHERE s.id_hash = $1 AND s.expires_at > now() AND u.disabled_at IS NULL",
         ))
         .bind(id_hash)
         .fetch_optional(&self.pool)
         .await?;
-        Ok(row.map(|(user_id, email, email_verified, stale)| SessionUser { user_id, email, email_verified, stale }))
+        Ok(row.map(|(user_id, email, email_verified, name, stale)| SessionUser {
+            user_id,
+            email,
+            email_verified,
+            name,
+            stale,
+        }))
     }
 
     /// Slides a session's expiry forward to `lifetime` from now.
@@ -248,12 +260,24 @@ impl Db {
         Ok(())
     }
 
-    /// A user's email and whether it's verified, by id.
-    pub async fn user_by_id(&self, user: Uuid) -> anyhow::Result<Option<(String, bool)>> {
-        Ok(sqlx::query_as(self.auth_sql("SELECT email, email_verified_at IS NOT NULL FROM auth.users WHERE id = $1"))
+    /// A user's email, whether it's verified, and their name, by id. A disabled account counts as absent.
+    pub async fn user_by_id(&self, user: Uuid) -> anyhow::Result<Option<(String, bool, Option<String>)>> {
+        Ok(sqlx::query_as(self.auth_sql(
+            "SELECT email, email_verified_at IS NOT NULL, name FROM auth.users WHERE id = $1 AND disabled_at IS NULL",
+        ))
+        .bind(user)
+        .fetch_optional(&self.pool)
+        .await?)
+    }
+
+    /// Sets (or with `None` clears) the user's display name.
+    pub async fn set_name(&self, user: Uuid, name: Option<&str>) -> anyhow::Result<()> {
+        sqlx::query(self.auth_sql("UPDATE auth.users SET name = $2 WHERE id = $1"))
             .bind(user)
-            .fetch_optional(&self.pool)
-            .await?)
+            .bind(name)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 
     pub async fn password_hash(&self, user: Uuid) -> anyhow::Result<Option<String>> {
@@ -329,6 +353,16 @@ impl Db {
             .execute(&self.pool)
             .await?;
         Ok(deleted.rows_affected() == 1)
+    }
+
+    /// Ends every session of `user` but `keep`. How many ended.
+    pub async fn delete_other_sessions(&self, user: Uuid, keep: &[u8]) -> anyhow::Result<u64> {
+        Ok(sqlx::query(self.auth_sql("DELETE FROM auth.sessions WHERE user_id = $1 AND id_hash <> $2"))
+            .bind(user)
+            .bind(keep)
+            .execute(&self.pool)
+            .await?
+            .rows_affected())
     }
 
     /// Deletes sessions that have expired. They're already refused; this only reclaims the rows.

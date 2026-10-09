@@ -42,7 +42,7 @@ pub struct WorkspaceInfo {
 }
 
 impl WorkspaceInfo {
-    fn of(row: WorkspaceRow) -> Self {
+    pub(super) fn of(row: WorkspaceRow) -> Self {
         let name = row.name.unwrap_or_else(|| match row.admin_emails.first().and_then(|e| e.split('@').next()) {
             Some(admin) => format!("{admin}'s workspace"),
             None => "Workspace".into(),
@@ -57,6 +57,8 @@ impl WorkspaceInfo {
 pub struct MemberInfo {
     pub user_id: Uuid,
     pub email: String,
+    /// Their display name, if they've set one.
+    pub name: Option<String>,
     pub role: Role,
     #[ts(type = "number")]
     pub joined_at_ms: i64,
@@ -222,6 +224,7 @@ impl Accounts {
                     you: m.user_id == user.id,
                     user_id: m.user_id,
                     email: m.email,
+                    name: m.name,
                     role: m.role,
                     joined_at_ms: m.joined_at_ms,
                 })
@@ -260,8 +263,13 @@ impl Accounts {
             && self.mail_per_address.check(&email).is_ok()
         {
             let name = self.workspaces(user).await?.into_iter().find(|w| w.id == workspace).map(|w| w.name);
+            // "Ada Lovelace (ada@example.com)" once they've set a name: the address alone is less familiar.
+            let inviter = match &user.name {
+                Some(name) => format!("{name} ({})", user.email),
+                None => user.email.clone(),
+            };
             let message =
-                mail::invite(&email, &user.email, name.as_deref().unwrap_or("Workspace"), access(req.role), &link);
+                mail::invite(&email, &inviter, name.as_deref().unwrap_or("Workspace"), access(req.role), &link);
             match mailer.send(message).await {
                 Ok(()) => emailed = true,
                 Err(err) => tracing::warn!("couldn't email the invite to {email}: {err:#}"),
