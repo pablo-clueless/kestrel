@@ -29,6 +29,15 @@ import type { SendResponse } from "@/types/engine/SendResponse";
 import type { AuthRequest } from "@/types/engine/AuthRequest";
 import type { SentRequest } from "@/types/engine/SentRequest";
 import type { SessionInfo } from "@/types/engine/SessionInfo";
+import type { SessionsEnded } from "@/types/engine/SessionsEnded";
+import type { DeleteAccountRequest } from "@/types/engine/DeleteAccountRequest";
+import type { ProfileRequest } from "@/types/engine/ProfileRequest";
+import type { AdminOverview } from "@/types/engine/AdminOverview";
+import type { AdminSettings } from "@/types/engine/AdminSettings";
+import type { AdminUser } from "@/types/engine/AdminUser";
+import type { AdminWorkspace } from "@/types/engine/AdminWorkspace";
+import type { MemberInfo } from "@/types/engine/MemberInfo";
+import type { SetDisabledRequest } from "@/types/engine/SetDisabledRequest";
 import type { MeResponse } from "@/types/engine/MeResponse";
 import type { RunSummary } from "@/types/engine/RunSummary";
 import type { TryRequest } from "@/types/engine/TryRequest";
@@ -123,11 +132,15 @@ engine.interceptors.response.use(undefined, (err) => {
   }
   // Removed from the current workspace (or it was deleted) by someone else. Reloading asks
   // `/auth/me` again, which falls back to the user's default workspace. Routes that name a
-  // workspace in the path report their own 404s.
+  // workspace in the path (the admin pages' too) report their own 404s.
   const body = axios.isAxiosError(err)
     ? (err.response?.data as { error?: string } | undefined)
     : undefined;
-  if (body?.error === "workspace not found" && !url.startsWith("/workspaces")) {
+  if (
+    body?.error === "workspace not found" &&
+    !url.startsWith("/workspaces") &&
+    !url.startsWith("/admin/")
+  ) {
     // eslint-disable-next-line @next/next/no-location-assign-relative-destination
     window.location.assign("/workspace");
   }
@@ -199,6 +212,20 @@ export const revokeSession = async (id: string) => {
   await engine.delete(`/auth/sessions/${id}`);
 };
 
+/** Signs out every device but this one. How many were signed out. */
+export const signOutOtherSessions = async () =>
+  (await engine.delete<SessionsEnded>("/auth/sessions")).data.ended;
+
+/** Sets the display name; an empty one clears it. */
+export const setProfile = async (req: ProfileRequest) => {
+  await engine.put("/auth/profile", req);
+};
+
+/** Deletes the account (and the workspaces only it was in). Signed out afterwards. */
+export const deleteAccount = async (req: DeleteAccountRequest) => {
+  await engine.post("/auth/delete-account", req);
+};
+
 /** Emails a reset link if the address has an account. Succeeds either way, so it doesn't say. */
 export const requestPasswordReset = async (email: string) => {
   await engine.post("/auth/password-reset", { email });
@@ -265,6 +292,44 @@ export const removeMember = async (id: string, userId: string) => {
 /** Joins the workspace an invite link is for. Only works signed in as the invited address. */
 export const acceptInvite = async (token: string) =>
   (await engine.post<AcceptInviteResponse>("/invites/accept", { token })).data;
+
+// Admin pages (`KESTREL_ADMIN_EMAILS` only): every user and workspace on this engine.
+
+export const adminOverview = async () => (await engine.get<AdminOverview>("/admin/overview")).data;
+
+export const adminSettings = async () => (await engine.get<AdminSettings>("/admin/settings")).data;
+
+export const adminUsers = async () => (await engine.get<AdminUser[]>("/admin/users")).data;
+
+export const adminVerifyEmail = async (id: string) => {
+  await engine.post(`/admin/users/${id}/verify-email`);
+};
+
+export const adminResetTwoFactor = async (id: string) => {
+  await engine.post(`/admin/users/${id}/2fa/reset`);
+};
+
+/** Signs the user out everywhere. How many sessions ended. */
+export const adminSignOutUser = async (id: string) =>
+  (await engine.post<SessionsEnded>(`/admin/users/${id}/sign-out`)).data.ended;
+
+export const adminSetDisabled = async (id: string, disabled: boolean) => {
+  await engine.put(`/admin/users/${id}/disabled`, { disabled } satisfies SetDisabledRequest);
+};
+
+export const adminDeleteUser = async (id: string) => {
+  await engine.delete(`/admin/users/${id}`);
+};
+
+export const adminWorkspaces = async () =>
+  (await engine.get<AdminWorkspace[]>("/admin/workspaces")).data;
+
+export const adminWorkspaceMembers = async (id: string) =>
+  (await engine.get<MemberInfo[]>(`/admin/workspaces/${id}/members`)).data;
+
+export const adminDeleteWorkspace = async (id: string) => {
+  await engine.delete(`/admin/workspaces/${id}`);
+};
 
 /** Engine version and its caps (what runs may ask for). */
 export const getHealth = async () => (await engine.get<HealthResponse>("/health")).data;

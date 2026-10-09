@@ -1,6 +1,6 @@
 "use client";
 
-import { LogOut, Settings, User } from "lucide-react";
+import { LogOut, Settings, ShieldCheck, User } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
 import { toast } from "sonner";
@@ -27,6 +27,7 @@ export const LoggUser = () => {
   const [signingOut, setSigningOut] = useState(false);
   const user = useMe().data?.user;
   if (!user) return null;
+  const label = user.name ?? user.email;
 
   const onSignOut = async () => {
     setSigningOut(true);
@@ -48,17 +49,19 @@ export const LoggUser = () => {
           <Button
             variant="outline"
             size="icon"
-            aria-label={`Account: ${user.email}`}
-            title={user.email}
+            aria-label={`Account: ${label}`}
+            title={label}
             className="font-semibold uppercase"
           />
         }
       >
-        {user.email.charAt(0)}
+        {label.charAt(0)}
       </PopoverTrigger>
       <PopoverContent align="end" className="w-60 gap-0 p-0">
         <PopoverHeader className="border-b px-2.5 py-2">
-          <PopoverTitle className="text-sm">Signed in as</PopoverTitle>
+          <PopoverTitle className="truncate text-sm" title={user.name ?? undefined}>
+            {user.name ?? "Signed in as"}
+          </PopoverTitle>
           <PopoverDescription className="truncate" title={user.email}>
             {user.email}
           </PopoverDescription>
@@ -70,6 +73,11 @@ export const LoggUser = () => {
           <Link href="/settings" className={item} onClick={() => setOpen(false)}>
             <Settings className="size-3.5" /> Settings
           </Link>
+          {user.admin && (
+            <Link href="/admin/overview" className={item} onClick={() => setOpen(false)}>
+              <ShieldCheck className="size-3.5" /> Admin
+            </Link>
+          )}
           <button
             type="button"
             className={cn(item, "border-t text-red-700 dark:text-red-400")}
