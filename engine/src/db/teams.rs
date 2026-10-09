@@ -4,7 +4,7 @@
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use sqlx::{AssertSqlSafe, Executor};
+use sqlx::{AssertSqlSafe, Executor, Postgres, Transaction};
 use ts_rs::TS;
 use uuid::Uuid;
 
@@ -59,6 +59,7 @@ pub struct WorkspaceRow {
 pub struct MemberRow {
     pub user_id: Uuid,
     pub email: String,
+    pub name: Option<String>,
     pub role: Role,
     pub joined_at_ms: i64,
 }
@@ -78,6 +79,15 @@ pub enum MemberChange {
     NotMember,
     /// Refused: it would leave the workspace without an admin.
     LastAdmin,
+}
+
+/// What deleting an account came to.
+pub enum DeleteUser {
+    /// Gone, with these workspaces (it was their only member).
+    Deleted(Vec<Uuid>),
+    /// Refused: it's the only admin of these workspaces, which have other members.
+    LastAdmin(Vec<Uuid>),
+    NotFound,
 }
 
 /// What following an invite link came to.
@@ -161,23 +171,75 @@ impl Db {
     /// Deletes the workspace and all of its data: its registry row (memberships and invites go with
     /// it) and its schema, in one transaction.
     pub async fn delete_workspace(&self, workspace: Uuid) -> anyhow::Result<()> {
-        let schema = self.schema_of(workspace);
         let mut tx = self.begin().await?;
-        // The same lock `ensure_workspace_in` takes, so a concurrent open can't recreate it halfway.
-        sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))").bind(&schema).execute(&mut *tx).await?;
-        sqlx::query(self.auth_sql("DELETE FROM auth.workspaces WHERE id = $1"))
-            .bind(workspace)
-            .execute(&mut *tx)
-            .await?;
-        tx.execute(AssertSqlSafe(format!("DROP SCHEMA IF EXISTS {} CASCADE", quote_ident(&schema)))).await?;
+        self.delete_workspace_in(&mut tx, workspace).await?;
         tx.commit().await?;
         Ok(())
     }
 
+    async fn delete_workspace_in(
+        &self,
+        tx: &mut Transaction<'static, Postgres>,
+        workspace: Uuid,
+    ) -> anyhow::Result<()> {
+        let schema = self.schema_of(workspace);
+        // The same lock `ensure_workspace_in` takes, so a concurrent open can't recreate it halfway.
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))").bind(&schema).execute(&mut **tx).await?;
+        sqlx::query(self.auth_sql("DELETE FROM auth.workspaces WHERE id = $1"))
+            .bind(workspace)
+            .execute(&mut **tx)
+            .await?;
+        tx.execute(AssertSqlSafe(format!("DROP SCHEMA IF EXISTS {} CASCADE", quote_ident(&schema)))).await?;
+        Ok(())
+    }
+
+    /// Deletes an account, in one transaction. Workspaces where it's the only member go with it
+    /// (their data too). Refused if it's the only admin of a workspace others are in, since that
+    /// would leave them without one: those workspaces come back in [`DeleteUser::LastAdmin`].
+    /// Sessions, memberships, links and recovery codes go by cascade; invites it sent stay valid.
+    pub async fn delete_user(&self, user: Uuid) -> anyhow::Result<DeleteUser> {
+        let mut tx = self.begin().await?;
+        // Its workspaces' rows, locked, so nobody joins or is promoted while this decides.
+        let rows: Vec<(Uuid, String, i64, i64)> = sqlx::query_as(self.auth_sql(
+            "SELECT w.id, m.role,
+                    (SELECT count(*) FROM auth.memberships c WHERE c.workspace_id = w.id),
+                    (SELECT count(*) FROM auth.memberships a WHERE a.workspace_id = w.id AND a.role = 'admin')
+             FROM auth.workspaces w JOIN auth.memberships m ON m.workspace_id = w.id
+             WHERE m.user_id = $1
+             ORDER BY w.id
+             FOR UPDATE OF w",
+        ))
+        .bind(user)
+        .fetch_all(&mut *tx)
+        .await?;
+        let blocked: Vec<Uuid> = rows
+            .iter()
+            .filter(|(_, role, members, admins)| role == "admin" && *admins <= 1 && *members > 1)
+            .map(|(id, ..)| *id)
+            .collect();
+        if !blocked.is_empty() {
+            return Ok(DeleteUser::LastAdmin(blocked));
+        }
+        let alone: Vec<Uuid> = rows.iter().filter(|(.., members, _)| *members <= 1).map(|(id, ..)| *id).collect();
+        for &workspace in &alone {
+            self.delete_workspace_in(&mut tx, workspace).await?;
+        }
+        let deleted = sqlx::query(self.auth_sql("DELETE FROM auth.users WHERE id = $1"))
+            .bind(user)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        if deleted == 0 {
+            return Ok(DeleteUser::NotFound);
+        }
+        tx.commit().await?;
+        Ok(DeleteUser::Deleted(alone))
+    }
+
     /// The workspace's members, admins first, then in the order they joined.
     pub async fn members(&self, workspace: Uuid) -> anyhow::Result<Vec<MemberRow>> {
-        let rows: Vec<(Uuid, String, String, i64)> = sqlx::query_as(self.auth_sql(
-            "SELECT u.id, u.email, m.role, (extract(epoch FROM m.created_at) * 1000)::bigint
+        let rows: Vec<(Uuid, String, Option<String>, String, i64)> = sqlx::query_as(self.auth_sql(
+            "SELECT u.id, u.email, u.name, m.role, (extract(epoch FROM m.created_at) * 1000)::bigint
              FROM auth.memberships m JOIN auth.users u ON u.id = m.user_id
              WHERE m.workspace_id = $1
              ORDER BY m.role <> 'admin', m.created_at, u.email",
@@ -186,8 +248,8 @@ impl Db {
         .fetch_all(&self.pool)
         .await?;
         rows.into_iter()
-            .map(|(user_id, email, role, joined_at_ms)| {
-                Ok(MemberRow { user_id, email, role: Role::parse(&role)?, joined_at_ms })
+            .map(|(user_id, email, name, role, joined_at_ms)| {
+                Ok(MemberRow { user_id, email, name, role: Role::parse(&role)?, joined_at_ms })
             })
             .collect()
     }

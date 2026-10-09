@@ -6,18 +6,17 @@ import { useTheme } from "next-themes";
 import Link from "next/link";
 
 import { WORKSPACE_PATH } from "@/hooks/use-to-workspace";
-
 import { useLayoutStore } from "@/stores/layout-store";
 import { EnvironmentBar } from "../workspace";
 import { MethodBadge } from "./method-badge";
 import { Button } from "../ui/button";
+import { LoggUser } from "./user";
+import { cn } from "cn";
 import {
   useActiveCollection,
   useSelectedEndpoint,
   useSelectedIsDraft,
 } from "@/stores/workspace-store";
-import { LoggUser } from "./user";
-import { cn } from "cn";
 
 const Theme = ({
   theme,
@@ -45,7 +44,8 @@ export const Header = () => {
   const sidebarOpen = useLayoutStore((s) => s.sidebarOpen);
   const collection = useActiveCollection();
   const endpoint = useSelectedEndpoint();
-  const { setTheme, theme } = useTheme();
+  // Resolved, so "system" toggles from whatever it's showing now.
+  const { setTheme, resolvedTheme: theme } = useTheme();
   const isDraft = useSelectedIsDraft();
   // Settings and Profile share this header; there, the way back replaces the breadcrumb.
   const onWorkspace = usePathname() === WORKSPACE_PATH;

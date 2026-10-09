@@ -4,4 +4,12 @@ export type UserInfo = { id: string, email: string,
 /**
  * Whether the user has followed a verification (or password reset) link.
  */
-emailVerified: boolean, };
+emailVerified: boolean, 
+/**
+ * Their display name, if they've set one. The UI shows the email otherwise.
+ */
+name: string | null, 
+/**
+ * Listed in `KESTREL_ADMIN_EMAILS`: may use the admin pages.
+ */
+admin: boolean, };

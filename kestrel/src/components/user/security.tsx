@@ -6,13 +6,20 @@ import { Laptop, Smartphone } from "lucide-react";
 import { toast } from "sonner";
 import { z } from "zod";
 
-import { changePassword, errorMessage, listSessions, revokeSession } from "@/lib/client";
+import {
+  changePassword,
+  errorMessage,
+  listSessions,
+  revokeSession,
+  signOutOtherSessions,
+} from "@/lib/client";
 import { PASSWORD_MAX, PASSWORD_MESSAGE, PASSWORD_MIN } from "@/config/string";
 import type { SessionInfo } from "@/types/engine/SessionInfo";
 import { useMe } from "@/hooks/use-me";
+import { relative } from "@/lib/format";
 import { Form } from "../form";
 import { Button } from "../ui/button";
-import { TabPanel } from "../shared";
+import { ConfirmButton, TabPanel } from "../shared";
 import { TwoFactor } from "./two-factor";
 
 interface Props {
@@ -27,7 +34,7 @@ export const Security = ({ selected }: Props) => {
 
   return (
     <TabPanel selected={selected} value="security">
-      <div className="bg-background flex h-[calc(100%-36px)] flex-col gap-4 p-5">
+      <div className="bg-background flex h-[calc(100%-36px)] flex-col gap-4 overflow-y-auto p-5">
         {accountsOn ? (
           <>
             <ChangePassword />
@@ -138,14 +145,38 @@ const Sessions = () => {
     },
     onError: (err) => toast.error(errorMessage(err)),
   });
+  const revokeOthers = useMutation({
+    mutationFn: signOutOtherSessions,
+    onSuccess: (ended) => {
+      toast.success(`Signed out ${ended} other ${ended === 1 ? "device" : "devices"}.`);
+      void queryClient.invalidateQueries({ queryKey: SESSIONS_KEY });
+    },
+    onError: (err) => toast.error(errorMessage(err)),
+  });
+  const others = sessions.data?.filter((s) => !s.current).length ?? 0;
 
   return (
     <section className="flex flex-col gap-4">
-      <div>
-        <h2 className="text-sm font-semibold">Where you&apos;re signed in</h2>
-        <p className="text-muted-foreground text-sm">
-          Sign out anything you don&apos;t recognise, then change your password.
-        </p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h2 className="text-sm font-semibold">Where you&apos;re signed in</h2>
+          <p className="text-muted-foreground text-sm">
+            Sign out anything you don&apos;t recognise, then change your password.
+          </p>
+        </div>
+        {others > 0 && (
+          <ConfirmButton
+            variant="outline"
+            size="sm"
+            className="shrink-0"
+            pending={revokeOthers.isPending}
+            pendingLabel="Signing out…"
+            confirmLabel={`Sign out ${others} ${others === 1 ? "device" : "devices"}?`}
+            onConfirm={() => revokeOthers.mutate()}
+          >
+            Sign out everywhere else
+          </ConfirmButton>
+        )}
       </div>
       {sessions.isPending ? (
         <p className="text-muted-foreground text-sm">Loading…</p>
@@ -233,20 +264,4 @@ const describeDevice = (ua: string | null) => {
     label: os ? `${browser} on ${os}` : String(browser),
     mobile: /Mobi|iPhone|Android/.test(ua),
   };
-};
-
-const relativeFormat = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
-
-/** "5 minutes ago", "yesterday". */
-const relative = (ms: number) => {
-  const seconds = Math.round((ms - Date.now()) / 1000);
-  const units: [Intl.RelativeTimeFormatUnit, number][] = [
-    ["day", 86_400],
-    ["hour", 3_600],
-    ["minute", 60],
-  ];
-  for (const [unit, size] of units) {
-    if (Math.abs(seconds) >= size) return relativeFormat.format(Math.round(seconds / size), unit);
-  }
-  return "just now";
 };
