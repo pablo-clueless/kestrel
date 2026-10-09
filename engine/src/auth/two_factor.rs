@@ -125,9 +125,10 @@ impl Accounts {
             return Err(BAD_CODE);
         }
         self.db.delete_login_challenge(&hash).await.map_err(internal)?;
-        let (email, email_verified) = self.db.user_by_id(user).await.map_err(internal)?.ok_or(EXPIRED)?;
+        // A disabled account reads as absent here, so one disabled mid-sign-in gets no session.
+        let (email, email_verified, name) = self.db.user_by_id(user).await.map_err(internal)?.ok_or(EXPIRED)?;
         self.db.ensure_user_workspace(user, None).await.map_err(internal)?;
-        self.start_session(AuthedUser { id: user, email, email_verified }, client).await
+        self.start_session(AuthedUser { id: user, email, email_verified, name }, client).await
     }
 
     /// A new, unconfirmed secret. Needs the password; refused while two-factor is on (turn it off
@@ -204,7 +205,7 @@ impl Accounts {
     }
 
     /// Checks the current password, with the per-account limit password changes use.
-    async fn confirm_password(&self, user: &AuthedUser, given: String) -> Result<(), ApiError> {
+    pub(super) async fn confirm_password(&self, user: &AuthedUser, given: String) -> Result<(), ApiError> {
         self.password_changes.check(&user.id.to_string()).map_err(ApiError::TooManyRequests)?;
         let stored = self.db.password_hash(user.id).await.map_err(internal)?;
         if password::verify(given, stored).await {
@@ -216,7 +217,7 @@ impl Accounts {
 
     /// Whether `code` is a current authenticator code (not used before) or an unused recovery code
     /// for `user`, using it up if so. Limited per account, whatever the challenge or session.
-    async fn check_code(&self, user: Uuid, code: &str) -> Result<bool, ApiError> {
+    pub(super) async fn check_code(&self, user: Uuid, code: &str) -> Result<bool, ApiError> {
         self.two_factor_attempts.check(&user.to_string()).map_err(ApiError::TooManyRequests)?;
         if totp::looks_like_recovery_code(code) {
             let used = self.db.use_recovery_code(user, &totp::hash_recovery_code(code)).await.map_err(internal)?;

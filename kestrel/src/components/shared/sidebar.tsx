@@ -4,11 +4,10 @@ import { Folder, RotateCcwClock, type LucideIcon } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
 
-import { WORKSPACE_PATH } from "@/hooks/use-to-workspace";
-
 import { useLayoutStore, type SidebarTab } from "@/stores/layout-store";
-import { CollectionList, History } from "../workspace";
+import { WORKSPACE_PATH } from "@/hooks/use-to-workspace";
 import { WorkspaceSwitcher } from "./workspace-switcher";
+import { CollectionList, History } from "../workspace";
 import { cn } from "cn";
 
 const IMAGE = "/assets/logo.png";

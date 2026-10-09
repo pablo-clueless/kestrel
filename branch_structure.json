@@ -1,0 +1,21 @@
+{
+  "default_branch": "master",
+  "branches": [
+    "feat/postgres-accounts",
+    "fixes/kestrel",
+    "master",
+    "origin"
+  ],
+  "parent": {
+    "feat/postgres-accounts": "master",
+    "fixes/kestrel": "master",
+    "master": null,
+    "origin": "master"
+  },
+  "order": [
+    "master",
+    "feat/postgres-accounts",
+    "fixes/kestrel",
+    "origin"
+  ]
+}

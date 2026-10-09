@@ -7,11 +7,11 @@ import { Account, Appearance, Notifications, Security } from "@/components/user"
 import type { ProfileTab } from "@/stores/layout-store";
 import { cn } from "cn";
 
-const TABS: { id: ProfileTab; label: string; icon: LucideIcon }[] = [
-  { id: "account", label: "Account", icon: User },
-  { id: "security", label: "Security", icon: Fingerprint },
-  { id: "appearance", label: "Appearance", icon: Palette },
-  { id: "notifications", label: "Notifications", icon: Bell },
+const TABS: { id: ProfileTab; label: string; icon: LucideIcon; disabled: boolean }[] = [
+  { id: "account", label: "Account", icon: User, disabled: false },
+  { id: "security", label: "Security", icon: Fingerprint, disabled: false },
+  { id: "appearance", label: "Appearance", icon: Palette, disabled: false },
+  { id: "notifications", label: "Notifications", icon: Bell, disabled: true },
 ];
 
 const Page = () => {
@@ -26,7 +26,7 @@ const Page = () => {
         </div>
         <div className="bg-card h-[calc(100%-48px)] overflow-hidden rounded-xs border">
           <div role="tablist" aria-label="Profile sections" className="flex">
-            {TABS.map(({ id, label, icon: Icon }) => (
+            {TABS.map(({ id, label, icon: Icon, disabled }) => (
               <button
                 key={id}
                 role="tab"
@@ -40,7 +40,9 @@ const Page = () => {
                   tab === id
                     ? "bg-background text-foreground font-medium"
                     : "text-muted-foreground hover:text-foreground hover:bg-muted/60 border-b",
+                  disabled && "cursor-not-allowed opacity-50",
                 )}
+                disabled={disabled}
               >
                 <Icon className="size-3.5" />
                 {label}

@@ -1,3 +1,4 @@
+mod admin;
 mod auth;
 mod guard;
 mod hosts;
@@ -73,8 +74,21 @@ pub fn router(state: AppState) -> Router {
         .route("/auth/logout", post(auth::logout))
         .route("/auth/me", get(auth::me))
         .route("/auth/password", post(auth::change_password))
-        .route("/auth/sessions", get(auth::sessions))
+        .route("/auth/sessions", get(auth::sessions).delete(auth::sign_out_others))
         .route("/auth/sessions/{id}", axum::routing::delete(auth::revoke_session))
+        .route("/auth/profile", put(auth::set_profile))
+        .route("/auth/delete-account", post(auth::delete_account))
+        .route("/admin/overview", get(admin::overview))
+        .route("/admin/settings", get(admin::settings))
+        .route("/admin/users", get(admin::users))
+        .route("/admin/users/{id}", axum::routing::delete(admin::delete_user))
+        .route("/admin/users/{id}/verify-email", post(admin::verify_email))
+        .route("/admin/users/{id}/2fa/reset", post(admin::reset_two_factor))
+        .route("/admin/users/{id}/sign-out", post(admin::sign_out))
+        .route("/admin/users/{id}/disabled", put(admin::set_disabled))
+        .route("/admin/workspaces", get(admin::workspaces))
+        .route("/admin/workspaces/{id}", axum::routing::delete(admin::delete_workspace))
+        .route("/admin/workspaces/{id}/members", get(admin::members))
         .route("/auth/password-reset", post(auth::request_password_reset))
         .route("/auth/password-reset/confirm", post(auth::confirm_password_reset))
         .route("/auth/verify-email", post(auth::verify_email))
