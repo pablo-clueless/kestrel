@@ -4,9 +4,9 @@ import { useRouter } from "next/navigation";
 import { useEffect } from "react";
 
 import { errorMessage } from "@/lib/client";
+import { CircleLoader } from "./loader";
 import { useMe } from "@/hooks/use-me";
 import { Button } from "../ui/button";
-import { CircleLoader } from "./loader";
 
 /**
  * Renders the app only once it's known who's signed in, so nothing loads workspace data before

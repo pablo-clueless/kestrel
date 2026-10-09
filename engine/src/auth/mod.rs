@@ -2,8 +2,10 @@
 //! verification and password reset. Off by default (`KESTREL_AUTH=off`), in which case nothing here
 //! runs and a browser's workspace id is its only credential, as before.
 
+pub mod admin;
 pub mod mail;
 pub mod password;
+pub mod profile;
 pub mod rate_limit;
 pub mod session;
 pub mod teams;
@@ -45,6 +47,7 @@ pub struct AuthedUser {
     pub id: Uuid,
     pub email: String,
     pub email_verified: bool,
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Deserialize, TS)]
@@ -76,6 +79,10 @@ pub struct UserInfo {
     pub email: String,
     /// Whether the user has followed a verification (or password reset) link.
     pub email_verified: bool,
+    /// Their display name, if they've set one. The UI shows the email otherwise.
+    pub name: Option<String>,
+    /// Listed in `KESTREL_ADMIN_EMAILS`: may use the admin pages.
+    pub admin: bool,
 }
 
 /// `GET /api/auth/me`, and what signing in returns.
@@ -96,6 +103,33 @@ pub struct MeResponse {
     pub workspace_id: Option<Uuid>,
     /// Every workspace the user belongs to, with their role in each. Empty when signed out or off.
     pub workspaces: Vec<WorkspaceInfo>,
+}
+
+/// `PUT /api/auth/profile`.
+#[derive(Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ProfileRequest {
+    /// Up to 80 characters; empty clears it.
+    pub name: String,
+}
+
+/// `POST /api/auth/delete-account`: the password, and with two-factor on, a code too.
+#[derive(Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct DeleteAccountRequest {
+    pub password: String,
+    #[ts(optional)]
+    pub code: Option<String>,
+}
+
+/// `DELETE /api/auth/sessions`: how many other sessions were signed out.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct SessionsEnded {
+    pub ended: u32,
 }
 
 #[derive(Debug, Deserialize, TS)]
@@ -178,6 +212,8 @@ pub struct Accounts {
     mail_per_address: RateLimiter,
     /// Invites made per workspace per hour, emailed or not.
     invites: RateLimiter,
+    /// `KESTREL_ADMIN_EMAILS`, lowercased.
+    admin_emails: Vec<String>,
 }
 
 /// What the password step of signing in came to.
@@ -213,7 +249,13 @@ impl Accounts {
             public_url: config.public_url.clone(),
             mail_per_address: RateLimiter::new(3, Duration::from_secs(15 * 60)),
             invites: RateLimiter::new(20, Duration::from_secs(60 * 60)),
+            admin_emails: config.admin_emails.clone(),
         }
+    }
+
+    /// Whether `user` may use the admin pages. Never with accounts off: there's nobody to check.
+    pub fn is_admin(&self, user: &AuthedUser) -> bool {
+        self.enabled && self.admin_emails.contains(&user.email)
     }
 
     /// Sends through `mailer` instead of the configured one. Tests read what was sent.
@@ -276,7 +318,7 @@ impl Accounts {
                 Err(err) => tracing::warn!("no verification email for {email}: {err}"),
             }
         }
-        let user = AuthedUser { id: user, email, email_verified: false };
+        let user = AuthedUser { id: user, email, email_verified: false, name: None };
         self.start_session(user, client).await
     }
 
@@ -285,14 +327,18 @@ impl Accounts {
         self.rate_limit(&email, client.ip)?;
         let user = self.db.user_by_email(&email).await.map_err(internal)?;
         let (id, stored) = match user {
-            Some(u) => (Some((u.id, u.email_verified, u.two_factor)), Some(u.password_hash)),
+            Some(u) => (Some((u.id, u.email_verified, u.two_factor, u.disabled)), Some(u.password_hash)),
             None => (None, None),
         };
         let outdated = stored.as_deref().is_some_and(password::needs_rehash);
         if !password::verify(req.password.clone(), stored).await {
             return Err(ApiError::Unauthorized(BAD_CREDENTIALS));
         }
-        let (id, email_verified, two_factor) = id.expect("verify only succeeds for a known user");
+        let (id, email_verified, two_factor, disabled) = id.expect("verify only succeeds for a known user");
+        // Only said once the password is right, so it doesn't reveal which accounts exist.
+        if disabled {
+            return Err(ApiError::Forbidden("this account has been disabled; ask whoever runs this engine"));
+        }
         // The one moment the password is known: upgrade a hash made with older parameters.
         // Best effort, since the sign-in itself has succeeded either way.
         if outdated {
@@ -305,7 +351,8 @@ impl Accounts {
             return Ok(LoginOutcome::TwoFactor(self.two_factor_challenge(id).await?));
         }
         self.db.ensure_user_workspace(id, req.workspace).await.map_err(internal)?;
-        let (token, me) = self.start_session(AuthedUser { id, email, email_verified }, client).await?;
+        let name = self.db.user_by_id(id).await.map_err(internal)?.and_then(|(_, _, name)| name);
+        let (token, me) = self.start_session(AuthedUser { id, email, email_verified, name }, client).await?;
         Ok(LoginOutcome::SignedIn(token, me))
     }
 
@@ -498,7 +545,12 @@ impl Accounts {
         if found.stale {
             self.db.touch_session(&hash, session::LIFETIME).await.map_err(internal)?;
         }
-        Ok(Some(AuthedUser { id: found.user_id, email: found.email, email_verified: found.email_verified }))
+        Ok(Some(AuthedUser {
+            id: found.user_id,
+            email: found.email,
+            email_verified: found.email_verified,
+            name: found.name,
+        }))
     }
 
     /// Who's signed in and their workspaces. `requested` (the UI's current choice) is kept if they're
@@ -513,7 +565,13 @@ impl Accounts {
             auth: AuthMode::On,
             signup: self.signup_open,
             mail: self.mailer.is_some(),
-            user: Some(UserInfo { id: user.id, email: user.email.clone(), email_verified: user.email_verified }),
+            user: Some(UserInfo {
+                id: user.id,
+                email: user.email.clone(),
+                email_verified: user.email_verified,
+                name: user.name.clone(),
+                admin: self.is_admin(user),
+            }),
             workspace_id: Some(workspace),
             workspaces,
         })

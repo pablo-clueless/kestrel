@@ -12,6 +12,26 @@ No version has been tagged yet (engine and UI are both `0.1.0`), so the entries 
 
 ### Added
 
+- **Admin pages.** Accounts listed in the new `KESTREL_ADMIN_EMAILS` setting get an **Admin** link
+  in the account menu, which opens `/admin`:
+  - **Overview:** how many users and workspaces there are, how many have verified their email or
+    turned on two-factor, new sign-ups this week, signed-in sessions, tests running now, and the
+    newest accounts.
+  - **Users:** search every account. From each row's menu: mark the email verified, turn off
+    two-factor (for someone who lost their phone), sign them out everywhere, disable the account
+    (they're signed out and can't sign in until it's enabled again), or delete it. Admins can't do
+    these to themselves or to another admin; that's what `KESTREL_ADMIN_EMAILS` is for.
+  - **Workspaces:** every workspace with its admins, members and how much space it takes. Open a row
+    to see who's in it, or delete it.
+  - **Settings:** how the engine is configured (sign-up, email, limits, where it listens), read-only
+    and without secrets. These are environment variables, so you change them where the engine runs.
+- **Your name.** In **Profile → Account**, set the name people see in your workspaces' member lists
+  and in invites you send. Leave it empty to show your email, as before.
+- **Delete your account** from **Profile → Account**, with your password (and a code if two-factor is
+  on). Workspaces only you are in go with it; shared ones stay with their members. If you're the only
+  admin of a shared workspace, make someone else an admin first.
+- **Sign out everywhere else** in **Profile → Security**, next to the list of your devices.
+- **Appearance.** The Appearance tab in your profile works now: light, dark, or follow your device.
 - **Two-factor sign-in.** In **Profile → Security**, turn on codes from an authenticator app
   (1Password, Google Authenticator, Authy, …). After that, signing in asks for a code after your
   password.

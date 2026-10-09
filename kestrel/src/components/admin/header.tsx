@@ -1,22 +1,12 @@
 "use client";
 
-import { ArrowLeft, ChevronRight, Moon, PanelLeft, Sun } from "lucide-react";
-import { usePathname } from "next/navigation";
+import { Moon, PanelLeft, Sun } from "lucide-react";
 import { useTheme } from "next-themes";
-import Link from "next/link";
 
-import { WORKSPACE_PATH } from "@/hooks/use-to-workspace";
 import { useLayoutStore } from "@/stores/layout-store";
-import { EnvironmentBar } from "../workspace";
-import { MethodBadge } from "./method-badge";
+import { LoggUser } from "../shared/user";
 import { Button } from "../ui/button";
-import { LoggUser } from "./user";
 import { cn } from "cn";
-import {
-  useActiveCollection,
-  useSelectedEndpoint,
-  useSelectedIsDraft,
-} from "@/stores/workspace-store";
 
 const Theme = ({
   theme,
@@ -42,13 +32,8 @@ const Theme = ({
 export const Header = () => {
   const toggleSidebar = useLayoutStore((s) => s.toggleSidebar);
   const sidebarOpen = useLayoutStore((s) => s.sidebarOpen);
-  const collection = useActiveCollection();
-  const endpoint = useSelectedEndpoint();
   // Resolved, so "system" toggles from whatever it's showing now.
   const { setTheme, resolvedTheme: theme } = useTheme();
-  const isDraft = useSelectedIsDraft();
-  // Settings and Profile share this header; there, the way back replaces the breadcrumb.
-  const onWorkspace = usePathname() === WORKSPACE_PATH;
 
   const toggleTheme = () => setTheme(theme === "dark" ? "light" : "dark");
 
@@ -67,28 +52,8 @@ export const Header = () => {
             )}
           />
         </button>
-        {!onWorkspace ? (
-          <Link
-            href={WORKSPACE_PATH}
-            className="text-muted-foreground hover:text-foreground flex items-center gap-1.5 transition-colors"
-          >
-            <ArrowLeft className="size-4" /> Back to workspace
-          </Link>
-        ) : (
-          endpoint && (
-            <nav className="flex min-w-0 items-center gap-1.5" aria-label="Breadcrumb">
-              <span className="text-muted-foreground truncate">
-                {isDraft ? "Unsaved" : (collection?.name ?? "No collection")}
-              </span>
-              <ChevronRight className="text-muted-foreground size-3.5 shrink-0" />
-              <MethodBadge method={endpoint.method} />
-              <span className="truncate font-medium">{endpoint.name || endpoint.url}</span>
-            </nav>
-          )
-        )}
       </div>
       <div className="flex items-center gap-2">
-        <EnvironmentBar />
         <Theme theme={theme} toggleTheme={toggleTheme} />
         <LoggUser />
       </div>
