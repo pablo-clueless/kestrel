@@ -44,6 +44,10 @@ pub struct Config {
     /// `KESTREL_PUBLIC_URL`: where the UI is, for links in emails (e.g. `https://kestrel.fly.dev`).
     /// Unset, links use the `Origin` of the request that sent the email.
     pub public_url: Option<String>,
+    /// `KESTREL_ADMIN_EMAILS`: the accounts that may use the admin pages (every user and workspace on
+    /// this engine), trimmed and lowercased like stored emails. Only used with accounts on. Kept out
+    /// of the database so no API call can grant it and no admin can lock the others out.
+    pub admin_emails: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -337,6 +341,10 @@ impl Config {
             }
             _ => None,
         };
+        if let Ok(emails) = std::env::var("KESTREL_ADMIN_EMAILS") {
+            config.admin_emails =
+                emails.split(',').map(|e| e.trim().to_lowercase()).filter(|e| !e.is_empty()).collect();
+        }
         Ok(config)
     }
 
@@ -370,6 +378,7 @@ impl Config {
             trusted_proxy: false,
             smtp: None,
             public_url: None,
+            admin_emails: Vec::new(),
         }
     }
 }
